@@ -43,6 +43,7 @@ Toolkit 会从程序目录加载 `ThinkBookToolkit.FanBackend.dll`。本仓库�
 
 替换用的程序集需要面向兼容的 .NET Windows 运行时，引用 `ThinkBookToolkit.FanBackend.Contracts.dll`，并提供一个具有无参构造函数、公开且非抽象的 `IFanBackend` 实现。后端必须声明：
 
+- 通过 `ApiVersion` 声明风扇后端 API 版本 `1.0`；
 - 用于识别的 `Name` 和 `Transport`；
 - 是否支持在睡眠前释放风扇控制并在唤醒后恢复；
 - 普通读取和普通写入的最小间隔（同时写入两个风扇视为一个批次；风扇拉满和恢复自动不受该间隔约束）；
@@ -58,6 +59,7 @@ using ThinkBookToolkit.FanBackend;
 
 public sealed class ExampleFanBackend : IFanBackend
 {
+    public Version ApiVersion => FanBackendContract.CurrentVersion;
     public string Name => "Example fan backend";
     public string Transport => "Vendor WMI";
     public bool SupportsDisableControlOnSleep => false;
@@ -97,11 +99,14 @@ public sealed class ExampleFanBackend : IFanBackend
 .\scripts\build.ps1
 ```
 
-生成位于 `dist\ThinkBookToolkit-win-x64-latest` 的自包含版本：
+生成位于 `dist\ThinkBookToolkit-0.1.0-win-x64` 的公开、自包含版本：
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
 ```
+
+公开发布构建默认排除本地专有联想 DLL。仅为自己的电脑生成包含本地依赖的私用构建时，可增加
+`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.1.0`，可替换风扇后端 API 和配置文件格式版本均为 `1.0`。
 
 运行不会写入硬件的 UI 冒烟测试：
 

@@ -713,6 +713,9 @@ internal static class Program
             "Fan-limit lower-bound input does not accept 0 RPM.");
         Assert(typeof(IFanBackend).GetProperty(nameof(IFanBackend.ControlSemantics)) is not null,
             "Fan backends do not declare zero-RPM and automatic-restore semantics.");
+        Assert(FanBackendContract.CurrentVersion == new Version(1, 0) &&
+               typeof(IFanBackend).GetProperty(nameof(IFanBackend.ApiVersion)) is not null,
+            "The fan-backend API version is not declared as 1.0.");
         Assert(typeof(IFanBackend).GetProperty(nameof(IFanBackend.MinimumReadInterval)) is not null &&
                typeof(IFanBackend).GetProperty(nameof(IFanBackend.MinimumWriteInterval)) is not null,
             "Fan backends do not declare minimum read/write intervals.");
@@ -722,7 +725,8 @@ internal static class Program
         var wmiBackend =
             new ThinkBookToolkit.FanBackend.Wmi.WmiFanBackend();
         Assert(wmiBackend.MinimumReadInterval == TimeSpan.FromSeconds(0.5) &&
-               wmiBackend.MinimumWriteInterval == TimeSpan.FromSeconds(6),
+               wmiBackend.MinimumWriteInterval == TimeSpan.FromSeconds(6) &&
+               wmiBackend.ApiVersion == new Version(1, 0),
             "WMI backend read/write interval defaults are incorrect.");
         Assert(MainWindow.ResolveFanIoMinimumInterval(
                    null,
@@ -761,6 +765,7 @@ internal static class Program
             "Sleep-release availability does not follow backend support and effective I/O intervals.");
         Assert(new AppSettings() is
                {
+                   ConfigurationVersion: CurveProfileStore.CurrentConfigurationVersion,
                    FanReadMinimumIntervalSeconds: null,
                    FanWriteMinimumIntervalSeconds: null,
                    AttemptDisableControlOnSleepWhenUnsupported: false
@@ -880,6 +885,8 @@ internal static class Program
             throw new NotSupportedException(FailureMessage);
 
         public string Name => "Throwing backend";
+
+        public Version ApiVersion => FanBackendContract.CurrentVersion;
 
         public string Transport => "Test";
 

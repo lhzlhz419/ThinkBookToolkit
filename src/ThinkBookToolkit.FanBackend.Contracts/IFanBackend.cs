@@ -2,6 +2,11 @@ using System.Collections.Generic;
 
 namespace ThinkBookToolkit.FanBackend;
 
+public static class FanBackendContract
+{
+    public static Version CurrentVersion { get; } = new(1, 0);
+}
+
 public sealed record FanBackendRange(string Fan, uint Id, int MinRpm, int MaxRpm);
 
 public sealed record FanBackendSnapshot(
@@ -44,6 +49,11 @@ public sealed record FanBackendControlSemantics(
 /// </summary>
 public interface IFanBackend
 {
+    /// <summary>
+    /// Version of the IFanBackend contract implemented by this DLL.
+    /// </summary>
+    Version ApiVersion { get; }
+
     string Name { get; }
 
     string Transport { get; }

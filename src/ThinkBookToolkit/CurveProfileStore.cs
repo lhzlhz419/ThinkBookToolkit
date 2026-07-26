@@ -8,6 +8,7 @@ namespace ThinkBookToolkit;
 
 public static class CurveProfileStore
 {
+    public const string CurrentConfigurationVersion = "1.0";
     public static readonly int[] CpuTemps = Enumerable.Range(0, 15).Select(i => 30 + i * 5).ToArray();
     public static readonly int[] GpuTemps = Enumerable.Range(0, 13).Select(i => 30 + i * 5).ToArray();
 
@@ -55,7 +56,7 @@ public static class CurveProfileStore
 
         try
         {
-            var loaded = JsonSerializer.Deserialize<List<FanProfile>>(File.ReadAllText(ProfilePath), JsonOptions);
+            var loaded = DeserializeProfiles(File.ReadAllText(ProfilePath));
             if (loaded is null)
                 return defaults;
 
@@ -81,9 +82,13 @@ public static class CurveProfileStore
 
     public static void Save(IReadOnlyList<FanProfile> profiles)
     {
+        var document = new FanProfileConfigurationFile
+        {
+            Profiles = profiles.ToList()
+        };
         WriteTextAtomically(
             ProfilePath,
-            JsonSerializer.Serialize(profiles, JsonOptions));
+            JsonSerializer.Serialize(document, JsonOptions));
     }
 
     public static AppSettings LoadSettings()
@@ -96,9 +101,10 @@ public static class CurveProfileStore
         {
             var settingsJson = File.ReadAllText(SettingsPath);
             var loaded = JsonSerializer.Deserialize<AppSettings>(settingsJson, JsonOptions);
-            if (loaded is null)
+            if (loaded is null || !IsSupportedConfigurationVersion(loaded.ConfigurationVersion))
                 return defaults;
 
+            defaults.ConfigurationVersion = CurrentConfigurationVersion;
             defaults.Language = loaded.Language is "en-US" or "zh-CN" ? loaded.Language : defaults.Language;
             defaults.Theme = loaded.Theme is "dark" or "light" or "system"
                 ? loaded.Theme
@@ -171,6 +177,7 @@ public static class CurveProfileStore
 
     public static void SaveSettings(AppSettings settings)
     {
+        settings.ConfigurationVersion = CurrentConfigurationVersion;
         WriteTextAtomically(
             SettingsPath,
             JsonSerializer.Serialize(settings, JsonOptions));
@@ -213,9 +220,7 @@ public static class CurveProfileStore
         {
             if (!File.Exists(DefaultProfilePath))
                 return Defaults();
-            var profiles = JsonSerializer.Deserialize<List<FanProfile>>(
-                File.ReadAllText(DefaultProfilePath),
-                JsonOptions);
+            var profiles = DeserializeProfiles(File.ReadAllText(DefaultProfilePath));
             return profiles is { Count: ProfileCount } ? profiles : Defaults();
         }
         catch
@@ -230,10 +235,13 @@ public static class CurveProfileStore
         {
             if (!File.Exists(DefaultSettingsPath))
                 return new AppSettings();
-            return JsonSerializer.Deserialize<AppSettings>(
-                       File.ReadAllText(DefaultSettingsPath),
-                       JsonOptions)
-                   ?? new AppSettings();
+            var settings = JsonSerializer.Deserialize<AppSettings>(
+                File.ReadAllText(DefaultSettingsPath),
+                JsonOptions);
+            return settings is not null &&
+                   IsSupportedConfigurationVersion(settings.ConfigurationVersion)
+                ? settings
+                : new AppSettings();
         }
         catch
         {
@@ -249,6 +257,42 @@ public static class CurveProfileStore
         seconds.Value >= 1 &&
         seconds.Value == Math.Truncate(seconds.Value) &&
         seconds.Value <= TimeSpan.MaxValue.TotalSeconds;
+
+    public static bool IsSupportedConfigurationVersion(string? version) =>
+        string.IsNullOrWhiteSpace(version) ||
+        string.Equals(
+            version,
+            CurrentConfigurationVersion,
+            StringComparison.Ordinal);
+
+    private static List<FanProfile>? DeserializeProfiles(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind == JsonValueKind.Array)
+        {
+            return JsonSerializer.Deserialize<List<FanProfile>>(
+                json,
+                JsonOptions);
+        }
+
+        var configuration =
+            JsonSerializer.Deserialize<FanProfileConfigurationFile>(
+                json,
+                JsonOptions);
+        return configuration is not null &&
+               IsSupportedConfigurationVersion(
+                   configuration.ConfigurationVersion)
+            ? configuration.Profiles
+            : null;
+    }
+
+    private sealed class FanProfileConfigurationFile
+    {
+        public string ConfigurationVersion { get; set; } =
+            CurrentConfigurationVersion;
+
+        public List<FanProfile> Profiles { get; set; } = [];
+    }
 
     private static int NormalizeColorTemperature(int value, int fallback) =>
         value is >= 2000 and <= 11200 ? value : fallback;

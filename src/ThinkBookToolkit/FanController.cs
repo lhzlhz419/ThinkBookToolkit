@@ -107,9 +107,16 @@ public sealed class FanController
     {
         try
         {
-            return (IFanBackend)(Activator.CreateInstance(backendType)
+            var backend = (IFanBackend)(Activator.CreateInstance(backendType)
                 ?? throw new InvalidOperationException(
                     $"Unable to create fan backend {backendType.FullName}."));
+            if (backend.ApiVersion != FanBackendContract.CurrentVersion)
+            {
+                throw new NotSupportedException(
+                    $"Fan backend API version {backend.ApiVersion} is incompatible with required version {FanBackendContract.CurrentVersion}.");
+            }
+
+            return backend;
         }
         catch (TargetInvocationException ex)
             when (ex.InnerException is not null)

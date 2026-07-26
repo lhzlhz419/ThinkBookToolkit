@@ -12,6 +12,8 @@ public sealed class WmiFanBackend : IFanBackend
     private const uint Fan2Id = 0x04030002;
     private IReadOnlyDictionary<string, FanBackendRange>? _cachedLimits;
 
+    public Version ApiVersion => FanBackendContract.CurrentVersion;
+
     public string Name => "Lenovo WMI fan backend";
 
     public string Transport => "WMI";

@@ -95,6 +95,7 @@ public sealed class FanProfile
 
 public sealed class AppSettings
 {
+    public string ConfigurationVersion { get; set; } = CurveProfileStore.CurrentConfigurationVersion;
     public string Language { get; set; } = "zh-CN";
     public string Theme { get; set; } = "light";
     public double IntervalSeconds { get; set; } = 2.0;

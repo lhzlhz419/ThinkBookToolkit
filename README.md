@@ -71,6 +71,7 @@ A replacement assembly must target a compatible .NET Windows runtime, reference
 `ThinkBookToolkit.FanBackend.Contracts.dll`, expose one public non-abstract type
 with a parameterless constructor, and implement `IFanBackend`. It must declare:
 
+- fan-backend API version `1.0` through `ApiVersion`;
 - `Name` and `Transport` for identification;
 - whether fan control can be released before sleep and resumed afterward;
 - minimum ordinary read and write intervals (one two-fan write is a single
@@ -89,6 +90,7 @@ using ThinkBookToolkit.FanBackend;
 
 public sealed class ExampleFanBackend : IFanBackend
 {
+    public Version ApiVersion => FanBackendContract.CurrentVersion;
     public string Name => "Example fan backend";
     public string Transport => "Vendor WMI";
     public bool SupportsDisableControlOnSleep => false;
@@ -131,11 +133,17 @@ run from the repository root:
 .\scripts\build.ps1
 ```
 
-Create the self-contained release under `dist\ThinkBookToolkit-win-x64-latest`:
+Create the public, self-contained `0.1.0` release under
+`dist\ThinkBookToolkit-0.1.0-win-x64`:
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
 ```
+
+Public release publishing excludes local proprietary Lenovo DLLs by default.
+For a private build used only on your own machine, add
+`-IncludeLocalProprietaryDependencies`. The application version is `0.1.0`;
+the replaceable fan-backend API and configuration-file format are both `1.0`.
 
 Run the hardware-write-free UI smoke test:
 
