@@ -2,6 +2,8 @@
   "ConfigurationVersion": "1.0",
   "Language": "zh-CN",
   "Theme": "light",
+  "UseCustomLenovoDllDirectory": false,
+  "CustomLenovoDllDirectory": "",
   "IntervalSeconds": 2.0,
   "LastProfileIndex": 0,
   "EditFan": 1,

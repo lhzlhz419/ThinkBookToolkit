@@ -74,6 +74,16 @@ are intentionally kept outside this repository, are not covered by MPL-2.0,
 and are not redistributed by the source repository. Their accompanying license
 and third-party notice files control their use.
 
+## Installer tooling
+
+Windows setup packages are built with
+[Inno Setup](https://jrsoftware.org/isinfo.php). The setup engine embedded in a
+compiled installer remains subject to the Inno Setup license. The build script
+also downloads the Simplified Chinese message file from the
+[official Inno Setup source repository](https://github.com/jrsoftware/issrc/blob/main/Files/Languages/ChineseSimplified.isl)
+and verifies its pinned SHA-256 before compilation. The translation credits its
+upstream maintainer in the installer's About information.
+
 ## Reference project
 
 [Lenovo Legion Toolkit](https://github.com/LenovoLegionToolkit-Team/LenovoLegionToolkit)

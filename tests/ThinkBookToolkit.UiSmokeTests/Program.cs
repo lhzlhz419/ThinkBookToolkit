@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Windows;
@@ -36,6 +37,7 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        VerifyLenovoDependencyDirectory();
         Assert(UiTypography.FontFamilyNameFor("zh-CN") == "Microsoft YaHei UI",
             "Chinese UI font must use the Windows Simplified Chinese UI family.");
         Assert(UiTypography.FontFamilyNameFor("en-US") == "Segoe UI Variable Text",
@@ -790,6 +792,69 @@ internal static class Program
         limitsWindow.Close();
 
         window.Close();
+    }
+
+    private static void VerifyLenovoDependencyDirectory()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"ThinkBookToolkit-dependency-test-{Guid.NewGuid():N}");
+        var customFile = Path.Combine(
+            root,
+            "LenovoPcManager",
+            "WrapPlugin.dll");
+        var fallbackFile = Path.Combine(root, "fallback", "WrapPlugin.dll");
+        var customAddinRoot = Path.Combine(
+            root,
+            "VantageAddins",
+            "TestAddin");
+        var fallbackAddinRoot = Path.Combine(root, "fallback-addin");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(customFile)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(fallbackFile)!);
+            Directory.CreateDirectory(Path.Combine(customAddinRoot, "1.0.0"));
+            Directory.CreateDirectory(Path.Combine(fallbackAddinRoot, "2.0.0"));
+            File.WriteAllBytes(customFile, [1]);
+            File.WriteAllBytes(fallbackFile, [2]);
+            File.WriteAllBytes(
+                Path.Combine(customAddinRoot, "1.0.0", "Test.dll"),
+                [1]);
+            File.WriteAllBytes(
+                Path.Combine(fallbackAddinRoot, "2.0.0", "Test.dll"),
+                [2]);
+
+            Assert(LenovoDependencyDirectory.FindExistingFile(
+                       root,
+                       Path.Combine("LenovoPcManager", "WrapPlugin.dll"),
+                       fallbackFile) == customFile,
+                "The custom Lenovo DLL directory does not take priority over the application fallback.");
+            Assert(LenovoVantageAddinLocator.FindLatestFileInRoots(
+                       [customAddinRoot, fallbackAddinRoot],
+                       "Test.dll") == Path.Combine(
+                           customAddinRoot,
+                           "1.0.0",
+                           "Test.dll"),
+                "The custom Lenovo Vantage add-in directory does not take priority.");
+
+            LenovoDependencyDirectory.Configure(false, root);
+            Assert(LenovoDependencyDirectory.GetEnabledRoot() is null,
+                "The custom Lenovo DLL directory is enabled by default.");
+            LenovoDependencyDirectory.Configure(true, root);
+            Assert(LenovoDependencyDirectory.GetEnabledRoot() == root,
+                "An enabled valid custom Lenovo DLL directory was not accepted.");
+        }
+        finally
+        {
+            LenovoDependencyDirectory.Configure(false, string.Empty);
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch
+            {
+            }
+        }
     }
 
     private static void VerifySwitchAndCombo(DependencyObject root)

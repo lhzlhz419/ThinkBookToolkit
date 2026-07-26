@@ -21,8 +21,11 @@ public static class Program
                 MessageBox.Show(args.Exception.ToString(), "ThinkBook Toolkit error", MessageBoxButton.OK, MessageBoxImage.Error);
                 args.Handled = true;
             };
+            if (TryApplyInstallerConfiguration(args))
+                return;
             ConfigurationMigrationService.EnsureInitialized();
             var settings = CurveProfileStore.LoadSettings();
+            CurveProfileStore.ApplyPendingInstallerSettings(settings);
             ModernTheme.Apply(app, ToolkitRuntimeService.ResolveDarkTheme(settings.Theme));
             var startToTrayRequested = args.Any(argument =>
                 string.Equals(argument, "--startup-tray", StringComparison.OrdinalIgnoreCase));
@@ -40,6 +43,24 @@ public static class Program
             LogException(ex);
             MessageBox.Show(ex.ToString(), "ThinkBook Toolkit startup failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private static bool TryApplyInstallerConfiguration(
+        string[] args)
+    {
+        const string option = "--configure-lenovo-dll-directory";
+        var index = Array.FindIndex(args, argument =>
+            string.Equals(argument, option, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+            return false;
+
+        var directory = index + 1 < args.Length
+            ? LenovoDependencyDirectory.Normalize(args[index + 1])
+            : string.Empty;
+        CurveProfileStore.StageInstallerSettings(
+            !string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory),
+            directory);
+        return true;
     }
 
     private static void LogException(Exception? exception)

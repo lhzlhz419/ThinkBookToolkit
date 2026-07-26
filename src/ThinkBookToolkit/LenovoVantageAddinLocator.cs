@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
@@ -14,6 +15,15 @@ internal static class LenovoVantageAddinLocator
         string addinName,
         string fileName)
     {
+        var roots = new List<string>();
+        var customRoot = LenovoDependencyDirectory.GetEnabledRoot();
+        if (customRoot is not null)
+        {
+            roots.Add(Path.Combine(
+                customRoot,
+                LocalAddinsDirectory,
+                addinName));
+        }
         var localRoot = Path.Combine(
             AppContext.BaseDirectory,
             LocalAddinsDirectory,
@@ -22,9 +32,16 @@ internal static class LenovoVantageAddinLocator
             InstalledAddinsRoot,
             addinName);
 
-        return FindLatestFileInRoot(localRoot, fileName)
-            ?? FindLatestFileInRoot(installedRoot, fileName);
+        roots.Add(localRoot);
+        roots.Add(installedRoot);
+        return FindLatestFileInRoots(roots, fileName);
     }
+
+    internal static string? FindLatestFileInRoots(
+        IEnumerable<string> roots,
+        string fileName) =>
+        roots.Select(root => FindLatestFileInRoot(root, fileName))
+            .FirstOrDefault(path => path is not null);
 
     private static string? FindLatestFileInRoot(
         string root,

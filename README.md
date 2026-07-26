@@ -133,16 +133,34 @@ run from the repository root:
 .\scripts\build.ps1
 ```
 
-Create the public, self-contained `0.1.0` release under
-`dist\ThinkBookToolkit-0.1.0-win-x64`:
+Create the public, framework-dependent `0.1.1` release under
+`dist\ThinkBookToolkit-0.1.1-win-x64-framework-dependent`:
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
 ```
 
+Create the online installer (requires
+[Inno Setup 6](https://jrsoftware.org/isdl.php)):
+
+```powershell
+.\scripts\build.ps1 -Configuration Release -Installer
+```
+
+The result is `dist\ThinkBookToolkit-0.1.1-Setup.exe`. Its default destination
+is `Program Files\ThinkBook Toolkit`, and the destination can be changed in the
+wizard. If the selected destination is not empty, Setup warns that all of its
+contents will be removed and proceeds only after explicit confirmation; always
+select a folder dedicated to Toolkit. The installer checks for the 64-bit .NET
+9 Desktop Runtime. If it is
+missing, the installer downloads Microsoft's official .NET 9.0.18 Desktop
+Runtime installer, verifies its pinned SHA-256, and installs it. Use
+`-Publish -SelfContained` only when a larger portable build that bundles the
+runtime is specifically required.
+
 Public release publishing excludes local proprietary Lenovo DLLs by default.
 For a private build used only on your own machine, add
-`-IncludeLocalProprietaryDependencies`. The application version is `0.1.0`;
+`-IncludeLocalProprietaryDependencies`. The application version is `0.1.1`;
 the replaceable fan-backend API and configuration-file format are both `1.0`.
 
 Run the hardware-write-free UI smoke test:
@@ -164,6 +182,16 @@ Some display, audio, and firmware functions load DLL components installed by
 [Lenovo PC Manager](https://guanjia.lenovo.com.cn/). Those proprietary files are
 not stored in this repository. Their respective Lenovo software, services, and
 drivers may still be required at runtime.
+
+The installer offers an optional custom Lenovo DLL directory, disabled by
+default. When enabled, its value is saved in
+`%USERPROFILE%\.thinkbook_toolkit\app_settings.csharp.json` as
+`UseCustomLenovoDllDirectory` and `CustomLenovoDllDirectory`. Toolkit searches
+an enabled, valid custom directory first, then uses its existing fallback
+locations (the application directory, plus installed Vantage add-ins where
+applicable). The custom root must contain
+`VantageAddins` and/or `LenovoPcManager`; the installer references the directory
+and does not copy those files into the installation.
 
 For a local publish that bundles files obtained from your own installation, set
 the MSBuild property `ExternalDependenciesRoot` to a directory containing

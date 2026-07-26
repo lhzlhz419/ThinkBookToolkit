@@ -79,6 +79,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public ToolkitRuntimeService(AppSettings settings)
     {
         Settings = settings;
+        LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
         _pollTimer.Tick += async (_, _) => await RefreshAsync();
         SyncPollingInterval();

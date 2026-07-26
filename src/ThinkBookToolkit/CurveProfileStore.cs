@@ -42,6 +42,10 @@ public static class CurveProfileStore
         }
     }
 
+    public static string PendingInstallerSettingsPath => Path.Combine(
+        Path.GetDirectoryName(SettingsPath)!,
+        "pending_installer_settings.json");
+
     public static string DefaultProfilePath =>
         Path.Combine(AppContext.BaseDirectory, "default_fan_curve_profiles.json");
 
@@ -109,6 +113,11 @@ public static class CurveProfileStore
             defaults.Theme = loaded.Theme is "dark" or "light" or "system"
                 ? loaded.Theme
                 : defaults.Theme;
+            defaults.UseCustomLenovoDllDirectory =
+                loaded.UseCustomLenovoDllDirectory;
+            defaults.CustomLenovoDllDirectory =
+                LenovoDependencyDirectory.Normalize(
+                    loaded.CustomLenovoDllDirectory);
             defaults.IntervalSeconds = PickAllowed(loaded.IntervalSeconds, [0.5, 1, 2, 3, 5], defaults.IntervalSeconds);
             defaults.LastProfileIndex = Math.Max(0, Math.Min(ProfileCount - 1, loaded.LastProfileIndex));
             defaults.EditFan = loaded.EditFan == 2 ? 2 : 1;
@@ -181,6 +190,42 @@ public static class CurveProfileStore
         WriteTextAtomically(
             SettingsPath,
             JsonSerializer.Serialize(settings, JsonOptions));
+    }
+
+    public static void StageInstallerSettings(
+        bool useCustomLenovoDllDirectory,
+        string? customLenovoDllDirectory) =>
+        WriteTextAtomically(
+            PendingInstallerSettingsPath,
+            JsonSerializer.Serialize(
+                new PendingInstallerSettings
+                {
+                    UseCustomLenovoDllDirectory =
+                        useCustomLenovoDllDirectory,
+                    CustomLenovoDllDirectory =
+                        LenovoDependencyDirectory.Normalize(
+                            customLenovoDllDirectory)
+                },
+                JsonOptions));
+
+    public static void ApplyPendingInstallerSettings(AppSettings settings)
+    {
+        if (!File.Exists(PendingInstallerSettingsPath))
+            return;
+
+        var pending = JsonSerializer.Deserialize<PendingInstallerSettings>(
+            File.ReadAllText(PendingInstallerSettingsPath),
+            JsonOptions);
+        if (pending is not null)
+        {
+            settings.UseCustomLenovoDllDirectory =
+                pending.UseCustomLenovoDllDirectory;
+            settings.CustomLenovoDllDirectory =
+                LenovoDependencyDirectory.Normalize(
+                    pending.CustomLenovoDllDirectory);
+            SaveSettings(settings);
+        }
+        File.Delete(PendingInstallerSettingsPath);
     }
 
     private static void WriteTextAtomically(string path, string content)
@@ -292,6 +337,13 @@ public static class CurveProfileStore
             CurrentConfigurationVersion;
 
         public List<FanProfile> Profiles { get; set; } = [];
+    }
+
+    private sealed class PendingInstallerSettings
+    {
+        public bool UseCustomLenovoDllDirectory { get; set; }
+
+        public string CustomLenovoDllDirectory { get; set; } = string.Empty;
     }
 
     private static int NormalizeColorTemperature(int value, int fallback) =>

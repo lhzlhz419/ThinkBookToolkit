@@ -98,6 +98,8 @@ public sealed class AppSettings
     public string ConfigurationVersion { get; set; } = CurveProfileStore.CurrentConfigurationVersion;
     public string Language { get; set; } = "zh-CN";
     public string Theme { get; set; } = "light";
+    public bool UseCustomLenovoDllDirectory { get; set; }
+    public string CustomLenovoDllDirectory { get; set; } = "";
     public double IntervalSeconds { get; set; } = 2.0;
     public int LastProfileIndex { get; set; }
     public int EditFan { get; set; } = 1;

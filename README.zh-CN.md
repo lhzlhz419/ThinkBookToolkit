@@ -99,14 +99,27 @@ public sealed class ExampleFanBackend : IFanBackend
 .\scripts\build.ps1
 ```
 
-生成位于 `dist\ThinkBookToolkit-0.1.0-win-x64` 的公开、自包含版本：
+生成位于 `dist\ThinkBookToolkit-0.1.1-win-x64-framework-dependent` 的公开、依赖框架版本：
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
 ```
 
+生成在线安装包（需要安装 [Inno Setup 6](https://jrsoftware.org/isdl.php)）：
+
+```powershell
+.\scripts\build.ps1 -Configuration Release -Installer
+```
+
+输出文件为 `dist\ThinkBookToolkit-0.1.1-Setup.exe`。安装位置默认为
+`Program Files\ThinkBook Toolkit`，可在安装向导中修改。如果所选文件夹非空，安装器会明确提示
+其中所有内容将被删除，并且只有确认后才继续；应始终选择 Toolkit 专用文件夹。安装器会检测
+64 位 .NET 9 Desktop Runtime；如果未安装，则下载微软官方 .NET 9.0.18 Desktop Runtime
+安装程序、校验固定的 SHA-256 后静默安装。只有确实需要把运行时一并打包的较大便携版本时，
+才使用 `-Publish -SelfContained`。
+
 公开发布构建默认排除本地专有联想 DLL。仅为自己的电脑生成包含本地依赖的私用构建时，可增加
-`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.1.0`，可替换风扇后端 API 和配置文件格式版本均为 `1.0`。
+`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.1.1`，可替换风扇后端 API 和配置文件格式版本均为 `1.0`。
 
 运行不会写入硬件的 UI 冒烟测试：
 
@@ -123,6 +136,12 @@ dotnet run --project .\tests\ThinkBookToolkit.UiPreview\ThinkBookToolkit.UiPrevi
 ## 可选专有组件
 
 部分显示、声音和固件功能会加载 [Lenovo Vantage](https://apps.microsoft.com/detail/9wzdncrfj4mv) 或 [联想电脑管家](https://guanjia.lenovo.com.cn/) 安装的 DLL 组件。这些专有文件不存放在本仓库中；运行对应功能时，仍可能需要相关的联想软件、服务和驱动。
+
+安装向导提供“自定义联想 DLL 目录”选项，默认不勾选。启用后，目录保存到
+`%USERPROFILE%\.thinkbook_toolkit\app_settings.csharp.json` 的
+`UseCustomLenovoDllDirectory` 和 `CustomLenovoDllDirectory` 字段。Toolkit 会先检查有效且已启用的
+自定义目录，再使用原有回退位置（程序目录；适用时也包括系统中安装的 Vantage 插件目录）。自定义根目录中应包含
+`VantageAddins` 和/或 `LenovoPcManager`；安装器只保存目录引用，不会把这些文件复制到安装目录。
 
 如果需要在本机发布包中加入从您自己的安装环境取得的文件，可把 MSBuild 属性 `ExternalDependenciesRoot` 指向包含 `VantageAddins` 和/或 `LenovoPcManager` 的目录。默认本地路径是仓库旁的 `ThinkBookToolkit.Dependencies`。没有该目录的全新源码副本仍可构建；如果程序也无法从已安装的软件中找到必需组件，对应的可选功能会显示为不可用。
 

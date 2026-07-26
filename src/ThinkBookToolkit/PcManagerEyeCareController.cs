@@ -423,12 +423,16 @@ internal static class PcManagerEyeCareController
     {
         var assemblyDirectory = Path.GetDirectoryName(
             typeof(PcManagerEyeCareController).Assembly.Location);
-        var path = Path.Combine(
+        var applicationPath = Path.Combine(
             string.IsNullOrWhiteSpace(assemblyDirectory)
                 ? AppContext.BaseDirectory
                 : assemblyDirectory,
             "LenovoPcManager",
             "WrapPlugin.dll");
+        var path = LenovoDependencyDirectory.FindExistingFile(
+            LenovoDependencyDirectory.GetEnabledRoot(),
+            Path.Combine("LenovoPcManager", "WrapPlugin.dll"),
+            applicationPath) ?? applicationPath;
         if (!File.Exists(path))
         {
             throw new FileNotFoundException(
