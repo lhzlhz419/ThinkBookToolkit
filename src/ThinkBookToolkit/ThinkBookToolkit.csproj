@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>ThinkBookToolkit</AssemblyName>
+    <RootNamespace>ThinkBookToolkit</RootNamespace>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RollForward>LatestMajor</RollForward>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app-icon-tb.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ExternalDependenciesRoot Condition="'$(ExternalDependenciesRoot)' == ''">$(MSBuildProjectDirectory)\..\..\..\ThinkBookToolkit.Dependencies</ExternalDependenciesRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ThinkBookToolkit.UiSmokeTests" />
+    <InternalsVisibleTo Include="ThinkBookToolkit.UiPreview" />
+
+    <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Contracts\ThinkBookToolkit.FanBackend.Contracts.csproj" />
+    <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Wmi\ThinkBookToolkit.FanBackend.Wmi.csproj" />
+
+    <Content Include="default_app_settings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <Content Include="default_fan_curve_profiles.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <Content Include="$(MSBuildProjectDirectory)\..\..\LICENSE">
+      <Link>LICENSE</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <Content Include="$(MSBuildProjectDirectory)\..\..\THIRD_PARTY_NOTICES.md">
+      <Link>THIRD_PARTY_NOTICES.md</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <Resource Include="Assets\app-icon-tb.png" />
+
+    <Content Include="$(ExternalDependenciesRoot)\LenovoPcManager\WrapPlugin.dll"
+             Condition="Exists('$(ExternalDependenciesRoot)\LenovoPcManager\WrapPlugin.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>LenovoPcManager\WrapPlugin.dll</TargetPath>
+    </Content>
+
+    <Content Include="$(ExternalDependenciesRoot)\VantageAddins\**\*"
+             Condition="Exists('$(ExternalDependenciesRoot)\VantageAddins')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>VantageAddins\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+    </Content>
+
+    <PackageReference Include="DiskInfoToolkit" Version="2.1.0" />
+    <PackageReference Include="HidSharp" Version="2.6.4" />
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <PackageReference Include="Mono.Posix.NETStandard" Version="1.0.0" />
+    <PackageReference Include="RAMSPDToolkit-NDD" Version="1.5.0" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.7" />
+    <PackageReference Include="System.Management" Version="10.0.7" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.7" />
+    <PackageReference Include="System.Threading.AccessControl" Version="10.0.7" />
+
+  </ItemGroup>
+</Project>

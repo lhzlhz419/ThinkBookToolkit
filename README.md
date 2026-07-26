@@ -1,0 +1,227 @@
+# ThinkBook Toolkit
+
+## Disclaimer
+
+ThinkBook Toolkit is an independent, experimental project. It is not affiliated
+with Lenovo, is not an official Lenovo project, and is not endorsed, supported,
+or sponsored by Lenovo.
+
+This software reads and writes hardware and firmware settings. Incorrect or
+incompatible settings may affect cooling, performance, stability, hardware
+lifespan, warranty coverage, or data safety. You use the software entirely at
+your own risk and are solely responsible for every consequence. If you do not
+understand or accept these risks, do not install or use it.
+
+**Every feature has been tested only on ThinkBook 16p G6 IAX with BIOS
+R2CN57WW. No feature is guaranteed to work or be safe on another model or BIOS
+version. Capability detection only controls what the interface displays; it is
+not a compatibility or safety guarantee.**
+
+[简体中文](README.zh-CN.md)
+
+## Overview
+
+ThinkBook Toolkit is a native Windows control center for selected Lenovo
+ThinkBook hardware. Its WPF interface keeps routine controls in one window and
+loads device capabilities progressively so the overview becomes usable first.
+It runs independently and does not require ThinkBook Fan Control.
+
+Current feature groups include:
+
+- performance mode, GPU working mode, live temperatures, power readings, and
+  fan control;
+- fixed fan targets, editable CPU/GPU curves, profiles, game detection, and
+  full-speed control;
+- battery charging modes, overnight charging, always-on USB, flip-to-start,
+  and detailed battery information;
+- eye care, color modes, Dolby settings, speaker/microphone noise reduction,
+  keyboard, function-key, OSD, and touchpad controls;
+- device, firmware, storage, and Lenovo warranty information;
+- power-limit viewing and supported-device adjustment;
+- BIOS startup actions and boot-logo customization;
+- light/dark themes, Chinese/English UI, tray controls, and Windows startup.
+
+Unavailable controls are hidden from their pages. A complete capability summary
+is available in Settings.
+
+## Requirements and safety
+
+- Windows 11 x64 and administrator privileges.
+- The Lenovo drivers and services required by each device feature.
+- [PawnIO](https://pawnio.eu/) must be installed and available for
+  LibreHardwareMonitor to read the CPU temperature on the tested device. PawnIO
+  is a system-level component and is not bundled with Toolkit or the external
+  dependency directory.
+- Continuous temperature monitoring whenever custom fan control is active.
+- A verified way to return fan control to firmware automatic mode before relying
+  on a replacement fan backend.
+
+Changing GPU mode or some firmware options may require a system restart. The app
+restores firmware-automatic fan control before normal exit and before actions
+that restart the computer.
+
+## Replaceable fan backend
+
+Toolkit loads `ThinkBookToolkit.FanBackend.dll` from the application directory.
+This repository contains the WMI implementation. Replacing that one file changes
+how fan telemetry and control are performed; Toolkit does not choose or reject a
+backend based on the device model.
+
+A replacement assembly must target a compatible .NET Windows runtime, reference
+`ThinkBookToolkit.FanBackend.Contracts.dll`, expose one public non-abstract type
+with a parameterless constructor, and implement `IFanBackend`. It must declare:
+
+- `Name` and `Transport` for identification;
+- whether fan control can be released before sleep and resumed afterward;
+- minimum ordinary read and write intervals (one two-fan write is a single
+  batch, while full-speed and restore-automatic operations are exempt);
+- whether a target of `0` releases that fan to firmware control or stops it while
+  manual control remains active;
+- how automatic control is restored;
+- how full-speed mode is enabled and disabled;
+- fan telemetry/range reading, two-fan target writing, automatic restore, and
+  full-speed operations.
+
+Minimal declaration example:
+
+```csharp
+using ThinkBookToolkit.FanBackend;
+
+public sealed class ExampleFanBackend : IFanBackend
+{
+    public string Name => "Example fan backend";
+    public string Transport => "Vendor WMI";
+    public bool SupportsDisableControlOnSleep => false;
+    public TimeSpan MinimumReadInterval => TimeSpan.FromSeconds(0.5);
+    public TimeSpan MinimumWriteInterval => TimeSpan.FromSeconds(6);
+
+    public FanBackendControlSemantics ControlSemantics { get; } = new(
+        FanTargetZeroBehavior.ReleaseFanToFirmwareControl,
+        FanAutomaticControlRestoreMechanism.WriteZeroToBothTargets,
+        "Write zero to both fan targets",
+        new(
+            FanFullSpeedControlMechanism.FeatureToggle,
+            "Enable the vendor full-speed feature",
+            "Disable the vendor full-speed feature"));
+
+    public FanBackendSnapshot ReadSnapshot() =>
+        throw new NotImplementedException("Add hardware-specific telemetry here.");
+
+    public void Apply(int fan1Rpm, int fan2Rpm) =>
+        throw new NotImplementedException("Write both targets as one batch here.");
+
+    public void RestoreAuto() =>
+        throw new NotImplementedException("Add the declared restore operation here.");
+
+    public void SetFullSpeed(bool enabled) =>
+        throw new NotImplementedException("Add full-speed enable and disable here.");
+}
+```
+
+The declarations must describe the implementation exactly. In particular,
+Toolkit never assumes that `0 RPM` means automatic control or that full speed is
+implemented by writing a maximum RPM value.
+
+## Build and test
+
+Install the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0), then
+run from the repository root:
+
+```powershell
+.\scripts\build.ps1
+```
+
+Create the self-contained release under `dist\ThinkBookToolkit-win-x64-latest`:
+
+```powershell
+.\scripts\build.ps1 -Configuration Release -Publish
+```
+
+Run the hardware-write-free UI smoke test:
+
+```powershell
+dotnet run --project .\tests\ThinkBookToolkit.UiSmokeTests\ThinkBookToolkit.UiSmokeTests.csproj -c Release
+```
+
+Run the non-admin UI preview:
+
+```powershell
+dotnet run --project .\tests\ThinkBookToolkit.UiPreview\ThinkBookToolkit.UiPreview.csproj -c Release
+```
+
+## Optional proprietary components
+
+Some display, audio, and firmware functions load DLL components installed by
+[Lenovo Vantage](https://apps.microsoft.com/detail/9wzdncrfj4mv) or
+[Lenovo PC Manager](https://guanjia.lenovo.com.cn/). Those proprietary files are
+not stored in this repository. Their respective Lenovo software, services, and
+drivers may still be required at runtime.
+
+For a local publish that bundles files obtained from your own installation, set
+the MSBuild property `ExternalDependenciesRoot` to a directory containing
+`VantageAddins` and/or `LenovoPcManager`. The default local path is the sibling
+directory `ThinkBookToolkit.Dependencies`. A clean checkout without that
+directory still builds; affected optional features will be unavailable unless
+the required installed components can be found.
+
+The current local dependency directory is organized as follows. Version folder
+names identify the component versions used during development; they are not a
+compatibility guarantee.
+
+```text
+ThinkBookToolkit.Dependencies/
+|-- LibreHardwareMonitorLib.dll        # local reference copy; NuGet is used by the build
+|-- LenovoPcManager/
+|   `-- WrapPlugin.dll
+`-- VantageAddins/
+    |-- LenovoProductivitySystemAddin/
+    |   `-- 1.0.0.138/                 # BIOS utility, metadata, notices
+    |-- MultimediaAddin/
+    |   `-- 1.1.4.10/                  # Dolby support and native runtimes
+    |-- SmartColorAddin/
+    |   `-- 1.1.4.22/                  # color add-in and x64 helpers
+    |-- SmartInteractAddin/
+    |   `-- 1.0.8.209/                 # interaction add-in, data, x64 helpers
+    `-- SmartNoiseCancelledAddin/
+        `-- 1.3.1.77/                  # audio add-in, resources, x64 helpers
+```
+
+`VantageAddins` and `LenovoPcManager` contain proprietary vendor components.
+They are deliberately kept outside the repository, are not covered by the
+Toolkit license, and must not be redistributed without permission from their
+respective rightsholders. Each component's accompanying license and notice
+files take precedence. PawnIO is installed separately and therefore does not
+appear in this directory.
+
+## Data and privacy
+
+Opening warranty information sends the device serial number to Lenovo's warranty
+services. Results are cached in
+`%USERPROFILE%\.thinkbook_toolkit\warranty_cache.csharp.json`. The cache stores a
+SHA-256 digest of the serial number and warranty dates, not the plain serial
+number.
+
+## Acknowledgements
+
+- [Lenovo Legion Toolkit (LLT)](https://github.com/LenovoLegionToolkit-Team/LenovoLegionToolkit)
+  is a reference for the structure and interaction design of a focused Lenovo
+  device utility.
+- [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
+  provides hardware sensor access.
+- [PawnIO](https://github.com/namazso/PawnIO) provides the system-level access
+  used by LibreHardwareMonitor for CPU temperature telemetry on the tested
+  device.
+- Some capabilities interoperate with components from
+  [Lenovo Vantage](https://apps.microsoft.com/detail/9wzdncrfj4mv) and
+  [Lenovo PC Manager](https://guanjia.lenovo.com.cn/).
+
+Lenovo, ThinkBook, Vantage, and related names are trademarks of their respective
+owners.
+
+## License
+
+Unless a file states otherwise, the original source code in this repository is
+licensed under the [Mozilla Public License 2.0](LICENSE). Third-party components
+retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The MPL-2.0 license does not grant any rights to Lenovo software, trademarks, or
+other proprietary components used alongside Toolkit.

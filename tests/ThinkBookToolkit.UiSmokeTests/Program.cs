@@ -1,0 +1,913 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Linq;
+using System.Reflection;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using ThinkBookToolkit;
+using ThinkBookToolkit.FanBackend;
+
+namespace ThinkBookToolkit.UiSmokeTests;
+
+internal static class Program
+{
+    [STAThread]
+    private static int Main()
+    {
+        var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        try
+        {
+            RunSmokeTests();
+            Console.WriteLine("UI smoke tests passed.");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex);
+            return 1;
+        }
+        finally
+        {
+            application.Shutdown();
+        }
+    }
+
+    private static void RunSmokeTests()
+    {
+        Assert(UiTypography.FontFamilyNameFor("zh-CN") == "Microsoft YaHei UI",
+            "Chinese UI font must use the Windows Simplified Chinese UI family.");
+        Assert(UiTypography.FontFamilyNameFor("en-US") == "Segoe UI Variable Text",
+            "English UI font must use the Windows 11 text family.");
+
+        var settings = new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark",
+            IntervalSeconds = 2,
+            CloseToTray = false
+        };
+        using var runtime = new ToolkitRuntimeService(settings);
+        ModernTheme.Apply(Application.Current, runtime.IsDark);
+        var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false);
+        runtime.SetReportForTesting(CreateReport(_ => true));
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            ItsMode = ItsMode.Intelligent,
+            GpuMode = GpuWorkingMode.HybridAuto,
+            SupportedGpuModes =
+            [
+                GpuWorkingMode.Hybrid,
+                GpuWorkingMode.HybridAuto,
+                GpuWorkingMode.Discrete
+            ],
+            FanStrategy = ControlStrategy.FanCurve,
+            FanControlRunning = true,
+            FanTarget = new FanTargets(2600, 2700),
+            Fans = new FanSnapshot(
+                DateTimeOffset.Now,
+                2400,
+                2200,
+                new Dictionary<string, FanLimit>()),
+            Battery = new BatteryInformationSnapshot(
+                32.8,
+                0,
+                -22,
+                65,
+                69.1,
+                86.9,
+                85.8,
+                101.234,
+                null,
+                32,
+                new DateTime(2025, 1, 1),
+                new DateTime(2025, 1, 8),
+                true)
+        });
+
+        Assert(window.FontFamily.Source == "Microsoft YaHei UI",
+            "Toolkit main window did not apply the selected Chinese font.");
+        Assert(Descendants(window).OfType<Image>().Any(image =>
+                   image.Source?.ToString()?.Contains(
+                       "app-icon-tb.png",
+                       StringComparison.OrdinalIgnoreCase) == true) &&
+               !Descendants(window).OfType<TextBlock>().Any(block => block.Text == "TB"),
+            "The sidebar brand does not use the application icon.");
+        Assert(window.MainScrollViewer.VerticalScrollBarVisibility == ScrollBarVisibility.Auto &&
+               window.MainScrollViewer.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled,
+            "The main content area must own the only page scrollbar.");
+        Assert(!window.ToastVisibleForTesting,
+            "The transient notification is visible before an operation reports a result.");
+        runtime.SetStatus("已复制到剪贴板");
+        Assert(window.ToastVisibleForTesting &&
+               window.ToastTextForTesting == "已复制到剪贴板",
+            "Operation results are not shown as transient notifications.");
+        var pages = new Dictionary<string, Type>(StringComparer.Ordinal)
+        {
+            ["overview"] = typeof(ToolkitOverviewPage),
+            ["performance"] = typeof(ToolkitPerformancePage),
+            ["battery"] = typeof(ToolkitBatteryPage),
+            ["display"] = typeof(ToolkitDisplayPage),
+            ["sound"] = typeof(ToolkitSoundPage),
+            ["input"] = typeof(ToolkitInputPage),
+            ["device"] = typeof(ToolkitDevicePage),
+            ["advanced"] = typeof(ToolkitAdvancedPage),
+            ["settings"] = typeof(ToolkitSettingsPage)
+        };
+        foreach (var expected in pages)
+        {
+            window.NavigateForTesting(expected.Key);
+            var page = window.CurrentPage ?? throw new InvalidOperationException($"Page {expected.Key} was not created.");
+            Assert(page.GetType() == expected.Value,
+                $"Page {expected.Key} used {page.GetType().Name} instead of {expected.Value.Name}.");
+            Assert(page is UserControl,
+                $"Page {expected.Key} is not a UserControl.");
+            Assert(page.DataContext is INotifyPropertyChanged,
+                $"Page {expected.Key} has no ViewModel implementing INotifyPropertyChanged.");
+            Assert(!Descendants(page).OfType<ScrollViewer>().Any(),
+                $"Page {expected.Key} contains an inner ScrollViewer.");
+            page.Measure(new Size(900, double.PositiveInfinity));
+            Assert(page.DesiredSize.Width <= 901,
+                $"Page {expected.Key} forces horizontal overflow ({page.DesiredSize.Width:0.0}px). ");
+            page.Measure(new Size(620, double.PositiveInfinity));
+            Assert(page.DesiredSize.Width <= 621,
+                $"Page {expected.Key} forces narrow-window overflow ({page.DesiredSize.Width:0.0}px). ");
+        }
+
+        window.NavigateForTesting("overview");
+        Assert(ContainsText(window.CurrentPage!, "性能模式") &&
+               ContainsText(window.CurrentPage!, "GPU 模式"),
+            "Overview is missing current operating modes.");
+        var overviewSelectors = Descendants(window.CurrentPage!)
+            .OfType<ComboBox>()
+            .ToArray();
+        Assert(overviewSelectors.Any(combo =>
+                   combo.Items.OfType<ComboBoxItem>()
+                       .Any(item => item.Tag is ItsMode)) &&
+               overviewSelectors.Any(combo =>
+                   combo.Items.OfType<ComboBoxItem>()
+                       .Any(item => item.Tag is GpuWorkingMode)) &&
+               overviewSelectors.Any(combo =>
+                   combo.Items.OfType<ComboBoxItem>()
+                       .Any(item => item.Tag is FanControlMode)),
+            "Overview does not expose direct performance/GPU/fan-strategy selectors.");
+        var overviewText = Descendants(window.CurrentPage!)
+            .OfType<TextBlock>()
+            .Select(block => block.Text)
+            .ToList();
+        Assert(!overviewText.Contains("显存") &&
+               !overviewText.Contains("设备"),
+            "Overview still contains the removed VRAM or device metric card.");
+        var overviewIts = overviewSelectors.First(combo =>
+            combo.Items.OfType<ComboBoxItem>().Any(item => item.Tag is ItsMode));
+        var overviewGpu = overviewSelectors.First(combo =>
+            combo.Items.OfType<ComboBoxItem>().Any(item => item.Tag is GpuWorkingMode));
+        Assert(Labels(overviewIts).SequenceEqual(
+                   ["智能模式", "省电模式", "性能模式", "极客模式"]) &&
+               Labels(overviewGpu).SequenceEqual(
+                   ["混合模式", "混合核显模式", "混合自动模式", "独显直连模式", "核显直连模式"]),
+            "Overview mode selector text or order differs from Fan Control.");
+        Assert(ContainsText(window.CurrentPage!, "风扇控制"),
+            "Overview is missing current fan ownership.");
+        Assert(!ContainsText(window.CurrentPage!, "独立配置") &&
+               !ContainsText(window.CurrentPage!, "可替换风扇后端") &&
+               !ContainsText(window.CurrentPage!, "快速控制"),
+            "Overview still advertises implementation details or quick control.");
+
+        window.NavigateForTesting("performance");
+        var performance = window.CurrentPage!;
+        Assert(ContainsText(performance, "性能与 GPU 模式"),
+            "Performance and GPU modes are not an independent region.");
+        Assert(!ContainsText(performance, "当前控制归属") &&
+               Descendants(performance).OfType<ComboBoxItem>()
+                   .Any(item => item.Content?.ToString() == "固件自动"),
+            "Fan ownership was not replaced by the unified firmware-automatic strategy.");
+        Assert(ContainsText(performance, "双风扇"),
+            "Live fan readings were not combined.");
+        var targetValue = performance.DataContext?.GetType()
+            .GetProperty("Target")
+            ?.GetValue(performance.DataContext)
+            ?.ToString();
+        Assert(ContainsText(performance, "转速目标") &&
+               targetValue == "2600 / 2700 RPM",
+            "Live status does not expose the actual fan target.");
+        var telemetry = Descendants(performance)
+            .OfType<AdaptiveUniformPanel>()
+            .FirstOrDefault(panel => panel.Children.Count == 5);
+        Assert(telemetry is not null,
+            "Live status does not contain five compact metrics.");
+        telemetry!.Measure(new Size(1000, double.PositiveInfinity));
+        Assert(telemetry.DesiredSize.Height < 260,
+            "Five live metrics do not fit on one row at the target width.");
+        Assert(ContainsText(performance, "风扇拉满") &&
+                ContainsText(performance, "最高转速运行") &&
+                !ContainsText(performance, "SetFullSpeed(true)") &&
+                !ContainsText(performance, "SetFullSpeed(false)") &&
+                !ContainsText(performance, "紧急散热"),
+            "Full fan speed still exposes backend implementation details.");
+        Assert(ContainsText(performance, "当前固定转速状态") &&
+                ContainsText(performance, "写入 0 会将对应风扇交还固件控制"),
+            "Fixed-RPM manual state or backend-specific zero-RPM semantics are missing.");
+        var fixedPanel = GetPrivateField<StackPanel>(
+            performance,
+            "_fixedPanel");
+        var curvePanel = GetPrivateField<StackPanel>(
+            performance,
+            "_curvePanel");
+        Assert(fixedPanel.Visibility == Visibility.Collapsed &&
+               curvePanel.Visibility == Visibility.Visible,
+            "Curve strategy did not hide fixed-only options.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            FanStrategy = ControlStrategy.FixedRpm,
+            FanControlRunning = true
+        });
+        Assert(fixedPanel.Visibility == Visibility.Visible &&
+               curvePanel.Visibility == Visibility.Collapsed,
+            "Fixed strategy did not restore fixed-only options.");
+        var fixedTable = Descendants(fixedPanel)
+            .OfType<Grid>()
+            .FirstOrDefault(grid =>
+                grid.RowDefinitions.Count == 5 &&
+                grid.ColumnDefinitions.Count == 5);
+        Assert(fixedTable is not null,
+            "Fixed RPM values are not presented as one four-row table.");
+        Assert(MainWindow.RuntimeIsValidHotkey("Ctrl+Alt+F") &&
+               MainWindow.RuntimeIsValidHotkey(string.Empty) &&
+               !MainWindow.RuntimeIsValidHotkey("Ctrl+NotAKey"),
+            "Fixed-mode hotkey validation is incomplete.");
+        var draftStatus = GetPrivateField<TextBlock>(performance, "_draftStatus");
+        Assert(string.IsNullOrWhiteSpace(draftStatus.Text) &&
+               draftStatus.Visibility == Visibility.Collapsed,
+            "The clean fan draft still shows a log-like status.");
+        Assert(!ContainsText(performance, "开机自启") &&
+               !ContainsText(performance, "启动到托盘"),
+            "Global preferences still appear on the performance page.");
+        Assert(!Descendants(performance).OfType<ScrollViewer>().Any(),
+            "Performance page contains a nested scrollbar.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with { PendingGpuMode = GpuWorkingMode.Discrete.ToString() });
+        Assert(ContainsText(performance, "等待重启") &&
+               ContainsButtonText(performance, "立即重启"),
+            "Pending GPU changes have no inline restart state or action.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with { PendingGpuMode = string.Empty });
+        Assert(ContainsText(performance, "CPU PL1") &&
+               ContainsText(performance, "GPU Power Boost"),
+            "Power settings do not show the current eight-value summary.");
+        Assert(Descendants(performance).OfType<Slider>().Any(),
+            "Fully available power settings have no editor sliders.");
+        Assert(GetPrivateField<StackPanel>(
+                   performance,
+                   "_powerEditorPanel").Visibility == Visibility.Collapsed,
+            "Power editor is not collapsed by default.");
+        var confirmedPower = new PowerSettingsState(130, 185, 100, 56, 15, 100, 85, 10);
+        performance.GetType()
+            .GetMethod("ApplyPowerState", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.Invoke(performance, [confirmedPower, true]);
+        GetPrivateField<Button>(performance, "_togglePowerEditor")
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        var powerEditorHost = GetPrivateField<Border>(performance, "_powerEditorHost");
+        Assert(GetPrivateField<StackPanel>(
+                   performance,
+                   "_powerEditorPanel").Visibility == Visibility.Visible &&
+               ContainsText(powerEditorHost, "参数调整") &&
+               Descendants(powerEditorHost).OfType<TextBox>()
+                   .Select(box => box.Text)
+                   .Contains("130") &&
+               Descendants(powerEditorHost).OfType<TextBox>()
+                   .Select(box => box.Text)
+                   .Contains("185"),
+            "Expanding power settings did not seed the editor from current values.");
+        Assert(Labels(GetPrivateField<ComboBox>(performance, "_smoothing"))
+                   .SequenceEqual(["1", "2", "3", "5", "10"]) &&
+               Labels(GetPrivateField<ComboBox>(performance, "_rampDown"))
+                   .SequenceEqual(["10", "20", "50", "100", "inf"]) &&
+               Labels(GetPrivateField<ComboBox>(performance, "_gameHold"))
+                   .SequenceEqual(["0", "10", "20", "30", "60"]),
+            "Fan timing selector text or order differs from Fan Control.");
+
+        window.NavigateForTesting("battery");
+        Assert(ContainsText(window.CurrentPage!, "充电模式"),
+            "Battery settings are not inline.");
+        foreach (var label in new[]
+                 {
+                     "最小功率", "最大功率", "满充容量", "设计容量",
+                     "本次电池使用", "生产日期", "首次使用日期"
+                 })
+        {
+            Assert(ContainsText(window.CurrentPage!, label),
+                $"Battery details are missing {label}.");
+        }
+        var batteryHealth = window.CurrentPage!.DataContext?.GetType()
+            .GetProperty("Health")
+            ?.GetValue(window.CurrentPage.DataContext)
+            ?.ToString();
+        Assert(batteryHealth == "101.23%",
+            "Battery health does not retain two decimal places.");
+        var batteryCombos = Descendants(window.CurrentPage!).OfType<ComboBox>().ToArray();
+        Assert(batteryCombos.Any(combo => Labels(combo).SequenceEqual(["养护", "普通", "快充"])) &&
+               batteryCombos.Any(combo => Labels(combo).SequenceEqual(["关闭", "仅睡眠时开启", "保持开启"])),
+            "Battery selector text or order differs from Fan Control.");
+        VerifySwitchAndCombo(window.CurrentPage!);
+
+        window.NavigateForTesting("display");
+        Assert(ContainsText(window.CurrentPage!, "Vantage 护眼") &&
+               ContainsText(window.CurrentPage!, "可能只有在核显模式下可用") &&
+               ContainsText(window.CurrentPage!, "色彩管理"),
+            "Display controls are not inline native cards or lack the compatibility note.");
+        Assert(Descendants(window.CurrentPage!).OfType<ComboBoxItem>()
+                   .Any(item => item.Content?.ToString() == "生动") &&
+               Descendants(window.CurrentPage!).OfType<ComboBoxItem>()
+                   .Any(item => item.Content?.ToString() == "泛黄") &&
+               Descendants(window.CurrentPage!).OfType<ComboBoxItem>()
+                   .Any(item => item.Content?.ToString() == "Native") &&
+               !Descendants(window.CurrentPage!).OfType<ComboBoxItem>()
+                   .Any(item => item.Content?.ToString() == "原生"),
+            "Display color labels do not match the original software.");
+        var gamutCombo = Descendants(window.CurrentPage!).OfType<ComboBox>()
+            .First(combo => combo.Items.OfType<ComboBoxItem>()
+                .Any(item => item.Tag is ColorManagementMode));
+        Assert(gamutCombo.Items.OfType<ComboBoxItem>().First().Tag is ColorManagementMode.Default,
+            "Default is not the first display gamut option.");
+        Assert(Labels(gamutCombo).Take(10).SequenceEqual(
+                   ["默认", "Adobe RGB", "sRGB", "Display P3", "Native", "REC709", "DCI P3", "自动", "DICOM Dim", "DICOM Office"]),
+            "Display gamut text or order differs from Fan Control.");
+        var temperatureCombo = Descendants(window.CurrentPage!).OfType<ComboBox>()
+            .First(combo => combo.Items.OfType<ComboBoxItem>()
+                .Any(item => Equals(item.Tag, 2700)));
+        Assert(Labels(temperatureCombo).First() == "2700 K" &&
+               Labels(temperatureCombo).Last() == "6500 K" &&
+               Labels(temperatureCombo).Count == 39,
+            "Custom color-temperature choices differ from Fan Control.");
+
+        window.NavigateForTesting("sound");
+        Assert(ContainsText(window.CurrentPage!, "Dolby Atmos") &&
+               ContainsText(window.CurrentPage!, "麦克风降噪"),
+            "Sound controls are not inline native cards.");
+        Assert(ContainsText(window.CurrentPage!, "扬声器降噪") &&
+               !ContainsText(window.CurrentPage!, "消除通话对端"),
+            "Speaker noise cancellation still uses the old wording.");
+        var soundCombos = Descendants(window.CurrentPage!).OfType<ComboBox>().ToArray();
+        Assert(soundCombos.Any(combo => Labels(combo).SequenceEqual(
+                   ["动态", "电影", "音乐", "游戏", "语音", "自定义"])) &&
+               soundCombos.Any(combo => Labels(combo).SequenceEqual(
+                   ["正常", "声音识别", "仅我的声音", "多人声音", "关"])),
+            "Sound selector text or order differs from Fan Control.");
+
+        window.NavigateForTesting("input");
+        Assert(ContainsText(window.CurrentPage!, "键盘背光亮度") &&
+               ContainsText(window.CurrentPage!, "触摸板"),
+            "Input settings are incomplete.");
+        Assert(Descendants(window.CurrentPage!).OfType<ComboBox>()
+                .Any(combo => Labels(combo).SequenceEqual(["自动", "低", "高", "关闭"])),
+            "Keyboard-backlight selector text or order differs from Fan Control.");
+
+        window.NavigateForTesting("device");
+        Assert(ContainsText(window.CurrentPage!, "正在读取设备信息"),
+            "Device page has no inline loading state.");
+        Assert(!Descendants(window.CurrentPage!).OfType<ScrollViewer>().Any(),
+            "Device page has a second scrollbar.");
+        var eyeIconMethod = typeof(ToolkitDevicePage).GetMethod(
+            "EyeIcon",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(
+                nameof(ToolkitDevicePage),
+                "EyeIcon");
+        var openEye = (Grid)eyeIconMethod.Invoke(
+            window.CurrentPage!,
+            [false])!;
+        var slashedEye = (Grid)eyeIconMethod.Invoke(
+            window.CurrentPage!,
+            [true])!;
+        Assert(openEye.Children.Count == 1 &&
+               !openEye.Children.OfType<System.Windows.Shapes.Line>().Any() &&
+               slashedEye.Children.OfType<System.Windows.Shapes.Line>().Count() == 1,
+            "Serial-number show/hide states do not use eye and slashed-eye icons.");
+
+        window.NavigateForTesting("advanced");
+        Assert(ContainsButtonText(window.CurrentPage!, "开机画面"),
+            "Advanced tools are missing the boot-logo button.");
+        Assert(!Descendants(window.CurrentPage!).OfType<CheckBox>().Any(checkBox =>
+                checkBox.Content?.ToString()?.Contains("Windows", StringComparison.Ordinal) == true),
+            "The boot-logo editor is still embedded in the advanced page.");
+        var logoWindow = new BootLogoCustomizationWindow(
+            owner: null,
+            key => MainWindow.Translate(key, true),
+            isDark: true,
+            window.FontFamily,
+            window.FontSize);
+        var preview = (Grid)(typeof(BootLogoCustomizationWindow)
+            .GetField("_preview", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(logoWindow)
+            ?? throw new MissingFieldException("Boot logo preview was not found."));
+        Assert(Math.Abs(preview.Width / preview.Height - 1.6) < .001,
+            "Boot-logo preview does not use a 16:10 ratio.");
+        Assert(ContainsText(logoWindow, "预览的画面与实际开机画面不一定相同") &&
+               logoWindow.ResizeMode == ResizeMode.CanResize &&
+               logoWindow.Height <= SystemParameters.WorkArea.Height,
+            "Boot-logo dialog is not responsive or is missing its preview disclaimer.");
+        logoWindow.Close();
+
+        window.NavigateForTesting("settings");
+        var settingsPage = window.CurrentPage!;
+        Assert(ContainsText(settingsPage, "全局设置") &&
+               ContainsText(settingsPage, "完整功能监测结果"),
+            "Settings is missing global preferences or inline availability.");
+        Assert(!ContainsText(settingsPage, "重新启动"),
+            "Settings copy still describes appearance changes in terms of restarting.");
+        foreach (var text in new[]
+                 {
+                     "界面语言", "主题", "状态刷新间隔", "开机自启", "启动到托盘",
+                     "最小化到托盘", "关闭时最小化", "睡眠时关闭风扇控制",
+                     "风扇读写最小间隔"
+                 })
+        {
+            Assert(ContainsText(settingsPage, text), $"Settings is missing {text}.");
+        }
+        Assert(string.IsNullOrWhiteSpace(
+                   GetPrivateField<TextBox>(
+                       settingsPage,
+                       "_fanReadMinimumInterval").Text) &&
+                string.IsNullOrWhiteSpace(
+                    GetPrivateField<TextBox>(
+                        settingsPage,
+                        "_fanWriteMinimumInterval").Text) &&
+                ContainsText(settingsPage, "过短的间隔可能造成卡顿") &&
+                ContainsText(settingsPage, "默认间隔"),
+            "Fan I/O interval overrides are not blank by default or their defaults are not explained.");
+        Assert(Descendants(settingsPage).OfType<ComboBox>()
+                .SelectMany(combo => combo.Items.OfType<ComboBoxItem>())
+                .Any(item => item.Content?.ToString() == "跟随系统"),
+            "System theme option is missing.");
+        Assert(ContainsText(settingsPage, "可用/总共：") &&
+               Descendants(settingsPage).OfType<StackPanel>()
+                   .Any(panel => panel.Visibility == Visibility.Collapsed &&
+                                 Descendants(panel).OfType<Border>().Any()),
+            "Availability summary is not compact or its details are not collapsed by default.");
+        var availabilityToggle = Descendants(settingsPage).OfType<Button>()
+            .First(button => button.Content?.ToString() == "展开检测详情");
+        Assert(LogicalTreeHelper.GetParent(availabilityToggle) is Grid,
+            "Availability expand action is not placed in the card header row.");
+        var availabilityBadges = Descendants(settingsPage)
+            .OfType<Border>()
+            .Where(border => border.Child is TextBlock block &&
+                             block.Text is "可用" or "不可用" or "部分可用")
+            .ToArray();
+        Assert(availabilityBadges.Length > 0 &&
+               availabilityBadges.All(border =>
+                   border.VerticalAlignment == VerticalAlignment.Center &&
+                   border.Child is TextBlock
+                   {
+                       TextAlignment: TextAlignment.Center,
+                       HorizontalAlignment: HorizontalAlignment.Center,
+                       VerticalAlignment: VerticalAlignment.Center
+                   }),
+            "Availability badges are not centered in their rows.");
+        Assert(!ContainsText(settingsPage, "运行环境") &&
+               !ContainsText(settingsPage, "配置目录") &&
+               !ContainsButtonText(settingsPage, "查看所有功能"),
+            "Removed runtime/configuration/popup content is still present.");
+        var centeredRows = Descendants(settingsPage).OfType<Grid>()
+            .Where(grid => Math.Abs(grid.MinHeight - 62) < .01)
+            .ToArray();
+        Assert(centeredRows.Length > 0 &&
+               centeredRows.All(grid =>
+                   grid.RowDefinitions.Count >= 1 &&
+                   grid.RowDefinitions[0].Height.IsStar),
+            "Setting-row content is not vertically centered.");
+
+        var overviewButton = Descendants(window).OfType<Button>()
+            .First(button => Equals(button.Tag, "overview"));
+        var performanceButton = Descendants(window).OfType<Button>()
+            .First(button => Equals(button.Tag, "performance"));
+        var overviewWeight = overviewButton.FontWeight;
+        var performanceWeight = performanceButton.FontWeight;
+        window.NavigateForTesting("overview");
+        window.NavigateForTesting("performance");
+        Assert(overviewButton.FontWeight == overviewWeight &&
+               performanceButton.FontWeight == performanceWeight,
+            "Navigation selection changes text metrics and causes vertical movement.");
+        Assert(overviewButton.FocusVisualStyle is null &&
+               performanceButton.FocusVisualStyle is null &&
+               Descendants(window).OfType<ComboBox>()
+                   .All(combo => combo.FocusVisualStyle is null),
+            "Controls still expose the dotted default focus visual after Alt.");
+        window.NavigateForTesting("overview");
+        Assert(!ContainsText(window, "可用/总共"),
+            "Feature counts are visible outside Settings.");
+        var trayFanSnapshot = runtime.Snapshot with
+        {
+            FanControlRunning = true,
+            FullSpeed = false,
+            FanStrategy = ControlStrategy.FanCurve
+        };
+        Assert(ToolkitRuntimeService.ResolveTrayFanMode(trayFanSnapshot) ==
+                   FanControlMode.FanCurve &&
+               ToolkitRuntimeService.ResolveTrayFanMode(
+                   trayFanSnapshot with
+                   {
+                       FanControlRunning = false,
+                       FullSpeed = false
+                   }) == FanControlMode.FirmwareAutomatic &&
+               ToolkitRuntimeService.ResolveTrayFanMode(
+                   trayFanSnapshot with
+                   {
+                       FanControlRunning = false,
+                       FullSpeed = true,
+                       FanStrategy = ControlStrategy.FixedRpm
+                   }) == FanControlMode.FixedRpm,
+            "Tray fan-strategy check state does not follow the active fan mode.");
+
+        runtime.SetReportForTesting(CreateReport(id =>
+            id is FeatureIds.PerformanceMode or FeatureIds.GpuMode));
+        window.NavigateForTesting("performance");
+        var independentPerformance = window.CurrentPage!;
+        Assert(ContainsText(independentPerformance, "性能与 GPU 模式"),
+            "Performance/GPU controls disappeared when fan control is unavailable.");
+        Assert(!ContainsText(independentPerformance, "控制策略") &&
+               !ContainsText(independentPerformance, "CPU PL1"),
+            "Unavailable fan/power controls were not hidden independently.");
+
+        runtime.SetReportForTesting(CreateReport(id => id == FeatureIds.WarrantyInformation));
+        window.NavigateForTesting("device");
+        var warrantyOnly = (ToolkitDevicePage)window.CurrentPage!;
+        warrantyOnly.RenderForTesting();
+        Assert(ContainsText(warrantyOnly, "保修信息"),
+            "Warranty does not render independently in the native Toolkit style.");
+
+        using var partialRuntime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "light"
+        });
+        var partialReport = new FeatureAvailabilityReport([
+            new FeatureAvailability(
+                FeatureIds.PowerSettings,
+                "性能与散热",
+                "功耗设置",
+                false,
+                "8 项功耗参数可读取；写入仅支持 ThinkBook 16p G6 IAX",
+                PartiallyAvailable: true)
+        ]);
+        partialRuntime.SetReportForTesting(partialReport);
+        using var partialPowerPage = new ToolkitPerformancePage(partialRuntime);
+        Assert(partialReport.IsAvailable(FeatureIds.PowerSettings) &&
+               !partialReport.IsFullyAvailable(FeatureIds.PowerSettings) &&
+               partialReport.IsPartiallyAvailable(FeatureIds.PowerSettings),
+            "Partially available power capability is not modeled correctly.");
+        Assert(ContainsText(partialPowerPage, "CPU PL1") &&
+               ContainsText(partialPowerPage, "仅 ThinkBook 16p G6 IAX 可以修改") &&
+               !Descendants(partialPowerPage).OfType<Slider>().Any(),
+            "Read-only power values or partial-availability write guard are incorrect.");
+        using var partialSettingsPage = new ToolkitSettingsPage(partialRuntime);
+        Assert(ContainsText(partialSettingsPage, "可用/总共：1/1") &&
+               ContainsText(partialSettingsPage, "部分可用"),
+            "Partial power capability is not represented in feature monitoring.");
+
+        window.UpdateResponsiveForTesting(900);
+        Assert(window.SidebarCollapsed,
+            "Sidebar did not collapse for a narrow window.");
+        window.UpdateResponsiveForTesting(1300);
+        Assert(!window.SidebarCollapsed,
+            "Sidebar remained collapsed for a wide window.");
+
+        using var startupRuntime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "light",
+            CloseToTray = false
+        });
+        var startupWindow = new ToolkitMainWindow(
+            startupRuntime,
+            enableHardwareDetection: true);
+        Assert(startupWindow.CurrentPage is ToolkitOverviewPage &&
+               Descendants(startupWindow).OfType<Button>()
+                   .Where(button => button.Tag is string)
+                   .Select(button => button.Tag?.ToString())
+                   .All(id => id is "overview" or "settings"),
+            "Startup does not render Overview first or creates hardware pages before detection.");
+        startupWindow.Close();
+
+        using var englishRuntime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "en-US",
+            Theme = "light"
+        });
+        englishRuntime.SetReportForTesting(new FeatureAvailabilityReport([
+            new FeatureAvailability(
+                FeatureIds.FanControl,
+                "性能与散热",
+                "风扇监控与控制",
+                true,
+                "不应显示的内部实现信息",
+                EnglishDetail:
+                    "Private backend implementation detail"),
+            new FeatureAvailability(
+                FeatureIds.PowerSettings,
+                "性能与散热",
+                "功耗设置",
+                false,
+                "仅支持 ThinkBook 16p G6 IAX")
+        ]));
+        using var englishSettings = new ToolkitSettingsPage(englishRuntime);
+        Assert(ContainsText(englishSettings, "Complete feature availability") &&
+               ContainsText(englishSettings, "Power values cannot be viewed or changed") &&
+               !ContainsText(englishSettings, "Private backend implementation detail") &&
+               !ContainsText(englishSettings, "不应显示的内部实现信息") &&
+               !ContainsText(englishSettings, "仅支持"),
+            "Availability results expose implementation details or untranslated detection text.");
+
+        var curve = new CurveEditor(
+            "test",
+            [30, 40, 50],
+            [1500, 3000, 5500],
+            [1500, 3000, 5500]);
+        curve.SetRpmRanges(1600, 5200, 1800, 5000);
+        Assert(!curve.Focusable &&
+               curve.Fan1Values.SequenceEqual([1600, 3000, 5200]) &&
+               curve.Fan2Values.SequenceEqual([1800, 3000, 5000]),
+            "Curve editor focus suppression or per-fan range clamping is incorrect.");
+        var curveHost = new Border { Child = curve };
+        var bringIntoViewBubbled = false;
+        curveHost.AddHandler(
+            FrameworkElement.RequestBringIntoViewEvent,
+            new RequestBringIntoViewEventHandler(
+                (_, _) => bringIntoViewBubbled = true));
+        curve.BringIntoView();
+        Assert(!bringIntoViewBubbled,
+            "Curve editor can still request ancestor scrolling while dragging.");
+
+        var detectedMethod = typeof(MainWindow).GetMethod(
+            "TryReadDetectedFanLimits",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException("WMI fan-limit resolver was not found.");
+        object?[] detectedArguments =
+        [
+            new Dictionary<string, FanLimit>
+            {
+                ["fan1"] = new("Fan 1", 1, 0, 5600),
+                ["fan2"] = new("Fan 2", 2, 1600, 5400)
+            },
+            null
+        ];
+        Assert((bool)detectedMethod.Invoke(null, detectedArguments)! &&
+               detectedArguments[1] is FanRpmLimits
+               {
+                   Fan1MinimumRpm: 0,
+                   Fan1MaximumRpm: 5600,
+                   Fan2MinimumRpm: 1600,
+                   Fan2MaximumRpm: 5400
+               },
+            "Default fan limits are not resolved from per-fan WMI values.");
+        object?[] fallbackArguments =
+        [
+            new Dictionary<string, FanLimit>(),
+            null
+        ];
+        Assert(!(bool)detectedMethod.Invoke(null, fallbackArguments)! &&
+               fallbackArguments[1] is FanRpmLimits
+               {
+                   Fan1MinimumRpm: 1500,
+                   Fan1MaximumRpm: 5500,
+                   Fan2MinimumRpm: 1500,
+                   Fan2MaximumRpm: 5500
+               },
+            "Invalid WMI fan limits do not fall back to 1500–5500 RPM.");
+        var defaultLimits = new AppSettings();
+        Assert(!defaultLimits.FanRpmLimitsCustomized &&
+               defaultLimits.FanRpmLimits.Fan1MinimumRpm == 1500 &&
+               defaultLimits.FanRpmLimits.Fan1MaximumRpm == 5500,
+            "Fan-limit fallback defaults are not 1500–5500 RPM.");
+        var limitsWindow = new FanRpmLimitsWindow(
+            owner: null,
+            defaultLimits.FanRpmLimits,
+            new FanBackendControlSemantics(
+                FanTargetZeroBehavior.StopFanWhileKeepingManualControl,
+                FanAutomaticControlRestoreMechanism.DedicatedBackendOperation,
+                "Dedicated restore operation",
+                new(
+                    FanFullSpeedControlMechanism.DedicatedBackendOperation,
+                    "Dedicated full-speed enable operation",
+                    "Dedicated full-speed disable operation")),
+            isChinese: true,
+            isDark: false,
+            window.FontFamily,
+            window.FontSize);
+        Assert(ContainsText(limitsWindow, "警告：") &&
+               ContainsText(limitsWindow, "概不负责") &&
+               ContainsText(limitsWindow, "关闭对应风扇") &&
+               ContainsText(limitsWindow, "固件自动") &&
+               !ContainsText(limitsWindow, "Dedicated restore operation") &&
+               Descendants(limitsWindow).OfType<TextBox>()
+                   .Select(box => box.Text)
+                   .SequenceEqual(["1500", "5500", "1500", "5500"]),
+            "Fan-limit dialog is missing defaults or the required warning.");
+        var tryReadRpm = typeof(FanRpmLimitsWindow).GetMethod(
+            "TryRead",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException("Fan-limit input validator was not found.");
+        object?[] zeroRpmArguments = [new TextBox { Text = "0" }, null];
+        Assert(CurveProfileStore.AbsoluteMinimumFanRpm == 0 &&
+               (bool)tryReadRpm.Invoke(null, zeroRpmArguments)! &&
+               zeroRpmArguments[1] is 0,
+            "Fan-limit lower-bound input does not accept 0 RPM.");
+        Assert(typeof(IFanBackend).GetProperty(nameof(IFanBackend.ControlSemantics)) is not null,
+            "Fan backends do not declare zero-RPM and automatic-restore semantics.");
+        Assert(typeof(IFanBackend).GetProperty(nameof(IFanBackend.MinimumReadInterval)) is not null &&
+               typeof(IFanBackend).GetProperty(nameof(IFanBackend.MinimumWriteInterval)) is not null,
+            "Fan backends do not declare minimum read/write intervals.");
+        Assert(typeof(FanBackendControlSemantics).GetProperty(
+                   nameof(FanBackendControlSemantics.FullSpeed)) is not null,
+            "Fan backends do not declare full-speed enable/disable semantics.");
+        var wmiBackend =
+            new ThinkBookToolkit.FanBackend.Wmi.WmiFanBackend();
+        Assert(wmiBackend.MinimumReadInterval == TimeSpan.FromSeconds(0.5) &&
+               wmiBackend.MinimumWriteInterval == TimeSpan.FromSeconds(6),
+            "WMI backend read/write interval defaults are incorrect.");
+        Assert(MainWindow.ResolveFanIoMinimumInterval(
+                   null,
+                   TimeSpan.FromSeconds(6)) == TimeSpan.FromSeconds(6) &&
+               MainWindow.ResolveFanIoMinimumInterval(
+                   1,
+                   TimeSpan.FromSeconds(6)) == TimeSpan.FromSeconds(1) &&
+               MainWindow.ResolveFanIoMinimumInterval(
+                   0.5,
+                   TimeSpan.FromSeconds(6)) == TimeSpan.FromSeconds(6),
+            "Fan I/O interval overrides do not preserve backend defaults and positive-integer overrides.");
+        Assert(CurveProfileStore.IsValidFanIoIntervalOverride(null) &&
+               CurveProfileStore.IsValidFanIoIntervalOverride(1) &&
+               CurveProfileStore.IsValidFanIoIntervalOverride(60) &&
+               !CurveProfileStore.IsValidFanIoIntervalOverride(0) &&
+               !CurveProfileStore.IsValidFanIoIntervalOverride(0.5) &&
+               !CurveProfileStore.IsValidFanIoIntervalOverride(1.5) &&
+               !CurveProfileStore.IsValidFanIoIntervalOverride(-1),
+            "Fan I/O interval validation is incorrect.");
+        Assert(MainWindow.CanAttemptDisableControlOnSleep(
+                   true,
+                   TimeSpan.FromSeconds(0.5),
+                   TimeSpan.FromSeconds(6)) &&
+               MainWindow.CanAttemptDisableControlOnSleep(
+                   false,
+                   TimeSpan.FromSeconds(0.5),
+                   TimeSpan.FromSeconds(0.5)) &&
+               MainWindow.CanAttemptDisableControlOnSleep(
+                   false,
+                   TimeSpan.FromSeconds(1),
+                   TimeSpan.FromSeconds(1)) &&
+               !MainWindow.CanAttemptDisableControlOnSleep(
+                   false,
+                   TimeSpan.FromSeconds(0.5),
+                   TimeSpan.FromSeconds(6)),
+            "Sleep-release availability does not follow backend support and effective I/O intervals.");
+        Assert(new AppSettings() is
+               {
+                   FanReadMinimumIntervalSeconds: null,
+                   FanWriteMinimumIntervalSeconds: null,
+                   AttemptDisableControlOnSleepWhenUnsupported: false
+               },
+            "Fan I/O interval overrides or unsupported-backend sleep behavior have unsafe defaults.");
+        Assert(MainWindow.SuppressSmallTargetChanges(
+                   new FanTargets(1599, 1600),
+                   new FanTargets(1500, 1500)) ==
+               new FanTargets(1500, 1600),
+            "The 100 RPM threshold is not applied independently to both fans.");
+        try
+        {
+            _ = FanController.CreateBackendInstance(
+                typeof(ThrowingFanBackend));
+            throw new InvalidOperationException(
+                "A throwing backend constructor unexpectedly succeeded.");
+        }
+        catch (NotSupportedException ex)
+            when (ex.Message == ThrowingFanBackend.FailureMessage)
+        {
+        }
+        limitsWindow.Close();
+
+        window.Close();
+    }
+
+    private static void VerifySwitchAndCombo(DependencyObject root)
+    {
+        var checkBox = Descendants(root).OfType<CheckBox>().FirstOrDefault()
+            ?? throw new InvalidOperationException("No boolean switch was rendered.");
+        checkBox.ApplyTemplate();
+        Assert(checkBox.Template.FindName("SwitchTrack", checkBox) is Border track &&
+               track.Width >= 46 && track.Height >= 24 && track.CornerRadius.TopLeft >= 12,
+            "Boolean settings do not use the rounded switch template.");
+
+        var combo = Descendants(root).OfType<ComboBox>().FirstOrDefault()
+            ?? throw new InvalidOperationException("No selector was rendered.");
+        combo.ApplyTemplate();
+        Assert(combo.Template.FindName("ComboChrome", combo) is Border,
+            "Selector does not use Toolkit combo chrome.");
+        var toggle = combo.Template.FindName("DropDownToggle", combo) as ToggleButton;
+        Assert(toggle is not null && double.IsNaN(toggle.Width) &&
+               toggle.HorizontalAlignment == HorizontalAlignment.Stretch,
+            "The full selector surface is not clickable.");
+    }
+
+    private static FeatureAvailabilityReport CreateReport(Func<string, bool> available) =>
+        new(typeof(FeatureIds)
+            .GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Where(field => field.IsLiteral && field.FieldType == typeof(string))
+            .Select(field => (string)field.GetRawConstantValue()!)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .Select(id => new FeatureAvailability(
+                id,
+                Category(id),
+                id,
+                available(id),
+                available(id) ? "smoke test available" : "smoke test unavailable")));
+
+    private static string Category(string id)
+    {
+        if (id.StartsWith("performance.", StringComparison.Ordinal)) return "性能与散热";
+        if (id.StartsWith("battery.", StringComparison.Ordinal)) return "电池与电源";
+        if (id.StartsWith("display.", StringComparison.Ordinal)) return "显示";
+        if (id.StartsWith("sound.", StringComparison.Ordinal)) return "声音";
+        if (id.StartsWith("input.", StringComparison.Ordinal)) return "输入设备";
+        if (id.StartsWith("device.", StringComparison.Ordinal)) return "设备";
+        if (id.StartsWith("advanced.", StringComparison.Ordinal)) return "高级工具";
+        return "监控";
+    }
+
+    private static bool ContainsText(DependencyObject root, string text) =>
+        Descendants(root).Any(item => item switch
+        {
+            TextBlock block => block.Text.Contains(text, StringComparison.Ordinal),
+            ContentControl content => content.Content?.ToString()?.Contains(text, StringComparison.Ordinal) == true,
+            _ => false
+        });
+
+    private static bool ContainsButtonText(DependencyObject root, string text) =>
+        Descendants(root).OfType<Button>().Any(button =>
+            button.Content?.ToString()?.Contains(text, StringComparison.Ordinal) == true);
+
+    private static IReadOnlyList<string> Labels(ComboBox combo) =>
+        combo.Items.OfType<ComboBoxItem>()
+            .Select(item => item.Content?.ToString() ?? string.Empty)
+            .ToArray();
+
+    private static T GetPrivateField<T>(object owner, string name)
+        where T : class =>
+        (T)(owner.GetType()
+                .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.GetValue(owner)
+            ?? throw new MissingFieldException(owner.GetType().Name, name));
+
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    {
+        yield return root;
+        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
+        {
+            foreach (var descendant in Descendants(child))
+                yield return descendant;
+        }
+    }
+
+    private static void Assert(bool condition, string message)
+    {
+        if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private sealed class ThrowingFanBackend : IFanBackend
+    {
+        public const string FailureMessage =
+            "Backend compatibility detail.";
+
+        public ThrowingFanBackend() =>
+            throw new NotSupportedException(FailureMessage);
+
+        public string Name => "Throwing backend";
+
+        public string Transport => "Test";
+
+        public bool SupportsDisableControlOnSleep => false;
+
+        public TimeSpan MinimumReadInterval => TimeSpan.FromSeconds(0.5);
+
+        public TimeSpan MinimumWriteInterval => TimeSpan.FromSeconds(0.5);
+
+        public FanBackendControlSemantics ControlSemantics { get; } = new(
+            FanTargetZeroBehavior.ReleaseFanToFirmwareControl,
+            FanAutomaticControlRestoreMechanism.WriteZeroToBothTargets,
+            "test restore",
+            new(
+                FanFullSpeedControlMechanism.FeatureToggle,
+                "test full speed on",
+                "test full speed off"));
+
+        public FanBackendSnapshot ReadSnapshot() =>
+            throw new NotSupportedException();
+
+        public void Apply(int fan1Rpm, int fan2Rpm) =>
+            throw new NotSupportedException();
+
+        public void RestoreAuto() =>
+            throw new NotSupportedException();
+
+        public void SetFullSpeed(bool enabled) =>
+            throw new NotSupportedException();
+    }
+}
