@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Management;
+using System.Threading;
 
 namespace ThinkBookToolkit;
 
@@ -16,7 +17,8 @@ internal enum GpuWorkingMode
 
 internal sealed record GpuModeState(
     GpuWorkingMode CurrentMode,
-    IReadOnlyList<GpuWorkingMode> SupportedModes);
+    IReadOnlyList<GpuWorkingMode> SupportedModes,
+    bool UsesDirectGraphicsConfiguration);
 
 internal static class GpuModeController
 {
@@ -37,13 +39,17 @@ internal static class GpuModeController
         {
             return new(
                 GpuWorkingMode.IntegratedDirect,
-                capabilities.SupportedModes);
+                capabilities.SupportedModes,
+                true);
         }
         if (graphicsDevice.Equals(
                 DiscreteGraphics,
                 StringComparison.OrdinalIgnoreCase))
         {
-            return new(GpuWorkingMode.Discrete, capabilities.SupportedModes);
+            return new(
+                GpuWorkingMode.Discrete,
+                capabilities.SupportedModes,
+                true);
         }
 
         using var gameZone = LenovoWmi.GetActiveInstance(GameZoneClass);
@@ -61,7 +67,47 @@ internal static class GpuModeController
                 2 => GpuWorkingMode.HybridAuto,
                 _ => GpuWorkingMode.Hybrid
             };
-        return new(current, capabilities.SupportedModes);
+        return new(current, capabilities.SupportedModes, false);
+    }
+
+    public static bool SetModeFromEffectiveState(
+        GpuWorkingMode effectiveMode,
+        bool effectiveUsesDirectGraphicsConfiguration,
+        GpuWorkingMode target)
+    {
+        var targetUsesDirectGraphicsConfiguration =
+            UsesDirectGraphicsConfiguration(target);
+        var requiresRestart = GpuModeRestartState.RequiresRestart(
+            effectiveMode,
+            effectiveUsesDirectGraphicsConfiguration,
+            target,
+            targetUsesDirectGraphicsConfiguration);
+        var configurationWriteRequiresRestart = SetMode(target);
+
+        if (!requiresRestart &&
+            configurationWriteRequiresRestart &&
+            !targetUsesDirectGraphicsConfiguration)
+        {
+            for (var attempt = 0; attempt < 10; attempt++)
+            {
+                Thread.Sleep(100);
+                if (IsDirectGraphicsConfiguration(GetGraphicsDevice()))
+                    continue;
+
+                if (SetMode(target))
+                {
+                    throw new InvalidOperationException(
+                        "The switchable-graphics mode could not be applied.");
+                }
+
+                return false;
+            }
+
+            throw new InvalidOperationException(
+                "The switchable-graphics configuration was not confirmed.");
+        }
+
+        return requiresRestart;
     }
 
     public static bool SetMode(GpuWorkingMode target)
@@ -95,10 +141,7 @@ internal static class GpuModeController
 
         var currentGraphicsDevice = GetGraphicsDevice();
         var leavingDirectMode =
-            IsIntegratedDirectValue(currentGraphicsDevice) ||
-            currentGraphicsDevice.Equals(
-                DiscreteGraphics,
-                StringComparison.OrdinalIgnoreCase);
+            IsDirectGraphicsConfiguration(currentGraphicsDevice);
         if (leavingDirectMode &&
             capabilities.SupportsSwitchableGraphics)
         {
@@ -136,23 +179,29 @@ internal static class GpuModeController
         return false;
     }
 
-    public static bool RequiresRestart(
-        GpuWorkingMode current,
-        GpuWorkingMode target) =>
-        current != target &&
-        (IsDirectMode(current) || IsDirectMode(target));
-
-    public static bool IsDirectMode(GpuWorkingMode mode) =>
-        mode is GpuWorkingMode.Discrete or GpuWorkingMode.IntegratedDirect;
-
     public static bool IsHybridMode(GpuWorkingMode mode) =>
         mode is GpuWorkingMode.Hybrid or
             GpuWorkingMode.IntegratedOnly or
             GpuWorkingMode.HybridAuto;
 
+    private static bool UsesDirectGraphicsConfiguration(
+        GpuWorkingMode mode)
+    {
+        var capabilities = GetCapabilities();
+        return mode == GpuWorkingMode.IntegratedDirect ||
+               mode == GpuWorkingMode.Discrete &&
+               capabilities.SupportsDiscreteDirect;
+    }
+
     private static bool IsIntegratedDirectValue(string value) =>
         value.Equals(UmaGraphics, StringComparison.OrdinalIgnoreCase) ||
         value.Equals(IntegratedGraphics, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsDirectGraphicsConfiguration(string value) =>
+        IsIntegratedDirectValue(value) ||
+        value.Equals(
+            DiscreteGraphics,
+            StringComparison.OrdinalIgnoreCase);
 
     private static GpuModeCapabilities GetCapabilities()
     {

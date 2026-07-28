@@ -133,8 +133,8 @@ run from the repository root:
 .\scripts\build.ps1
 ```
 
-Create the public, framework-dependent `0.1.1` release under
-`dist\ThinkBookToolkit-0.1.1-win-x64-framework-dependent`:
+Create the public, framework-dependent `0.1.2` release under
+`dist\ThinkBookToolkit-0.1.2-win-x64-framework-dependent`:
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
@@ -147,7 +147,7 @@ Create the online installer (requires
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
 
-The result is `dist\ThinkBookToolkit-0.1.1-Setup.exe`. Its default destination
+The result is `dist\ThinkBookToolkit-0.1.2-Setup.exe`. Its default destination
 is `Program Files\ThinkBook Toolkit`, and the destination can be changed in the
 wizard. If the selected destination is not empty, Setup warns that all of its
 contents will be removed and proceeds only after explicit confirmation; always
@@ -160,7 +160,7 @@ runtime is specifically required.
 
 Public release publishing excludes local proprietary Lenovo DLLs by default.
 For a private build used only on your own machine, add
-`-IncludeLocalProprietaryDependencies`. The application version is `0.1.1`;
+`-IncludeLocalProprietaryDependencies`. The application version is `0.1.2`;
 the replaceable fan-backend API and configuration-file format are both `1.0`.
 
 Run the hardware-write-free UI smoke test:

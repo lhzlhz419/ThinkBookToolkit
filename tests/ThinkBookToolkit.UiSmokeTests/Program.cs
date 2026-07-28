@@ -37,6 +37,7 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        VerifyGpuModeRestartState();
         VerifyLenovoDependencyDirectory();
         Assert(UiTypography.FontFamilyNameFor("zh-CN") == "Microsoft YaHei UI",
             "Chinese UI font must use the Windows Simplified Chinese UI family.");
@@ -176,6 +177,26 @@ internal static class Program
                !ContainsText(window.CurrentPage!, "可替换风扇后端") &&
                !ContainsText(window.CurrentPage!, "快速控制"),
             "Overview still advertises implementation details or quick control.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            PendingGpuMode = GpuWorkingMode.HybridAuto.ToString(),
+            PendingGpuModeSource = GpuWorkingMode.Discrete.ToString()
+        });
+        Assert(overviewGpu.SelectedItem is ComboBoxItem
+               {
+                   Tag: GpuWorkingMode.HybridAuto
+               } &&
+               window.CurrentPage!.DataContext?.GetType()
+                   .GetProperty("PendingRestart")
+                   ?.GetValue(window.CurrentPage.DataContext)
+                   ?.ToString() ==
+               "需要重启",
+            "Overview does not show the pending GPU target and concise restart state.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            PendingGpuMode = string.Empty,
+            PendingGpuModeSource = string.Empty
+        });
 
         window.NavigateForTesting("performance");
         var performance = window.CurrentPage!;
@@ -248,9 +269,21 @@ internal static class Program
             "Global preferences still appear on the performance page.");
         Assert(!Descendants(performance).OfType<ScrollViewer>().Any(),
             "Performance page contains a nested scrollbar.");
-        runtime.SetSnapshotForTesting(runtime.Snapshot with { PendingGpuMode = GpuWorkingMode.Discrete.ToString() });
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            PendingGpuMode = GpuWorkingMode.HybridAuto.ToString(),
+            PendingGpuModeSource = GpuWorkingMode.Discrete.ToString()
+        });
         Assert(ContainsText(performance, "等待重启") &&
-               ContainsButtonText(performance, "立即重启"),
+               ContainsButtonText(performance, "立即重启") &&
+               ContainsText(
+                   performance,
+                   "将从“独显直连模式”切换到“混合自动模式”") &&
+               GetPrivateField<ComboBox>(performance, "_gpuMode")
+                   .SelectedItem is ComboBoxItem
+                   {
+                       Tag: GpuWorkingMode.HybridAuto
+                   },
             "Pending GPU changes have no inline restart state or action.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with { PendingGpuMode = string.Empty });
         Assert(ContainsText(performance, "CPU PL1") &&
@@ -792,6 +825,115 @@ internal static class Program
         limitsWindow.Close();
 
         window.Close();
+    }
+
+    private static void VerifyGpuModeRestartState()
+    {
+        const string originalBoot = "boot-a";
+        const string restartedBoot = "boot-b";
+        var settings = new AppSettings();
+
+        GpuModeRestartState.MarkPending(
+            settings,
+            GpuWorkingMode.Discrete,
+            true,
+            GpuWorkingMode.HybridAuto,
+            originalBoot);
+        Assert(
+            settings.PendingGpuMode == nameof(GpuWorkingMode.HybridAuto) &&
+            settings.PendingGpuModeSource == nameof(GpuWorkingMode.Discrete) &&
+            settings.PendingGpuModeSourceUsesDirectGraphicsConfiguration == true &&
+            settings.PendingGpuModeBootSessionId == originalBoot,
+            "A restart-required GPU change must persist its source, target, route, and boot session.");
+        Assert(
+            GpuModeRestartState.TryGetTransition(
+                settings,
+                out var transition) &&
+            transition.Source == GpuWorkingMode.Discrete &&
+            transition.Target == GpuWorkingMode.HybridAuto &&
+            transition.SourceUsesDirectGraphicsConfiguration,
+            "The persisted GPU transition cannot be reconstructed.");
+        Assert(
+            GpuModeRestartState.TryGetCurrentBootTransition(
+                settings,
+                originalBoot,
+                out var sameBootTransition) &&
+            sameBootTransition.Target == GpuWorkingMode.HybridAuto,
+            "Selecting the same target in the same boot must preserve the pending transition.");
+        Assert(
+            GpuModeRestartState.TryGetCurrentBootTarget(
+                settings,
+                originalBoot,
+                out var sameBootTarget) &&
+            sameBootTarget == GpuWorkingMode.HybridAuto,
+            "A repeated target selection must be recognized even for older pending settings.");
+        Assert(
+            !GpuModeRestartState.TryGetCurrentBootTransition(
+                settings,
+                restartedBoot,
+                out _),
+            "A transition from an earlier boot must not be treated as a same-session request.");
+        Assert(
+            !GpuModeRestartState.ShouldClearAfterReadback(
+                settings.PendingGpuMode,
+                settings.PendingGpuModeBootSessionId,
+                originalBoot,
+                GpuWorkingMode.HybridAuto),
+            "Firmware readback during the same boot must not clear the restart state.");
+        Assert(
+            GpuModeRestartState.ShouldClearAfterReadback(
+                settings.PendingGpuMode,
+                settings.PendingGpuModeBootSessionId,
+                restartedBoot,
+                GpuWorkingMode.HybridAuto),
+            "A confirmed target after a Windows restart must clear the restart state.");
+        Assert(
+            !GpuModeRestartState.ShouldClearAfterReadback(
+                settings.PendingGpuMode,
+                settings.PendingGpuModeBootSessionId,
+                restartedBoot,
+                GpuWorkingMode.Hybrid),
+            "A restart must not clear an unconfirmed GPU target.");
+        Assert(
+            GpuModeRestartState.RequiresRestart(
+                GpuWorkingMode.Discrete,
+                true,
+                GpuWorkingMode.HybridAuto,
+                false),
+            "Changing a pending direct mode to a hybrid target must still require a restart.");
+        Assert(
+            !GpuModeRestartState.RequiresRestart(
+                GpuWorkingMode.Discrete,
+                true,
+                GpuWorkingMode.Discrete,
+                true),
+            "Selecting the effective source mode must cancel the pending restart.");
+        Assert(
+            !GpuModeRestartState.RequiresRestart(
+                GpuWorkingMode.Hybrid,
+                false,
+                GpuWorkingMode.HybridAuto,
+                false),
+            "Changing between live switchable-graphics modes must not require a restart.");
+        Assert(
+            GpuModeRestartState.HasRestartedSince(
+                string.Empty,
+                restartedBoot),
+            "Pending settings from older configuration files must be checked once.");
+        Assert(
+            GpuModeRestartState.TryParsePendingMode(
+                nameof(GpuWorkingMode.IntegratedDirect),
+                out var parsed) &&
+            parsed == GpuWorkingMode.IntegratedDirect,
+            "All supported GPU modes must survive application restarts.");
+
+        GpuModeRestartState.Clear(settings);
+        Assert(
+            string.IsNullOrEmpty(settings.PendingGpuMode) &&
+            string.IsNullOrEmpty(settings.PendingGpuModeSource) &&
+            settings.PendingGpuModeSourceUsesDirectGraphicsConfiguration is null &&
+            string.IsNullOrEmpty(settings.PendingGpuModeBootSessionId),
+            "Clearing the restart state must clear every persisted transition field.");
     }
 
     private static void VerifyLenovoDependencyDirectory()

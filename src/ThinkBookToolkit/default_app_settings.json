@@ -52,6 +52,9 @@
   "FanReadMinimumIntervalSeconds": null,
   "FanWriteMinimumIntervalSeconds": null,
   "PendingGpuMode": "",
+  "PendingGpuModeSource": "",
+  "PendingGpuModeSourceUsesDirectGraphicsConfiguration": null,
+  "PendingGpuModeBootSessionId": "",
   "PcManagerNormalDefaultTemperature": 6600,
   "PcManagerEyeCareDefaultTemperature": 3500
 }

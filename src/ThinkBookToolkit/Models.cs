@@ -126,6 +126,9 @@ public sealed class AppSettings
     public double? FanReadMinimumIntervalSeconds { get; set; }
     public double? FanWriteMinimumIntervalSeconds { get; set; }
     public string PendingGpuMode { get; set; } = "";
+    public string PendingGpuModeSource { get; set; } = "";
+    public bool? PendingGpuModeSourceUsesDirectGraphicsConfiguration { get; set; }
+    public string PendingGpuModeBootSessionId { get; set; } = "";
     public int PcManagerNormalDefaultTemperature { get; set; } = 6600;
     public int PcManagerEyeCareDefaultTemperature { get; set; } = 3500;
 }

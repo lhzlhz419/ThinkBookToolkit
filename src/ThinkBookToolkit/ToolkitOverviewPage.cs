@@ -215,11 +215,13 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
         AddChoice(_itsMode, L("省电模式", "Cool"), ItsMode.PowerSaving);
         AddChoice(_itsMode, L("性能模式", "Performance"), ItsMode.Performance);
         AddChoice(_itsMode, L("极客模式", "Geek"), ItsMode.Geek);
-        AddChoice(_gpuMode, L("混合模式", "Hybrid mode"), GpuWorkingMode.Hybrid);
-        AddChoice(_gpuMode, L("混合核显模式", "iGPU only"), GpuWorkingMode.IntegratedOnly);
-        AddChoice(_gpuMode, L("混合自动模式", "Hybrid auto"), GpuWorkingMode.HybridAuto);
-        AddChoice(_gpuMode, L("独显直连模式", "Discrete graphics"), GpuWorkingMode.Discrete);
-        AddChoice(_gpuMode, L("核显直连模式", "Integrated graphics"), GpuWorkingMode.IntegratedDirect);
+        foreach (GpuWorkingMode mode in Enum.GetValues<GpuWorkingMode>())
+        {
+            AddChoice(
+                _gpuMode,
+                GpuModeText.Name(mode, Runtime.IsChinese),
+                mode);
+        }
         AddChoice(_fanMode, L("固件自动", "Firmware automatic"), FanControlMode.FirmwareAutomatic);
         AddChoice(_fanMode, L("固定转速", "Fixed RPM"), FanControlMode.FixedRpm);
         AddChoice(_fanMode, L("风扇曲线", "Fan curve"), FanControlMode.FanCurve);
@@ -391,9 +393,10 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
             {
                 Battery = "--";
             }
-            PendingRestart = string.IsNullOrWhiteSpace(snapshot.PendingGpuMode)
-                ? Runtime.L("无需重启", "No restart pending")
-                : Runtime.L("GPU 模式等待重启", "GPU restart pending");
+            PendingRestart = string.IsNullOrWhiteSpace(
+                    snapshot.PendingGpuMode)
+                ? Runtime.L("无需重启", "No restart required")
+                : Runtime.L("需要重启", "Restart required");
         }
 
         private static string Pair(

@@ -1270,13 +1270,20 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             item.Visibility = item.Tag is GpuWorkingMode mode && snapshot.SupportedGpuModes.Contains(mode)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
-        if (snapshot.GpuMode.HasValue) Select(_gpuMode, snapshot.GpuMode.Value);
+        if (GpuModeRestartState.TryParsePendingMode(
+                snapshot.PendingGpuMode,
+                out var pendingGpuMode))
+        {
+            Select(_gpuMode, pendingGpuMode);
+        }
+        else if (snapshot.GpuMode.HasValue)
+        {
+            Select(_gpuMode, snapshot.GpuMode.Value);
+        }
         _pendingRestartRow.Visibility = string.IsNullOrWhiteSpace(snapshot.PendingGpuMode)
             ? Visibility.Collapsed
             : Visibility.Visible;
-        _pendingRestartText.Text = string.IsNullOrWhiteSpace(snapshot.PendingGpuMode)
-            ? string.Empty
-            : L($"目标：{snapshot.PendingGpuMode}", $"Target: {snapshot.PendingGpuMode}");
+        _pendingRestartText.Text = PendingGpuModeText(snapshot);
         _fullSpeed.IsChecked = snapshot.FullSpeed;
         var fanMode = snapshot.FanControlRunning || snapshot.FullSpeed
             ? snapshot.FanStrategy == ControlStrategy.FanCurve
@@ -1378,15 +1385,29 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             _ = RefreshPowerReadoutsAsync();
     }
 
-    private string GpuModeName(GpuWorkingMode mode) => mode switch
+    private string GpuModeName(GpuWorkingMode mode) =>
+        GpuModeText.Name(mode, Runtime.IsChinese);
+
+    private string PendingGpuModeText(ToolkitRuntimeSnapshot snapshot)
     {
-        GpuWorkingMode.Hybrid => L("混合模式", "Hybrid mode"),
-        GpuWorkingMode.IntegratedOnly => L("混合核显模式", "iGPU only"),
-        GpuWorkingMode.HybridAuto => L("混合自动模式", "Hybrid auto"),
-        GpuWorkingMode.Discrete => L("独显直连模式", "Discrete graphics"),
-        GpuWorkingMode.IntegratedDirect => L("核显直连模式", "Integrated graphics"),
-        _ => mode.ToString()
-    };
+        if (!GpuModeRestartState.TryParsePendingMode(
+                snapshot.PendingGpuMode,
+                out var target))
+        {
+            return string.Empty;
+        }
+
+        return GpuModeRestartState.TryParsePendingMode(
+            snapshot.PendingGpuModeSource,
+            out var source)
+            ? GpuModeText.Transition(
+                source,
+                target,
+                Runtime.IsChinese)
+            : L(
+                $"切换到“{GpuModeText.Name(target, true)}”后需要重启",
+                $"A restart is required to switch to {GpuModeText.Name(target, false)}");
+    }
 
     private static void AddChoice<T>(ComboBox combo, string label, T value) =>
         combo.Items.Add(new ComboBoxItem { Content = label, Tag = value });

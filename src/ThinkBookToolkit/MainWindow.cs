@@ -216,6 +216,8 @@ public sealed class MainWindow : Window
     private bool _switchingGpuMode;
     private GpuWorkingMode? _displayedGpuMode;
     private GpuWorkingMode? _pendingGpuMode;
+    private readonly string _bootSessionId =
+        GpuModeRestartState.CurrentBootSessionId;
     private bool _pendingGpuModeLoadedAtStartup;
     private bool _pendingGpuModeApplyAttempted;
     private DateTimeOffset? _lastGameStopTime;
@@ -329,6 +331,8 @@ public sealed class MainWindow : Window
         Loaded += async (_, _) => await LoadDeviceModelAsync();
         Loaded += async (_, _) =>
         {
+            if (_embeddedMode)
+                return;
             await RefreshGpuModeAsync();
             UpdateGpuModePolling();
         };
@@ -1638,8 +1642,13 @@ public sealed class MainWindow : Window
 
     private void UpdateGpuModePolling()
     {
-        if (_embeddedMode ||
-            (IsVisible && WindowState != WindowState.Minimized))
+        if (_embeddedMode)
+        {
+            _gpuModeTimer.Stop();
+            return;
+        }
+
+        if (IsVisible && WindowState != WindowState.Minimized)
             _gpuModeTimer.Start();
         else
             _gpuModeTimer.Stop();
@@ -3369,35 +3378,58 @@ public sealed class MainWindow : Window
         }
 
         var target = _gpuModes[_gpuModeCombo.SelectedIndex];
-        var current = _displayedGpuMode;
         UpdateGpuModeCombo(_displayedGpuMode);
-        var hasPendingHybridTransition =
-            ParsePendingGpuMode(_settings.PendingGpuMode).HasValue;
-        var requiresRestart = current.HasValue &&
-                              GpuModeController.RequiresRestart(
-                                  current.Value,
-                                  target) ||
-                              hasPendingHybridTransition &&
-                              GpuModeController.IsHybridMode(target);
-        var restartNow = requiresRestart && ShowGpuRestartPrompt(target);
 
         _switchingGpuMode = true;
         _gpuModeCombo.IsEnabled = false;
         var switched = false;
+        var requiresRestart = false;
+        var alreadyPending = false;
         try
         {
-            await Task.Run(() => GpuModeController.SetMode(target));
-            if (GpuModeController.IsHybridMode(target) &&
-                (hasPendingHybridTransition ||
-                 current.HasValue &&
-                 GpuModeController.IsDirectMode(current.Value)))
+            var hasCurrentBootTarget =
+                GpuModeRestartState.TryGetCurrentBootTarget(
+                    _settings,
+                    _bootSessionId,
+                    out var pendingTarget);
+            var hasCurrentBootTransition =
+                GpuModeRestartState.TryGetCurrentBootTransition(
+                    _settings,
+                    _bootSessionId,
+                    out var transition);
+            if (hasCurrentBootTarget && target == pendingTarget)
             {
-                SavePendingGpuMode(target);
+                requiresRestart = true;
+                alreadyPending = true;
             }
             else
             {
-                ClearPendingGpuMode();
-                _pendingGpuMode = requiresRestart ? target : null;
+                var state = hasCurrentBootTransition
+                    ? null
+                    : await Task.Run(GpuModeController.ReadState);
+                var source = hasCurrentBootTransition
+                    ? transition.Source
+                    : state!.CurrentMode;
+                var sourceUsesDirectGraphicsConfiguration =
+                    hasCurrentBootTransition
+                        ? transition.SourceUsesDirectGraphicsConfiguration
+                        : state!.UsesDirectGraphicsConfiguration;
+                requiresRestart = await Task.Run(() =>
+                    GpuModeController.SetModeFromEffectiveState(
+                        source,
+                        sourceUsesDirectGraphicsConfiguration,
+                        target));
+                if (requiresRestart)
+                {
+                    SavePendingGpuMode(
+                        source,
+                        sourceUsesDirectGraphicsConfiguration,
+                        target);
+                }
+                else
+                {
+                    ClearPendingGpuMode();
+                }
             }
             _displayedGpuMode = target;
             UpdateGpuModeCombo(target);
@@ -3421,7 +3453,10 @@ public sealed class MainWindow : Window
             await RefreshGpuModeAsync();
         }
 
-        if (switched && restartNow)
+        if (switched &&
+            requiresRestart &&
+            !alreadyPending &&
+            ShowGpuRestartPrompt(target))
         {
             try
             {
@@ -3453,11 +3488,6 @@ public sealed class MainWindow : Window
             var state = await Task.Run(GpuModeController.ReadState);
             state = await ApplyStartupPendingGpuModeAsync(state);
             UpdateGpuModeItems(state.SupportedModes);
-            if (!_pendingGpuModeLoadedAtStartup &&
-                _pendingGpuMode == state.CurrentMode)
-            {
-                _pendingGpuMode = null;
-            }
             var displayedMode = _pendingGpuMode ?? state.CurrentMode;
             _displayedGpuMode = displayedMode;
             UpdateGpuModeCombo(displayedMode);
@@ -3497,8 +3527,9 @@ public sealed class MainWindow : Window
         if (!_pendingGpuModeLoadedAtStartup ||
             _pendingGpuModeApplyAttempted ||
             _pendingGpuMode is not { } pending ||
-            !GpuModeController.IsHybridMode(pending) ||
-            GpuModeController.IsDirectMode(state.CurrentMode))
+            !GpuModeRestartState.HasRestartedSince(
+                _settings.PendingGpuModeBootSessionId,
+                _bootSessionId))
         {
             return state;
         }
@@ -3506,9 +3537,26 @@ public sealed class MainWindow : Window
         _pendingGpuModeApplyAttempted = true;
         try
         {
-            if (state.CurrentMode != pending)
+            if (state.CurrentMode == pending)
             {
-                await Task.Run(() => GpuModeController.SetMode(pending));
+                ClearPendingGpuMode();
+                return state;
+            }
+
+            if (GpuModeController.IsHybridMode(pending) &&
+                !state.UsesDirectGraphicsConfiguration)
+            {
+                var requiresAnotherRestart = await Task.Run(
+                    () => GpuModeController.SetMode(pending));
+                if (requiresAnotherRestart)
+                {
+                    SavePendingGpuMode(
+                        state.CurrentMode,
+                        state.UsesDirectGraphicsConfiguration,
+                        pending);
+                    return state;
+                }
+
                 var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
                 do
                 {
@@ -3538,20 +3586,32 @@ public sealed class MainWindow : Window
         return state;
     }
 
-    private void SavePendingGpuMode(GpuWorkingMode mode)
+    private void SavePendingGpuMode(
+        GpuWorkingMode source,
+        bool sourceUsesDirectGraphicsConfiguration,
+        GpuWorkingMode target)
     {
-        _settings.PendingGpuMode = mode.ToString();
+        GpuModeRestartState.MarkPending(
+            _settings,
+            source,
+            sourceUsesDirectGraphicsConfiguration,
+            target,
+            _bootSessionId);
         CurveProfileStore.SaveSettings(_settings);
-        _pendingGpuMode = mode;
+        _pendingGpuMode = target;
         _pendingGpuModeLoadedAtStartup = false;
         _pendingGpuModeApplyAttempted = true;
     }
 
     private void ClearPendingGpuMode()
     {
-        if (!string.IsNullOrEmpty(_settings.PendingGpuMode))
+        if (!string.IsNullOrEmpty(_settings.PendingGpuMode) ||
+            !string.IsNullOrEmpty(_settings.PendingGpuModeSource) ||
+            _settings.PendingGpuModeSourceUsesDirectGraphicsConfiguration.HasValue ||
+            !string.IsNullOrEmpty(
+                _settings.PendingGpuModeBootSessionId))
         {
-            _settings.PendingGpuMode = string.Empty;
+            GpuModeRestartState.Clear(_settings);
             CurveProfileStore.SaveSettings(_settings);
         }
 
@@ -3561,8 +3621,7 @@ public sealed class MainWindow : Window
     }
 
     private static GpuWorkingMode? ParsePendingGpuMode(string value) =>
-        Enum.TryParse<GpuWorkingMode>(value, out var mode) &&
-        GpuModeController.IsHybridMode(mode)
+        GpuModeRestartState.TryParsePendingMode(value, out var mode)
             ? mode
             : null;
 

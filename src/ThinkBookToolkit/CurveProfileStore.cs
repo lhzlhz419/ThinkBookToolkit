@@ -168,6 +168,21 @@ public static class CurveProfileStore
                 out _)
                 ? loaded.PendingGpuMode
                 : string.Empty;
+            defaults.PendingGpuModeBootSessionId =
+                string.IsNullOrEmpty(defaults.PendingGpuMode)
+                    ? string.Empty
+                    : loaded.PendingGpuModeBootSessionId ?? string.Empty;
+            defaults.PendingGpuModeSource =
+                !string.IsNullOrEmpty(defaults.PendingGpuMode) &&
+                Enum.TryParse<GpuWorkingMode>(
+                    loaded.PendingGpuModeSource,
+                    out _)
+                    ? loaded.PendingGpuModeSource
+                    : string.Empty;
+            defaults.PendingGpuModeSourceUsesDirectGraphicsConfiguration =
+                string.IsNullOrEmpty(defaults.PendingGpuModeSource)
+                    ? null
+                    : loaded.PendingGpuModeSourceUsesDirectGraphicsConfiguration;
             defaults.PcManagerNormalDefaultTemperature =
                 NormalizeColorTemperature(
                     loaded.PcManagerNormalDefaultTemperature,

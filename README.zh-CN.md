@@ -99,7 +99,7 @@ public sealed class ExampleFanBackend : IFanBackend
 .\scripts\build.ps1
 ```
 
-生成位于 `dist\ThinkBookToolkit-0.1.1-win-x64-framework-dependent` 的公开、依赖框架版本：
+生成位于 `dist\ThinkBookToolkit-0.1.2-win-x64-framework-dependent` 的公开、依赖框架版本：
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
@@ -111,7 +111,7 @@ public sealed class ExampleFanBackend : IFanBackend
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
 
-输出文件为 `dist\ThinkBookToolkit-0.1.1-Setup.exe`。安装位置默认为
+输出文件为 `dist\ThinkBookToolkit-0.1.2-Setup.exe`。安装位置默认为
 `Program Files\ThinkBook Toolkit`，可在安装向导中修改。如果所选文件夹非空，安装器会明确提示
 其中所有内容将被删除，并且只有确认后才继续；应始终选择 Toolkit 专用文件夹。安装器会检测
 64 位 .NET 9 Desktop Runtime；如果未安装，则下载微软官方 .NET 9.0.18 Desktop Runtime
@@ -119,7 +119,7 @@ public sealed class ExampleFanBackend : IFanBackend
 才使用 `-Publish -SelfContained`。
 
 公开发布构建默认排除本地专有联想 DLL。仅为自己的电脑生成包含本地依赖的私用构建时，可增加
-`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.1.1`，可替换风扇后端 API 和配置文件格式版本均为 `1.0`。
+`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.1.2`，可替换风扇后端 API 和配置文件格式版本均为 `1.0`。
 
 运行不会写入硬件的 UI 冒烟测试：
 

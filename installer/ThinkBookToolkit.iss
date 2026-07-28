@@ -1,8 +1,8 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "0.1.1"
+  #define AppVersion "0.1.2"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\dist\ThinkBookToolkit-0.1.1-win-x64-framework-dependent"
+  #define SourceDir "..\dist\ThinkBookToolkit-0.1.2-win-x64-framework-dependent"
 #endif
 #ifndef OutputDir
   #define OutputDir "..\dist"

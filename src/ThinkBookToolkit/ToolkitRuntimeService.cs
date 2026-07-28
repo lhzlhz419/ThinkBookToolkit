@@ -44,6 +44,8 @@ internal sealed record ToolkitRuntimeSnapshot(
     DateTimeOffset UpdatedAt,
     string? Error)
 {
+    public string PendingGpuModeSource { get; init; } = string.Empty;
+
     public static ToolkitRuntimeSnapshot Empty { get; } = new(
         null,
         null,
@@ -72,6 +74,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private GpuModeState? _cachedGpuMode;
     private DateTimeOffset _lastBatteryRefresh;
     private DateTimeOffset _lastGpuRefresh;
+    private readonly string _bootSessionId;
     private bool _polling;
     private bool _disposed;
     private bool _systemThemeSubscribed;
@@ -79,6 +82,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public ToolkitRuntimeService(AppSettings settings)
     {
         Settings = settings;
+        _bootSessionId = GpuModeRestartState.CurrentBootSessionId;
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
         _pollTimer.Tick += async (_, _) => await RefreshAsync();
@@ -295,13 +299,6 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 var gpu = _cachedGpuMode!;
                 gpuMode = gpu.CurrentMode;
                 gpuModes = gpu.SupportedModes;
-                if (!string.IsNullOrWhiteSpace(Settings.PendingGpuMode) &&
-                    Enum.TryParse<GpuWorkingMode>(Settings.PendingGpuMode, out var pending) &&
-                    pending == gpu.CurrentMode)
-                {
-                    Settings.PendingGpuMode = string.Empty;
-                    CurveProfileStore.SaveSettings(Settings);
-                }
             }
 
             Snapshot = new(
@@ -317,7 +314,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 performance?.Target,
                 Settings.PendingGpuMode,
                 DateTimeOffset.Now,
-                null);
+                null)
+            {
+                PendingGpuModeSource = Settings.PendingGpuModeSource
+            };
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             UpdateTrayText();
         }
@@ -364,15 +364,54 @@ internal sealed class ToolkitRuntimeService : IDisposable
     {
         try
         {
-            var current = await Task.Run(GpuModeController.ReadState);
-            var requiresRestart = GpuModeController.RequiresRestart(
-                current.CurrentMode,
-                target);
-            await Task.Run(() => GpuModeController.SetMode(target));
-            Settings.PendingGpuMode = requiresRestart
-                ? target.ToString()
-                : string.Empty;
+            var hasCurrentBootTarget =
+                GpuModeRestartState.TryGetCurrentBootTarget(
+                    Settings,
+                    _bootSessionId,
+                    out var pendingTarget);
+            var hasCurrentBootTransition =
+                GpuModeRestartState.TryGetCurrentBootTransition(
+                    Settings,
+                    _bootSessionId,
+                    out var transition);
+
+            if (hasCurrentBootTarget && target == pendingTarget)
+            {
+                PublishGpuTransitionState();
+                await RefreshAsync(force: true);
+                return null;
+            }
+
+            var state = hasCurrentBootTransition
+                ? null
+                : await Task.Run(GpuModeController.ReadState);
+            var source = hasCurrentBootTransition
+                ? transition.Source
+                : state!.CurrentMode;
+            var sourceUsesDirectGraphicsConfiguration =
+                hasCurrentBootTransition
+                    ? transition.SourceUsesDirectGraphicsConfiguration
+                    : state!.UsesDirectGraphicsConfiguration;
+            var requiresRestart = await Task.Run(() =>
+                GpuModeController.SetModeFromEffectiveState(
+                    source,
+                    sourceUsesDirectGraphicsConfiguration,
+                    target));
+            if (requiresRestart)
+            {
+                GpuModeRestartState.MarkPending(
+                    Settings,
+                    source,
+                    sourceUsesDirectGraphicsConfiguration,
+                    target,
+                    _bootSessionId);
+            }
+            else
+            {
+                GpuModeRestartState.Clear(Settings);
+            }
             CurveProfileStore.SaveSettings(Settings);
+            PublishGpuTransitionState();
             await RefreshAsync(force: true);
             return null;
         }
@@ -745,10 +784,26 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public void SetStatus(string message) =>
         StatusChanged?.Invoke(this, message);
 
+    private void PublishGpuTransitionState()
+    {
+        Snapshot = Snapshot with
+        {
+            PendingGpuMode = Settings.PendingGpuMode,
+            PendingGpuModeSource = Settings.PendingGpuModeSource,
+            UpdatedAt = DateTimeOffset.Now
+        };
+        SnapshotChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     private async Task ApplyPendingGpuModeAsync()
     {
         if (Report?.IsAvailable(FeatureIds.GpuMode) != true ||
-            !Enum.TryParse<GpuWorkingMode>(Settings.PendingGpuMode, out var pending))
+            !GpuModeRestartState.TryParsePendingMode(
+                Settings.PendingGpuMode,
+                out var pending) ||
+            !GpuModeRestartState.HasRestartedSince(
+                Settings.PendingGpuModeBootSessionId,
+                _bootSessionId))
         {
             return;
         }
@@ -756,19 +811,46 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             var state = await Task.Run(GpuModeController.ReadState);
-            if (state.CurrentMode == pending)
+            if (GpuModeRestartState.ShouldClearAfterReadback(
+                    Settings.PendingGpuMode,
+                    Settings.PendingGpuModeBootSessionId,
+                    _bootSessionId,
+                    state.CurrentMode))
             {
-                Settings.PendingGpuMode = string.Empty;
+                GpuModeRestartState.Clear(Settings);
                 CurveProfileStore.SaveSettings(Settings);
                 return;
             }
 
             if (GpuModeController.IsHybridMode(pending) &&
-                !GpuModeController.IsDirectMode(state.CurrentMode))
+                !state.UsesDirectGraphicsConfiguration)
             {
-                await Task.Run(() => GpuModeController.SetMode(pending));
-                Settings.PendingGpuMode = string.Empty;
-                CurveProfileStore.SaveSettings(Settings);
+                var requiresAnotherRestart = await Task.Run(
+                    () => GpuModeController.SetMode(pending));
+                if (requiresAnotherRestart)
+                {
+                    GpuModeRestartState.MarkPending(
+                        Settings,
+                        state.CurrentMode,
+                        state.UsesDirectGraphicsConfiguration,
+                        pending,
+                        _bootSessionId);
+                    CurveProfileStore.SaveSettings(Settings);
+                    return;
+                }
+
+                var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
+                do
+                {
+                    await Task.Delay(500);
+                    state = await Task.Run(GpuModeController.ReadState);
+                    if (state.CurrentMode == pending)
+                    {
+                        GpuModeRestartState.Clear(Settings);
+                        CurveProfileStore.SaveSettings(Settings);
+                        return;
+                    }
+                } while (DateTimeOffset.UtcNow < deadline);
             }
         }
         catch (Exception ex)
