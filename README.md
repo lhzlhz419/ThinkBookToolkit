@@ -19,6 +19,8 @@ not a compatibility or safety guarantee.**
 
 [简体中文](README.zh-CN.md)
 
+[Changelog](CHANGELOG.md)
+
 ## Overview
 
 ThinkBook Toolkit is a native Windows control center for selected Lenovo
@@ -30,8 +32,8 @@ Current feature groups include:
 
 - performance mode, GPU working mode, live temperatures, power readings, and
   fan control;
-- fixed fan targets, editable CPU/GPU curves, profiles, game detection, and
-  full-speed control;
+- fixed fan targets, editable CPU/GPU curves, add/remove-point advanced curves
+  with hysteresis thresholds, profiles, game detection, and full-speed control;
 - battery charging modes, overnight charging, always-on USB, flip-to-start,
   and detailed battery information;
 - eye care, color modes, Dolby settings, speaker/microphone noise reduction,
@@ -133,8 +135,8 @@ run from the repository root:
 .\scripts\build.ps1
 ```
 
-Create the public, framework-dependent `0.1.2` release under
-`dist\ThinkBookToolkit-0.1.2-win-x64-framework-dependent`:
+Create the public, framework-dependent `0.2.0` release under
+`dist\ThinkBookToolkit-0.2.0-win-x64-framework-dependent`:
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
@@ -147,11 +149,13 @@ Create the online installer (requires
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
 
-The result is `dist\ThinkBookToolkit-0.1.2-Setup.exe`. Its default destination
+The result is `dist\ThinkBookToolkit-0.2.0-Setup.exe`. Its default destination
 is `Program Files\ThinkBook Toolkit`, and the destination can be changed in the
 wizard. If the selected destination is not empty, Setup warns that all of its
 contents will be removed and proceeds only after explicit confirmation; always
-select a folder dedicated to Toolkit. The installer checks for the 64-bit .NET
+select a folder dedicated to Toolkit. If a compatible fan-backend file version
+already exists there, Setup offers to preserve it and selects that choice by
+default. The completion page launches Toolkit by default. The installer checks for the 64-bit .NET
 9 Desktop Runtime. If it is
 missing, the installer downloads Microsoft's official .NET 9.0.18 Desktop
 Runtime installer, verifies its pinned SHA-256, and installs it. Use
@@ -160,7 +164,7 @@ runtime is specifically required.
 
 Public release publishing excludes local proprietary Lenovo DLLs by default.
 For a private build used only on your own machine, add
-`-IncludeLocalProprietaryDependencies`. The application version is `0.1.2`;
+`-IncludeLocalProprietaryDependencies`. The application version is `0.2.0`;
 the replaceable fan-backend API and configuration-file format are both `1.0`.
 
 Run the hardware-write-free UI smoke test:

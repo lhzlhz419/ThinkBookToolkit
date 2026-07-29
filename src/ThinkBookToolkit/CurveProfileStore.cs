@@ -68,6 +68,8 @@ public static class CurveProfileStore
             {
                 defaults[i].Name = string.IsNullOrWhiteSpace(loaded[i].Name) ? $"Profile {i + 1}" : loaded[i].Name;
                 defaults[i].TemperatureSmoothing = NormalizeSmoothingSamples(loaded[i].TemperatureSmoothing, defaults[i].TemperatureSmoothing);
+                defaults[i].RampUpRpmPerSecond = PickAllowed(loaded[i].RampUpRpmPerSecond, [0, 10, 20, 50, 100], defaults[i].RampUpRpmPerSecond);
+                defaults[i].FullRangeRampDownRpmPerSecond = PickAllowed(loaded[i].FullRangeRampDownRpmPerSecond, [0, 10, 20, 50, 100], defaults[i].FullRangeRampDownRpmPerSecond);
                 defaults[i].RampDownRpmPerSecond = PickAllowed(loaded[i].RampDownRpmPerSecond, [0, 10, 20, 50, 100], defaults[i].RampDownRpmPerSecond);
                 defaults[i].CpuFan1Curve = NormalizeProfileCurve(loaded[i].CpuFan1Curve, loaded[i].CpuCurve, CpuTemps.Length, defaults[i].CpuFan1Curve);
                 defaults[i].CpuFan2Curve = NormalizeProfileCurve(loaded[i].CpuFan2Curve, loaded[i].CpuCurve, CpuTemps.Length, defaults[i].CpuFan2Curve);
@@ -141,6 +143,9 @@ public static class CurveProfileStore
             defaults.FixedRpm = NormalizeFixedRpmSettings(
                 MigrateLegacyFixedRpm(settingsJson, loaded.FixedRpm ?? defaults.FixedRpm),
                 defaults.FanRpmLimits);
+            defaults.AdvancedFanCurve = AdvancedFanCurve.Normalize(
+                MigrateOldAdvancedFanCurveDefaults(loaded.AdvancedFanCurve),
+                defaults.FanRpmLimits);
             defaults.ResumeFanControlOnNextStart = loaded.ResumeFanControlOnNextStart || loaded.FanControlWasRunning;
             defaults.StartWithWindows = loaded.StartWithWindows;
             defaults.StartToTray = loaded.StartToTray;
@@ -202,6 +207,9 @@ public static class CurveProfileStore
     public static void SaveSettings(AppSettings settings)
     {
         settings.ConfigurationVersion = CurrentConfigurationVersion;
+        settings.AdvancedFanCurve = AdvancedFanCurve.Normalize(
+            settings.AdvancedFanCurve,
+            NormalizeFanRpmLimits(settings.FanRpmLimits));
         WriteTextAtomically(
             SettingsPath,
             JsonSerializer.Serialize(settings, JsonOptions));
@@ -324,6 +332,50 @@ public static class CurveProfileStore
             version,
             CurrentConfigurationVersion,
             StringComparison.Ordinal);
+
+    internal static AdvancedFanCurveSettings? MigrateOldAdvancedFanCurveDefaults(
+        AdvancedFanCurveSettings? value)
+    {
+        if (value is null)
+            return null;
+
+        var currentDefaults = AdvancedFanCurve.CreateDefaultPoints();
+        if (value.Points.Count != currentDefaults.Count)
+            return value;
+
+        var matchesOriginalDefaults = true;
+        var matchesIntermediateDefaults = true;
+        for (var index = 0; index < value.Points.Count; index++)
+        {
+            var point = value.Points[index];
+            var expected = currentDefaults[index];
+            if (point.Fan1Rpm != expected.Fan1Rpm ||
+                point.Fan2Rpm != expected.Fan2Rpm ||
+                point.CpuRampUpTemperatureC != expected.CpuRampUpTemperatureC ||
+                point.CpuRampDownTemperatureC != expected.CpuRampDownTemperatureC ||
+                point.GpuRampUpTemperatureC != expected.GpuRampUpTemperatureC ||
+                point.GpuRampDownTemperatureC != expected.GpuRampDownTemperatureC)
+            {
+                return value;
+            }
+
+            matchesOriginalDefaults &=
+                point.RampUpRpmPerSecond == (index < 4 ? 20d : 50d) &&
+                point.RampDownRpmPerSecond == (index < 4 ? 10d : 20d);
+            matchesIntermediateDefaults &=
+                point.RampUpRpmPerSecond == (index < 4 ? 100d : 0d) &&
+                point.RampDownRpmPerSecond == (index < 4 ? 20d : 100d);
+        }
+
+        if (!matchesOriginalDefaults && !matchesIntermediateDefaults)
+            return value;
+
+        return new AdvancedFanCurveSettings
+        {
+            TemperatureSmoothing = value.TemperatureSmoothing,
+            Points = currentDefaults
+        };
+    }
 
     private static List<FanProfile>? DeserializeProfiles(string json)
     {

@@ -26,14 +26,16 @@ public sealed record FanTargets(int Fan1Rpm, int Fan2Rpm);
 public enum ControlStrategy
 {
     FixedRpm,
-    FanCurve
+    FanCurve,
+    AdvancedCurve
 }
 
 public enum FanControlMode
 {
     FirmwareAutomatic,
     FixedRpm,
-    FanCurve
+    FanCurve,
+    AdvancedCurve
 }
 
 public enum ItsMode
@@ -84,6 +86,8 @@ public sealed class FanProfile
 {
     public string Name { get; set; } = "";
     public double TemperatureSmoothing { get; set; } = 3;
+    public double RampUpRpmPerSecond { get; set; }
+    public double FullRangeRampDownRpmPerSecond { get; set; }
     public double RampDownRpmPerSecond { get; set; } = 20;
     public List<int> CpuFan1Curve { get; set; } = [];
     public List<int> CpuFan2Curve { get; set; } = [];
@@ -91,6 +95,25 @@ public sealed class FanProfile
     public List<int> GpuFan2Curve { get; set; } = [];
     public List<int> CpuCurve { get; set; } = [];
     public List<int> GpuCurve { get; set; } = [];
+}
+
+public sealed class AdvancedFanCurvePoint
+{
+    public int Fan1Rpm { get; set; }
+    public int Fan2Rpm { get; set; }
+    public int? CpuRampUpTemperatureC { get; set; }
+    public int? CpuRampDownTemperatureC { get; set; }
+    public int? GpuRampUpTemperatureC { get; set; }
+    public int? GpuRampDownTemperatureC { get; set; }
+    public double RampUpRpmPerSecond { get; set; }
+    public double RampDownRpmPerSecond { get; set; }
+}
+
+public sealed class AdvancedFanCurveSettings
+{
+    public double TemperatureSmoothing { get; set; } = 3;
+    public List<AdvancedFanCurvePoint> Points { get; set; } =
+        AdvancedFanCurve.CreateDefaultPoints();
 }
 
 public sealed class AppSettings
@@ -115,6 +138,7 @@ public sealed class AppSettings
     public bool FanRpmLimitsCustomized { get; set; }
     public FanRpmLimits FanRpmLimits { get; set; } = new();
     public FixedRpmSettings FixedRpm { get; set; } = new();
+    public AdvancedFanCurveSettings AdvancedFanCurve { get; set; } = new();
     public bool ResumeFanControlOnNextStart { get; set; }
     public bool FanControlWasRunning { get; set; }
     public bool StartWithWindows { get; set; }

@@ -4,6 +4,8 @@
   {
     "Name": "Profile 1",
     "TemperatureSmoothing": 3,
+    "RampUpRpmPerSecond": 0,
+    "FullRangeRampDownRpmPerSecond": 0,
     "RampDownRpmPerSecond": 20,
     "CpuFan1Curve": [
       1500,
@@ -105,6 +107,8 @@
   {
     "Name": "Profile 2",
     "TemperatureSmoothing": 3,
+    "RampUpRpmPerSecond": 0,
+    "FullRangeRampDownRpmPerSecond": 0,
     "RampDownRpmPerSecond": 20,
     "CpuFan1Curve": [
       1500,
@@ -206,6 +210,8 @@
   {
     "Name": "Profile 3",
     "TemperatureSmoothing": 3,
+    "RampUpRpmPerSecond": 0,
+    "FullRangeRampDownRpmPerSecond": 0,
     "RampDownRpmPerSecond": 20,
     "CpuFan1Curve": [
       2000,
@@ -307,6 +313,8 @@
   {
     "Name": "Profile 4",
     "TemperatureSmoothing": 3,
+    "RampUpRpmPerSecond": 0,
+    "FullRangeRampDownRpmPerSecond": 0,
     "RampDownRpmPerSecond": 20,
     "CpuFan1Curve": [
       1500,
@@ -408,6 +416,8 @@
   {
     "Name": "Profile 5",
     "TemperatureSmoothing": 3,
+    "RampUpRpmPerSecond": 0,
+    "FullRangeRampDownRpmPerSecond": 0,
     "RampDownRpmPerSecond": 20,
     "CpuFan1Curve": [
       1500,

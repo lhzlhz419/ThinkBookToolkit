@@ -227,8 +227,6 @@ public sealed class MainWindow : Window
     private bool _defaultFanRangeResolved;
     private double? _smoothedCpuTempC;
     private double? _smoothedGpuTempC;
-    private DateTimeOffset? _lastFan1TargetTime;
-    private DateTimeOffset? _lastFan2TargetTime;
     private DateTimeOffset? _lastFanSnapshotTime;
     private DateTimeOffset? _lastFanWriteTime;
     private TemperatureSnapshot? _latestTemperatureSnapshot;
@@ -242,6 +240,8 @@ public sealed class MainWindow : Window
     private List<int> _cpuFan2Curve;
     private List<int> _gpuFan1Curve;
     private List<int> _gpuFan2Curve;
+    private readonly FanRateLimiter _fanRateLimiter = new();
+    private int _advancedCurvePointIndex;
 
     public MainWindow(
         bool startToTrayRequested = false,
@@ -485,7 +485,14 @@ public sealed class MainWindow : Window
             return false;
         _settings.ControlStrategy = strategy;
         if (_strategyTabs is not null)
-            _strategyTabs.SelectedIndex = strategy == ControlStrategy.FanCurve ? 1 : 0;
+        {
+            var wasLoading = _loadingSettings;
+            _loadingSettings = true;
+            _strategyTabs.SelectedIndex = strategy == ControlStrategy.FixedRpm ? 0 : 1;
+            _loadingSettings = wasLoading;
+        }
+        _fanRateLimiter.Reset();
+        _advancedCurvePointIndex = 0;
         ApplyStrategyVisibility();
         CurveProfileStore.SaveSettings(_settings);
         return true;
@@ -590,6 +597,8 @@ public sealed class MainWindow : Window
         var previousCustomized = _settings.FanRpmLimitsCustomized;
         var previousResolved = _defaultFanRangeResolved;
         var previousFixed = CloneFixedRpm(_settings.FixedRpm);
+        var previousAdvanced = AdvancedFanCurve.Clone(
+            _settings.AdvancedFanCurve);
         var previousProfiles = _profiles.Select(CloneProfile).ToArray();
         try
         {
@@ -598,6 +607,9 @@ public sealed class MainWindow : Window
             _defaultFanRangeResolved = true;
             foreach (var profile in _profiles)
                 ClampProfileToConfiguredLimits(profile);
+            _settings.AdvancedFanCurve = AdvancedFanCurve.Normalize(
+                _settings.AdvancedFanCurve,
+                _settings.FanRpmLimits);
 
             CurveProfileStore.Save(_profiles);
             ApplyConfiguredFanRange();
@@ -609,6 +621,7 @@ public sealed class MainWindow : Window
             _settings.FanRpmLimits = previousLimits;
             _settings.FanRpmLimitsCustomized = previousCustomized;
             _settings.FixedRpm = previousFixed;
+            _settings.AdvancedFanCurve = previousAdvanced;
             _defaultFanRangeResolved = previousResolved;
             for (var index = 0; index < _profiles.Count; index++)
                 _profiles[index] = previousProfiles[index];
@@ -635,7 +648,8 @@ public sealed class MainWindow : Window
         double gameExitHoldSeconds,
         int editFan,
         string hotkey,
-        FixedRpmSettings fixedRpm)
+        FixedRpmSettings fixedRpm,
+        AdvancedFanCurveSettings advancedFanCurve)
     {
         if (_running || _fullSpeedEnabled)
             throw new InvalidOperationException("Stop fan control and full speed before applying fan settings.");
@@ -652,6 +666,8 @@ public sealed class MainWindow : Window
         var previousEditFan = _settings.EditFan;
         var previousHotkey = _settings.FixedModeHotkey;
         var previousFixed = CloneFixedRpm(_settings.FixedRpm);
+        var previousAdvanced = AdvancedFanCurve.Clone(
+            _settings.AdvancedFanCurve);
         var previousManualGame = _settings.ManualGameMode;
         var previousOverride = _settings.FixedGameModeOverride;
         var previousOverrideGameSeen = _overrideGameSeenSinceArmed;
@@ -669,6 +685,10 @@ public sealed class MainWindow : Window
                 editFan,
                 hotkey,
                 fixedRpm);
+            _settings.AdvancedFanCurve = AdvancedFanCurve.Normalize(
+                advancedFanCurve,
+                _settings.FanRpmLimits);
+            CurveProfileStore.SaveSettings(_settings);
             if (!RuntimeApplyProfile(index, profile))
                 throw new InvalidOperationException("The fan runtime rejected the profile update.");
         }
@@ -683,6 +703,7 @@ public sealed class MainWindow : Window
                 _settings.EditFan = previousEditFan;
                 _settings.FixedModeHotkey = previousHotkey;
                 _settings.FixedRpm = previousFixed;
+                _settings.AdvancedFanCurve = previousAdvanced;
                 _settings.ManualGameMode = previousManualGame;
                 _settings.FixedGameModeOverride = previousOverride;
                 _settings.LastProfileIndex = previousLastProfile;
@@ -733,6 +754,8 @@ public sealed class MainWindow : Window
     {
         Name = profile.Name,
         TemperatureSmoothing = profile.TemperatureSmoothing,
+        RampUpRpmPerSecond = profile.RampUpRpmPerSecond,
+        FullRangeRampDownRpmPerSecond = profile.FullRangeRampDownRpmPerSecond,
         RampDownRpmPerSecond = profile.RampDownRpmPerSecond,
         CpuFan1Curve = [.. profile.CpuFan1Curve],
         CpuFan2Curve = [.. profile.CpuFan2Curve],
@@ -1263,8 +1286,11 @@ public sealed class MainWindow : Window
             _ = RefreshFanSnapshotAsync();
             UpdateHeatSoak(temps);
 
-            _smoothedCpuTempC = SmoothTemperature(_smoothedCpuTempC, temps.CpuTempC, profile.TemperatureSmoothing);
-            _smoothedGpuTempC = SmoothTemperature(_smoothedGpuTempC, temps.GpuTempC, profile.TemperatureSmoothing);
+            var smoothing = _settings.ControlStrategy == ControlStrategy.AdvancedCurve
+                ? _settings.AdvancedFanCurve.TemperatureSmoothing
+                : profile.TemperatureSmoothing;
+            _smoothedCpuTempC = SmoothTemperature(_smoothedCpuTempC, temps.CpuTempC, smoothing);
+            _smoothedGpuTempC = SmoothTemperature(_smoothedGpuTempC, temps.GpuTempC, smoothing);
 
             if (_fullSpeedEnabled)
             {
@@ -1291,27 +1317,48 @@ public sealed class MainWindow : Window
                 return;
             }
 
-            var cpuFan1Target = CurveProfileStore.Interpolate(CurveProfileStore.CpuTemps, _cpuFan1Curve, _smoothedCpuTempC);
-            var gpuFan1Target = CurveProfileStore.Interpolate(CurveProfileStore.GpuTemps, _gpuFan1Curve, _smoothedGpuTempC);
-            var cpuFan2Target = CurveProfileStore.Interpolate(CurveProfileStore.CpuTemps, _cpuFan2Curve, _smoothedCpuTempC);
-            var gpuFan2Target = CurveProfileStore.Interpolate(CurveProfileStore.GpuTemps, _gpuFan2Curve, _smoothedGpuTempC);
-            var rawTarget = new FanTargets(
-                ClampForCurrentRange(Math.Max(cpuFan1Target, gpuFan1Target), 1),
-                ClampForCurrentRange(Math.Max(cpuFan2Target, gpuFan2Target), 2));
-            var target = ApplyRampDown(rawTarget, profile.RampDownRpmPerSecond);
+            FanTargets rawTarget;
+            double rampUp;
+            double rampDown;
+            if (_settings.ControlStrategy == ControlStrategy.AdvancedCurve)
+            {
+                var evaluated = AdvancedFanCurve.Evaluate(
+                    _settings.AdvancedFanCurve.Points,
+                    _advancedCurvePointIndex,
+                    _smoothedCpuTempC,
+                    _smoothedGpuTempC);
+                _advancedCurvePointIndex = evaluated.Index;
+                rawTarget = new FanTargets(
+                    ClampCurveTarget(evaluated.Target.Fan1Rpm, 1),
+                    ClampCurveTarget(evaluated.Target.Fan2Rpm, 2));
+                rampUp = evaluated.RampUp;
+                rampDown = evaluated.RampDown;
+            }
+            else
+            {
+                var cpuFan1Target = CurveProfileStore.Interpolate(CurveProfileStore.CpuTemps, _cpuFan1Curve, _smoothedCpuTempC);
+                var gpuFan1Target = CurveProfileStore.Interpolate(CurveProfileStore.GpuTemps, _gpuFan1Curve, _smoothedGpuTempC);
+                var cpuFan2Target = CurveProfileStore.Interpolate(CurveProfileStore.CpuTemps, _cpuFan2Curve, _smoothedCpuTempC);
+                var gpuFan2Target = CurveProfileStore.Interpolate(CurveProfileStore.GpuTemps, _gpuFan2Curve, _smoothedGpuTempC);
+                rawTarget = new FanTargets(
+                    ClampCurveTarget(Math.Max(cpuFan1Target, gpuFan1Target), 1),
+                    ClampCurveTarget(Math.Max(cpuFan2Target, gpuFan2Target), 2));
+                rampUp = profile.RampUpRpmPerSecond;
+                rampDown = EffectiveRampDownRate(
+                    profile.FullRangeRampDownRpmPerSecond,
+                    _heatSoaked ? profile.RampDownRpmPerSecond : 0);
+            }
+            var target = _fanRateLimiter.Apply(
+                rawTarget,
+                rampUp,
+                rampDown,
+                DateTimeOffset.Now,
+                _running);
 
             if (_running)
             {
-                var now = DateTimeOffset.Now;
                 if (target != _lastTarget)
-                {
-                    var previousTarget = _lastTarget;
                     _lastTarget = target;
-                    if (previousTarget is null || target.Fan1Rpm != previousTarget.Fan1Rpm)
-                        _lastFan1TargetTime = now;
-                    if (previousTarget is null || target.Fan2Rpm != previousTarget.Fan2Rpm)
-                        _lastFan2TargetTime = now;
-                }
 
                 var targetToApply = SuppressSmallTargetChanges(target);
                 if (targetToApply != _lastAppliedTarget)
@@ -1410,6 +1457,22 @@ public sealed class MainWindow : Window
         return Math.Max(minimum, Math.Min(maximum, rpm));
     }
 
+    private int ClampCurveTarget(int rpm, int fan) =>
+        rpm == 0
+            ? 0
+            : CurveProfileStore.SnapRpm(ClampForCurrentRange(rpm, fan));
+
+    internal static double EffectiveRampDownRate(
+        double fullRange,
+        double highTemperature)
+    {
+        if (fullRange <= 0)
+            return highTemperature;
+        if (highTemperature <= 0)
+            return fullRange;
+        return Math.Min(fullRange, highTemperature);
+    }
+
     private void QueueTargetApply(FanTargets target)
     {
         _queuedTarget = target;
@@ -1482,8 +1545,6 @@ public sealed class MainWindow : Window
             _queuedTarget = null;
             _lastTarget = null;
             _lastAppliedTarget = null;
-            _lastFan1TargetTime = null;
-            _lastFan2TargetTime = null;
             _startButton.Content = T("Start");
             _statusText.Text = T("FanWriteError") + ": " + ex.GetType().Name + ": " + ex.Message;
         }
@@ -1554,6 +1615,14 @@ public sealed class MainWindow : Window
         };
         fanCurveItem.Click += (_, _) => Dispatcher.BeginInvoke(new Action(() => TryChangeControlStrategy(ControlStrategy.FanCurve)));
         strategyMenu.DropDownItems.Add(fanCurveItem);
+        var advancedCurveItem = new Forms.ToolStripMenuItem(T("AdvancedCurve"))
+        {
+            Checked = _settings.ControlStrategy == ControlStrategy.AdvancedCurve
+        };
+        advancedCurveItem.Click += (_, _) => Dispatcher.BeginInvoke(
+            new Action(() => TryChangeControlStrategy(
+                ControlStrategy.AdvancedCurve)));
+        strategyMenu.DropDownItems.Add(advancedCurveItem);
         _trayMenu.Items.Add(strategyMenu);
 
         var profilesMenu = new Forms.ToolStripMenuItem(T("Profile"));
@@ -2017,6 +2086,8 @@ public sealed class MainWindow : Window
         {
             Name = string.IsNullOrWhiteSpace(_nameBox.Text) ? $"Profile {_profileIndex + 1}" : _nameBox.Text.Trim(),
             TemperatureSmoothing = SelectedNumber(_smoothingCombo, 3),
+            RampUpRpmPerSecond = _profiles[_profileIndex].RampUpRpmPerSecond,
+            FullRangeRampDownRpmPerSecond = _profiles[_profileIndex].FullRangeRampDownRpmPerSecond,
             RampDownRpmPerSecond = SelectedRampDown(),
             CpuFan1Curve = [.. _cpuFan1Curve],
             CpuFan2Curve = [.. _cpuFan2Curve],
@@ -2180,14 +2251,14 @@ public sealed class MainWindow : Window
         SetResumeFanControlOnNextStart(true);
         _lastTarget = null;
         _lastAppliedTarget = null;
-        _lastFan1TargetTime = null;
-        _lastFan2TargetTime = null;
         _lastFanWriteTime = null;
         _smoothedCpuTempC = null;
         _smoothedGpuTempC = null;
         _highTempSince = null;
         _heatSoaked = false;
         _heatSoakExitSamples.Clear();
+        _fanRateLimiter.Reset();
+        _advancedCurvePointIndex = 0;
         _currentItsMode = ItsMode.Unknown;
         _gamesRunning = false;
         _effectiveGameMode = _settings.FixedGameModeOverride == FixedGameModeOverride.GameUntilGamesEnd;
@@ -2207,9 +2278,9 @@ public sealed class MainWindow : Window
         _running = false;
         _lastTarget = null;
         _lastAppliedTarget = null;
-        _lastFan1TargetTime = null;
-        _lastFan2TargetTime = null;
         _queuedTarget = null;
+        _fanRateLimiter.Reset();
+        _advancedCurvePointIndex = 0;
         _gamesRunning = false;
         _effectiveGameMode = false;
         _settings.FixedGameModeOverride = FixedGameModeOverride.None;
@@ -2420,8 +2491,8 @@ public sealed class MainWindow : Window
         _queuedTarget = null;
         _lastTarget = null;
         _lastAppliedTarget = null;
-        _lastFan1TargetTime = null;
-        _lastFan2TargetTime = null;
+        _fanRateLimiter.Reset();
+        _advancedCurvePointIndex = 0;
         _gamesRunning = false;
         _effectiveGameMode = false;
         _lastGameStopTime = null;
@@ -3084,15 +3155,18 @@ public sealed class MainWindow : Window
         var fixedMode = _settings.ControlStrategy == ControlStrategy.FixedRpm;
         if (_strategyTabs is not null)
         {
+            var wasLoading = _loadingSettings;
+            _loadingSettings = true;
             _strategyTabs.SelectedIndex = fixedMode ? 0 : 1;
+            _loadingSettings = wasLoading;
         }
 
         if (fixedMode)
         {
             _queuedTarget = null;
-            _lastFan1TargetTime = null;
-            _lastFan2TargetTime = null;
         }
+        _fanRateLimiter.Reset();
+        _advancedCurvePointIndex = 0;
     }
 
     private void OnStrategyTabChanged()
@@ -3105,7 +3179,7 @@ public sealed class MainWindow : Window
             return;
 
         _loadingSettings = true;
-        _strategyTabs.SelectedIndex = _settings.ControlStrategy == ControlStrategy.FanCurve ? 1 : 0;
+        _strategyTabs.SelectedIndex = _settings.ControlStrategy == ControlStrategy.FixedRpm ? 0 : 1;
         _loadingSettings = false;
     }
 
@@ -3119,7 +3193,8 @@ public sealed class MainWindow : Window
         }
 
         if (strategyChanged &&
-            selectedStrategy == ControlStrategy.FanCurve &&
+            (selectedStrategy is ControlStrategy.FanCurve or
+                ControlStrategy.AdvancedCurve) &&
             !_settings.FanCurveWarningAccepted &&
             !_fanCurveWarningShownThisRun)
         {
@@ -3184,9 +3259,9 @@ public sealed class MainWindow : Window
     {
         _lastTarget = null;
         _lastAppliedTarget = null;
-        _lastFan1TargetTime = null;
-        _lastFan2TargetTime = null;
         _queuedTarget = null;
+        _fanRateLimiter.Reset();
+        _advancedCurvePointIndex = 0;
     }
 
     private void UpdateTemperatureUi(TemperatureSnapshot temps)
@@ -3862,38 +3937,6 @@ public sealed class MainWindow : Window
         return _heatSoakExitSamples.Average(sample => sample.TempC) < HeatSoakExitTempC;
     }
 
-    private FanTargets ApplyRampDown(FanTargets rawTarget, double rampDownRpmPerSecond)
-    {
-        if (rampDownRpmPerSecond <= 0)
-            return rawTarget;
-        if (!_heatSoaked)
-            return rawTarget;
-        if (!_running || _lastTarget is null)
-            return rawTarget;
-
-        var now = DateTimeOffset.Now;
-        return new FanTargets(
-            ApplyRampDown(rawTarget.Fan1Rpm, _lastTarget.Fan1Rpm, _lastFan1TargetTime, now, rampDownRpmPerSecond, 1),
-            ApplyRampDown(rawTarget.Fan2Rpm, _lastTarget.Fan2Rpm, _lastFan2TargetTime, now, rampDownRpmPerSecond, 2));
-    }
-
-    private int ApplyRampDown(
-        int rawTarget,
-        int lastTarget,
-        DateTimeOffset? lastTargetTime,
-        DateTimeOffset now,
-        double rampDownRpmPerSecond,
-        int fan)
-    {
-        if (rawTarget >= lastTarget)
-            return rawTarget;
-
-        var elapsedSeconds = Math.Max(0.1, (now - (lastTargetTime ?? now)).TotalSeconds);
-        var maxDrop = Math.Max(1, rampDownRpmPerSecond) * elapsedSeconds;
-        var limited = Math.Max(rawTarget, lastTarget - maxDrop);
-        return ClampForCurrentRange((int)Math.Ceiling(limited / 100.0) * 100, fan);
-    }
-
     private static string FormatTemp(double? value)
     {
         return value is null ? "-- \u00B0C" : $"{value:F1} \u00B0C";
@@ -3994,7 +4037,7 @@ public sealed class MainWindow : Window
         _loadingSettings = true;
         SelectComboValue(_intervalCombo, _settings.IntervalSeconds);
         if (_strategyTabs is not null)
-            _strategyTabs.SelectedIndex = _settings.ControlStrategy == ControlStrategy.FanCurve ? 1 : 0;
+            _strategyTabs.SelectedIndex = _settings.ControlStrategy == ControlStrategy.FixedRpm ? 0 : 1;
         SelectComboValue(_gameExitHoldCombo, _settings.GameExitHoldSeconds);
         _editFanCombo.SelectedIndex = _settings.EditFan == 2 ? 1 : 0;
         _syncFanSpeedsCheck.IsChecked = _settings.SyncFanSpeeds;
@@ -4325,6 +4368,7 @@ public sealed class MainWindow : Window
             "RestoreAutoFailed" => "\u6062\u590d\u81ea\u52a8\u5931\u8d25",
             "StopBeforeSwitch" => "\u5207\u6362\u65b9\u6848\u524d\u8bf7\u5148\u505c\u6b62\u63a7\u5236\u5668\u3002",
             "FanCurve" => "\u98ce\u6247\u66f2\u7ebf",
+            "AdvancedCurve" => "\u9ad8\u7ea7\u66f2\u7ebf",
             "FanCurveWarningTitle" => "\u98ce\u6247\u66f2\u7ebf\u8b66\u544a",
             "FanCurveWarning" => "\u98ce\u6247\u66f2\u7ebf\u4f1a\u9891\u7e41\u8c03\u6574\u8f6c\u901f\uff0c\u8fc7\u77ed\u7684\u95f4\u9694\u53ef\u80fd\u5bfc\u81f4\u5361\u987f\u3002\u8bf7\u8c28\u614e\u4f7f\u7528\u3002",
             "Continue" => "\u7ee7\u7eed",
@@ -4646,6 +4690,7 @@ public sealed class MainWindow : Window
             "RestoreAutoFailed" => "Restore auto failed",
             "StopBeforeSwitch" => "Stop the controller before switching profiles.",
             "FanCurve" => "Fan curve",
+            "AdvancedCurve" => "Advanced curve",
             "FanCurveWarningTitle" => "Fan curve warning",
             "FanCurveWarning" => "Fan curve mode adjusts RPM frequently. Very short intervals may cause stuttering; use it carefully.",
             "Continue" => "Continue",
@@ -4800,6 +4845,21 @@ public sealed class MainWindow : Window
         };
     }
 
+    private void UpdateUnlimitedRateLabel()
+    {
+        var selectedUnlimited = IsUnlimitedRateText(
+            _rampDownCombo.SelectedItem as string);
+        var index = _rampDownCombo.Items
+            .OfType<string>()
+            .Select((item, itemIndex) => (item, itemIndex))
+            .FirstOrDefault(pair => IsUnlimitedRateText(pair.item))
+            .itemIndex;
+        var label = IsChinese ? "无限制" : "inf";
+        _rampDownCombo.Items[index] = label;
+        if (selectedUnlimited)
+            _rampDownCombo.SelectedItem = label;
+    }
+
     private void ApplyLanguage()
     {
         Title = T("AppTitle");
@@ -4816,6 +4876,7 @@ public sealed class MainWindow : Window
         _intervalLabel.Text = T("Interval");
         _smoothingLabel.Text = T("TempSmoothing");
         _rampDownLabel.Text = T("RampDown");
+        UpdateUnlimitedRateLabel();
         _gameExitHoldLabel.Text = T("GameExitHold");
         _fixedModeLabel.Text = T("FixedMode");
         _fixedModeHotkeyLabel.Text = T("FixedModeHotkey");
@@ -4984,9 +5045,12 @@ public sealed class MainWindow : Window
 
     private static void SelectComboValue(ComboBox comboBox, double value)
     {
-        if (value <= 0 && comboBox.Items.Contains("inf"))
+        var unlimited = comboBox.Items
+            .OfType<string>()
+            .FirstOrDefault(IsUnlimitedRateText);
+        if (value <= 0 && unlimited is not null)
         {
-            comboBox.SelectedItem = "inf";
+            comboBox.SelectedItem = unlimited;
             return;
         }
 
@@ -5016,10 +5080,14 @@ public sealed class MainWindow : Window
 
     private double SelectedRampDown()
     {
-        return string.Equals(_rampDownCombo.SelectedItem as string, "inf", StringComparison.OrdinalIgnoreCase)
+        return IsUnlimitedRateText(_rampDownCombo.SelectedItem as string)
             ? 0
             : SelectedNumber(_rampDownCombo, 20);
     }
+
+    private static bool IsUnlimitedRateText(string? text) =>
+        string.Equals(text, "inf", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(text, "无限制", StringComparison.Ordinal);
 
     private Border Metric(TextBlock title, UIElement value)
     {

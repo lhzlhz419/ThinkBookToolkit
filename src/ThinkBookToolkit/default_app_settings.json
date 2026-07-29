@@ -41,6 +41,23 @@
     "GeekGameFan1Rpm": 4200,
     "GeekGameFan2Rpm": 4200
   },
+  "AdvancedFanCurve": {
+    "TemperatureSmoothing": 3,
+    "Points": [
+      { "Fan1Rpm": 0, "Fan2Rpm": 0, "CpuRampUpTemperatureC": 46, "CpuRampDownTemperatureC": null, "GpuRampUpTemperatureC": 36, "GpuRampDownTemperatureC": null, "RampUpRpmPerSecond": 50, "RampDownRpmPerSecond": 20 },
+      { "Fan1Rpm": 1800, "Fan2Rpm": 1900, "CpuRampUpTemperatureC": 52, "CpuRampDownTemperatureC": 43, "GpuRampUpTemperatureC": 42, "GpuRampDownTemperatureC": 33, "RampUpRpmPerSecond": 50, "RampDownRpmPerSecond": 20 },
+      { "Fan1Rpm": 2000, "Fan2Rpm": 1900, "CpuRampUpTemperatureC": 58, "CpuRampDownTemperatureC": 49, "GpuRampUpTemperatureC": 48, "GpuRampDownTemperatureC": 39, "RampUpRpmPerSecond": 50, "RampDownRpmPerSecond": 20 },
+      { "Fan1Rpm": 2400, "Fan2Rpm": 1900, "CpuRampUpTemperatureC": 64, "CpuRampDownTemperatureC": 55, "GpuRampUpTemperatureC": 54, "GpuRampDownTemperatureC": 45, "RampUpRpmPerSecond": 50, "RampDownRpmPerSecond": 20 },
+      { "Fan1Rpm": 2500, "Fan2Rpm": 2300, "CpuRampUpTemperatureC": 70, "CpuRampDownTemperatureC": 61, "GpuRampUpTemperatureC": 60, "GpuRampDownTemperatureC": 51, "RampUpRpmPerSecond": 100, "RampDownRpmPerSecond": 50 },
+      { "Fan1Rpm": 2700, "Fan2Rpm": 2700, "CpuRampUpTemperatureC": 76, "CpuRampDownTemperatureC": 67, "GpuRampUpTemperatureC": 66, "GpuRampDownTemperatureC": 57, "RampUpRpmPerSecond": 100, "RampDownRpmPerSecond": 50 },
+      { "Fan1Rpm": 3100, "Fan2Rpm": 3100, "CpuRampUpTemperatureC": 79, "CpuRampDownTemperatureC": 73, "GpuRampUpTemperatureC": 69, "GpuRampDownTemperatureC": 63, "RampUpRpmPerSecond": 100, "RampDownRpmPerSecond": 50 },
+      { "Fan1Rpm": 3400, "Fan2Rpm": 3400, "CpuRampUpTemperatureC": 82, "CpuRampDownTemperatureC": 76, "GpuRampUpTemperatureC": 72, "GpuRampDownTemperatureC": 66, "RampUpRpmPerSecond": 100, "RampDownRpmPerSecond": 50 },
+      { "Fan1Rpm": 3700, "Fan2Rpm": 3700, "CpuRampUpTemperatureC": 85, "CpuRampDownTemperatureC": 79, "GpuRampUpTemperatureC": 75, "GpuRampDownTemperatureC": 69, "RampUpRpmPerSecond": 100, "RampDownRpmPerSecond": 50 },
+      { "Fan1Rpm": 4100, "Fan2Rpm": 4000, "CpuRampUpTemperatureC": 88, "CpuRampDownTemperatureC": 82, "GpuRampUpTemperatureC": 78, "GpuRampDownTemperatureC": 72, "RampUpRpmPerSecond": 0, "RampDownRpmPerSecond": 100 },
+      { "Fan1Rpm": 4400, "Fan2Rpm": 4600, "CpuRampUpTemperatureC": 92, "CpuRampDownTemperatureC": 85, "GpuRampUpTemperatureC": 81, "GpuRampDownTemperatureC": 75, "RampUpRpmPerSecond": 0, "RampDownRpmPerSecond": 100 },
+      { "Fan1Rpm": 5000, "Fan2Rpm": 5000, "CpuRampUpTemperatureC": null, "CpuRampDownTemperatureC": 88, "GpuRampUpTemperatureC": null, "GpuRampDownTemperatureC": 78, "RampUpRpmPerSecond": 0, "RampDownRpmPerSecond": 100 }
+    ]
+  },
   "ResumeFanControlOnNextStart": false,
   "FanControlWasRunning": false,
   "StartWithWindows": false,

@@ -24,6 +24,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private readonly StackPanel _fixedPanel = new();
     private readonly StackPanel _fixedPreferences = new();
     private readonly StackPanel _curvePanel = new();
+    private readonly StackPanel _advancedCurvePanel = new();
     private readonly Dictionary<string, TextBox> _fixedBoxes = [];
     private readonly ComboBox _profile = new() { MinWidth = 200 };
     private readonly TextBox _profileName = new() { MinWidth = 180 };
@@ -34,7 +35,11 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private readonly ComboBox _gameHold = new() { MinWidth = 150 };
     private readonly TextBox _hotkey = new() { Width = 150 };
     private readonly ComboBox _smoothing = new() { MinWidth = 150 };
+    private readonly ComboBox _curveRampUp = new() { MinWidth = 150 };
+    private readonly ComboBox _curveRampDown = new() { MinWidth = 150 };
     private readonly ComboBox _rampDown = new() { MinWidth = 150 };
+    private readonly ComboBox _advancedSmoothing = new() { MinWidth = 150 };
+    private readonly AdvancedFanCurveEditor _advancedCurve;
     private readonly CurveEditor _cpuCurve;
     private readonly CurveEditor _gpuCurve;
     private readonly TextBlock _draftStatus;
@@ -86,6 +91,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             CurveProfileStore.GpuTemps,
             fallback.GpuFan1Curve,
             fallback.GpuFan2Curve);
+        _advancedCurve = new AdvancedFanCurveEditor(
+            runtime.IsChinese,
+            runtime.IsDark,
+            runtime.Settings.AdvancedFanCurve.Points);
         ConfigureCurves();
         DataContext = new PerformanceViewModel(runtime);
         Content = BuildLayout();
@@ -201,8 +210,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
         BuildFixedPanel();
         BuildCurvePanel();
+        BuildAdvancedCurvePanel();
         content.Children.Add(_fixedPanel);
         content.Children.Add(_curvePanel);
+        content.Children.Add(_advancedCurvePanel);
 
         _fixedPreferences.Children.Add(SettingRow(
             L("自动检测游戏", "Detect games automatically"),
@@ -237,7 +248,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         return Card(
             L("风扇控制", "Fan control"),
             content,
-            L("固件自动与两种 Toolkit 策略在同一处切换；编辑内容采用集中应用。", "Switch between firmware automatic and both Toolkit strategies in one place; edits use Apply."),
+            L("固件自动与三种 Toolkit 策略在同一处切换；编辑内容采用集中应用。", "Switch between firmware automatic and all three Toolkit strategies in one place; edits use Apply."),
             "\uE9CA",
             "#56C2C9");
     }
@@ -245,10 +256,20 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private void PopulateFanPreferenceChoices()
     {
         foreach (var value in new[] { 1d, 2d, 3d, 5d, 10d })
+        {
             AddChoice(_smoothing, $"{value:0}", value);
+            AddChoice(_advancedSmoothing, $"{value:0}", value);
+        }
         foreach (var value in new[] { 10d, 20d, 50d, 100d })
+        {
+            AddChoice(_curveRampUp, $"{value:0}", value);
+            AddChoice(_curveRampDown, $"{value:0}", value);
             AddChoice(_rampDown, $"{value:0}", value);
-        AddChoice(_rampDown, "inf", 0d);
+        }
+        var unlimited = L("无限制", "inf");
+        AddChoice(_curveRampUp, unlimited, 0d);
+        AddChoice(_curveRampDown, unlimited, 0d);
+        AddChoice(_rampDown, unlimited, 0d);
         foreach (var value in new[] { 0d, 10d, 20d, 30d, 60d })
             AddChoice(_gameHold, $"{value:0}", value);
     }
@@ -258,6 +279,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         AddChoice(_strategy, L("固件自动", "Firmware automatic"), FanControlMode.FirmwareAutomatic);
         AddChoice(_strategy, L("固定转速", "Fixed RPM"), FanControlMode.FixedRpm);
         AddChoice(_strategy, L("风扇曲线", "Fan curve"), FanControlMode.FanCurve);
+        AddChoice(_strategy, L("高级曲线", "Advanced curve"), FanControlMode.AdvancedCurve);
         AddChoice(_fixedMode, L("平时", "Normal"), false);
         AddChoice(_fixedMode, L("游戏", "Game"), true);
         _fixedPanel.Children.Add(SettingRow(
@@ -405,7 +427,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         general.Children.Add(CompactSetting(L("名称", "Name"), _profileName));
         general.Children.Add(CompactSetting(L("编辑风扇", "Edit fan"), _editFan));
         general.Children.Add(CompactSetting(L("温度平滑（秒）", "Temperature smoothing (s)"), _smoothing));
-        general.Children.Add(CompactSetting(L("降速限制（RPM/s）", "Ramp-down limit (RPM/s)"), _rampDown));
+        general.Children.Add(CompactSetting(L("升速限制（RPM/s）", "Ramp-up limit (RPM/s)"), _curveRampUp));
+        general.Children.Add(CompactSetting(L("降速限制（RPM/s）", "Ramp-down limit (RPM/s)"), _curveRampDown));
+        general.Children.Add(CompactSetting(L("高温后降速限制（RPM/s）", "Post-high-temperature ramp-down limit (RPM/s)"), _rampDown));
         _curvePanel.Children.Add(general);
         _syncCurve.Content = L("同步两个风扇的曲线", "Synchronize both fan curves");
         _syncCurve.Margin = new Thickness(0, 12, 0, 10);
@@ -413,6 +437,29 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _curvePanel.Children.Add(_cpuCurve);
         _gpuCurve.Margin = new Thickness(0, 10, 0, 0);
         _curvePanel.Children.Add(_gpuCurve);
+    }
+
+    private void BuildAdvancedCurvePanel()
+    {
+        var general = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 290,
+            Spacing = 8
+        };
+        general.Children.Add(CompactSetting(
+            L("温度平滑（秒）", "Temperature smoothing (s)"),
+            _advancedSmoothing));
+        _advancedCurvePanel.Children.Add(general);
+        _advancedCurve.Margin = new Thickness(0, 10, 0, 0);
+        _advancedCurvePanel.Children.Add(_advancedCurve);
+        _advancedCurvePanel.Children.Add(new TextBlock
+        {
+            Text = FanZeroRpmDescription(),
+            Foreground = Brush(Palette.Muted),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 0)
+        });
     }
 
     private Border CompactSetting(string label, UIElement control)
@@ -726,7 +773,11 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             }
         };
         _smoothing.SelectionChanged += (_, _) => MarkFanDirty();
+        _curveRampUp.SelectionChanged += (_, _) => MarkFanDirty();
+        _curveRampDown.SelectionChanged += (_, _) => MarkFanDirty();
         _rampDown.SelectionChanged += (_, _) => MarkFanDirty();
+        _advancedSmoothing.SelectionChanged += (_, _) => MarkFanDirty();
+        _advancedCurve.ValuesChanged += (_, _) => MarkFanDirty();
         _gameHold.SelectionChanged += (_, _) => MarkFanDirty();
         _hotkey.TextChanged += (_, _) => MarkFanDirty();
         _syncCurve.Click += (_, _) =>
@@ -949,6 +1000,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         Select(_fixedMode, Runtime.FanRuntime?.RuntimeSnapshot().EffectiveGameMode ?? settings.ManualGameMode);
         Select(_editFan, settings.EditFan);
         PopulateFixed(settings.FixedRpm);
+        Select(
+            _advancedSmoothing,
+            settings.AdvancedFanCurve.TemperatureSmoothing);
+        _advancedCurve.SetValues(settings.AdvancedFanCurve.Points);
         _syncing = false;
         _fanDirty = false;
         UpdateFanDraftStatus();
@@ -963,6 +1018,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _profile.SelectedIndex = index;
         _profileName.Text = _draftProfile.Name;
         Select(_smoothing, _draftProfile.TemperatureSmoothing);
+        Select(_curveRampUp, _draftProfile.RampUpRpmPerSecond);
+        Select(
+            _curveRampDown,
+            _draftProfile.FullRangeRampDownRpmPerSecond);
         Select(_rampDown, _draftProfile.RampDownRpmPerSecond);
         _cpuCurve.SetValues(_draftProfile.CpuFan1Curve, _draftProfile.CpuFan2Curve);
         _gpuCurve.SetValues(_draftProfile.GpuFan1Curve, _draftProfile.GpuFan2Curve);
@@ -982,10 +1041,21 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             return;
         }
         if (Selected<double>(_smoothing) is not { } smoothing ||
+            Selected<double>(_curveRampUp) is not { } curveRampUp ||
+            Selected<double>(_curveRampDown) is not { } curveRampDown ||
             Selected<double>(_rampDown) is not { } rampDown ||
+            Selected<double>(_advancedSmoothing) is not { } advancedSmoothing ||
             Selected<double>(_gameHold) is not { } hold)
         {
-            _fanStatus.Text = L("请选择有效的平滑、降速限制和保持时间。", "Select valid smoothing, ramp-down, and hold-time values.");
+            _fanStatus.Text = L("请选择有效的温度平滑、升降速限制和保持时间。", "Select valid smoothing, rate-limit, and hold-time values.");
+            return;
+        }
+        if (!_advancedCurve.TryGetSettings(
+                advancedSmoothing,
+                out var advancedFanCurve,
+                out var advancedError))
+        {
+            _fanStatus.Text = advancedError;
             return;
         }
         if (!MainWindow.RuntimeIsValidHotkey(_hotkey.Text))
@@ -1012,6 +1082,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
                 releasedControl = true;
             }
             _draftProfile.TemperatureSmoothing = smoothing;
+            _draftProfile.RampUpRpmPerSecond = curveRampUp;
+            _draftProfile.FullRangeRampDownRpmPerSecond = curveRampDown;
             _draftProfile.RampDownRpmPerSecond = rampDown;
             _draftProfile.CpuCurve = [.. _draftProfile.CpuFan1Curve];
             _draftProfile.GpuCurve = [.. _draftProfile.GpuFan1Curve];
@@ -1024,7 +1096,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
                 hold,
                 Selected(_editFan, 1),
                 _hotkey.Text,
-                fixedRpm);
+                fixedRpm,
+                advancedFanCurve);
             await Runtime.RefreshAsync(force: true);
             _fanStatus.Text = string.Empty;
             ReloadFanDrafts();
@@ -1286,9 +1359,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _pendingRestartText.Text = PendingGpuModeText(snapshot);
         _fullSpeed.IsChecked = snapshot.FullSpeed;
         var fanMode = snapshot.FanControlRunning || snapshot.FullSpeed
-            ? snapshot.FanStrategy == ControlStrategy.FanCurve
-                ? FanControlMode.FanCurve
-                : FanControlMode.FixedRpm
+            ? snapshot.FanStrategy switch
+            {
+                ControlStrategy.FanCurve => FanControlMode.FanCurve,
+                ControlStrategy.AdvancedCurve => FanControlMode.AdvancedCurve,
+                _ => FanControlMode.FixedRpm
+            }
             : FanControlMode.FirmwareAutomatic;
         Select(_strategy, fanMode);
         if (Runtime.FanRuntime?.RuntimeSnapshot() is { } fanRuntime)
@@ -1329,6 +1405,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             ? Visibility.Visible
             : Visibility.Collapsed;
         _curvePanel.Visibility = mode == FanControlMode.FanCurve
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        _advancedCurvePanel.Visibility = mode == FanControlMode.AdvancedCurve
             ? Visibility.Visible
             : Visibility.Collapsed;
     }
@@ -1425,6 +1504,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         Name = profile.Name,
         TemperatureSmoothing = profile.TemperatureSmoothing,
+        RampUpRpmPerSecond = profile.RampUpRpmPerSecond,
+        FullRangeRampDownRpmPerSecond = profile.FullRangeRampDownRpmPerSecond,
         RampDownRpmPerSecond = profile.RampDownRpmPerSecond,
         CpuFan1Curve = [.. profile.CpuFan1Curve], CpuFan2Curve = [.. profile.CpuFan2Curve],
         GpuFan1Curve = [.. profile.GpuFan1Curve], GpuFan2Curve = [.. profile.GpuFan2Curve],

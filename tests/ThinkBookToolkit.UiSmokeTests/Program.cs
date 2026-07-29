@@ -39,6 +39,7 @@ internal static class Program
     {
         VerifyGpuModeRestartState();
         VerifyLenovoDependencyDirectory();
+        VerifyAdvancedFanCurve();
         Assert(UiTypography.FontFamilyNameFor("zh-CN") == "Microsoft YaHei UI",
             "Chinese UI font must use the Windows Simplified Chinese UI family.");
         Assert(UiTypography.FontFamilyNameFor("en-US") == "Segoe UI Variable Text",
@@ -128,8 +129,12 @@ internal static class Program
                 $"Page {expected.Key} is not a UserControl.");
             Assert(page.DataContext is INotifyPropertyChanged,
                 $"Page {expected.Key} has no ViewModel implementing INotifyPropertyChanged.");
-            Assert(!Descendants(page).OfType<ScrollViewer>().Any(),
-                $"Page {expected.Key} contains an inner ScrollViewer.");
+            var innerScrollers = Descendants(page).OfType<ScrollViewer>().ToArray();
+            Assert(expected.Key == "performance"
+                    ? innerScrollers.Length == 1 &&
+                      IsAdvancedCurveHorizontalScroller(innerScrollers[0])
+                    : innerScrollers.Length == 0,
+                $"Page {expected.Key} contains an unexpected inner ScrollViewer.");
             page.Measure(new Size(900, double.PositiveInfinity));
             Assert(page.DesiredSize.Width <= 901,
                 $"Page {expected.Key} forces horizontal overflow ({page.DesiredSize.Width:0.0}px). ");
@@ -238,9 +243,49 @@ internal static class Program
         var curvePanel = GetPrivateField<StackPanel>(
             performance,
             "_curvePanel");
+        var advancedCurvePanel = GetPrivateField<StackPanel>(
+            performance,
+            "_advancedCurvePanel");
+        var strategySelector = GetPrivateField<ComboBox>(
+            performance,
+            "_strategy");
         Assert(fixedPanel.Visibility == Visibility.Collapsed &&
-               curvePanel.Visibility == Visibility.Visible,
+               curvePanel.Visibility == Visibility.Visible &&
+               advancedCurvePanel.Visibility == Visibility.Collapsed &&
+               Labels(strategySelector).SequenceEqual(
+                   ["固件自动", "固定转速", "风扇曲线", "高级曲线"]),
             "Curve strategy did not hide fixed-only options.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            FanStrategy = ControlStrategy.AdvancedCurve,
+            FanControlRunning = true
+        });
+        Assert(advancedCurvePanel.Visibility == Visibility.Visible &&
+               fixedPanel.Visibility == Visibility.Collapsed &&
+               curvePanel.Visibility == Visibility.Collapsed &&
+               ContainsText(advancedCurvePanel, "高级曲线点位") &&
+               ContainsText(advancedCurvePanel, "CPU 升速阈值") &&
+               ContainsButtonText(advancedCurvePanel, "+") &&
+               ContainsButtonText(advancedCurvePanel, "−"),
+            "Advanced curve is missing from the unified strategy editor.");
+        Assert(Descendants(advancedCurvePanel).OfType<Button>()
+                   .Count(button => Equals(button.Content, "+")) == 12 &&
+               Descendants(advancedCurvePanel).OfType<Button>()
+                   .Count(button => Equals(button.Content, "−")) == 12,
+            "Every advanced-curve point must have insert and remove actions.");
+        var advancedLabels = Descendants(advancedCurvePanel)
+            .OfType<Grid>()
+            .Single(grid => Equals(grid.Tag, "AdvancedFanCurveLabels"));
+        var advancedPoints = Descendants(advancedCurvePanel)
+            .OfType<Grid>()
+            .Single(grid => Equals(grid.Tag, "AdvancedFanCurvePoints"));
+        Assert(advancedLabels.Height == advancedPoints.Height &&
+               advancedLabels.RowDefinitions.Select(row => row.Height.Value)
+                   .SequenceEqual(advancedPoints.RowDefinitions.Select(row => row.Height.Value)),
+            "Advanced-curve labels and scrollable cells do not share aligned rows.");
+        performance.Measure(new Size(620, double.PositiveInfinity));
+        Assert(performance.DesiredSize.Width <= 621,
+            "Advanced-curve editing forces horizontal page overflow.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
             FanStrategy = ControlStrategy.FixedRpm,
@@ -267,8 +312,12 @@ internal static class Program
         Assert(!ContainsText(performance, "开机自启") &&
                !ContainsText(performance, "启动到托盘"),
             "Global preferences still appear on the performance page.");
-        Assert(!Descendants(performance).OfType<ScrollViewer>().Any(),
-            "Performance page contains a nested scrollbar.");
+        var performanceScrollers = Descendants(performance)
+            .OfType<ScrollViewer>()
+            .ToArray();
+        Assert(performanceScrollers.Length == 1 &&
+               IsAdvancedCurveHorizontalScroller(performanceScrollers[0]),
+            "Performance page contains an unexpected nested scrollbar.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
             PendingGpuMode = GpuWorkingMode.HybridAuto.ToString(),
@@ -316,7 +365,7 @@ internal static class Program
         Assert(Labels(GetPrivateField<ComboBox>(performance, "_smoothing"))
                    .SequenceEqual(["1", "2", "3", "5", "10"]) &&
                Labels(GetPrivateField<ComboBox>(performance, "_rampDown"))
-                   .SequenceEqual(["10", "20", "50", "100", "inf"]) &&
+                   .SequenceEqual(["10", "20", "50", "100", "无限制"]) &&
                Labels(GetPrivateField<ComboBox>(performance, "_gameHold"))
                    .SequenceEqual(["0", "10", "20", "30", "60"]),
             "Fan timing selector text or order differs from Fan Control.");
@@ -550,7 +599,12 @@ internal static class Program
                        FanControlRunning = false,
                        FullSpeed = true,
                        FanStrategy = ControlStrategy.FixedRpm
-                   }) == FanControlMode.FixedRpm,
+                   }) == FanControlMode.FixedRpm &&
+               ToolkitRuntimeService.ResolveTrayFanMode(
+                   trayFanSnapshot with
+                   {
+                       FanStrategy = ControlStrategy.AdvancedCurve
+                   }) == FanControlMode.AdvancedCurve,
             "Tray fan-strategy check state does not follow the active fan mode.");
 
         runtime.SetReportForTesting(CreateReport(id =>
@@ -811,6 +865,10 @@ internal static class Program
                    new FanTargets(1500, 1500)) ==
                new FanTargets(1500, 1600),
             "The 100 RPM threshold is not applied independently to both fans.");
+        Assert(MainWindow.EffectiveRampDownRate(0, 20) == 20 &&
+               MainWindow.EffectiveRampDownRate(50, 0) == 50 &&
+               MainWindow.EffectiveRampDownRate(50, 20) == 20,
+            "Full-range and post-high-temperature ramp-down limits are not combined safely.");
         try
         {
             _ = FanController.CreateBackendInstance(
@@ -825,6 +883,149 @@ internal static class Program
         limitsWindow.Close();
 
         window.Close();
+    }
+
+    private static void VerifyAdvancedFanCurve()
+    {
+        var points = AdvancedFanCurve.CreateDefaultPoints();
+        Assert(points.Count == 12 &&
+               points[0] is
+               {
+                   Fan1Rpm: 0,
+                   Fan2Rpm: 0,
+                   CpuRampUpTemperatureC: 46,
+                   CpuRampDownTemperatureC: null,
+                   GpuRampUpTemperatureC: 36,
+                   GpuRampDownTemperatureC: null,
+                   RampUpRpmPerSecond: 50,
+                   RampDownRpmPerSecond: 20
+               } &&
+               points[5].CpuRampDownTemperatureC == 67 &&
+               points[5].GpuRampDownTemperatureC == 57 &&
+               points[5].RampUpRpmPerSecond == 100 &&
+               points[5].RampDownRpmPerSecond == 50 &&
+               points[^1] is
+               {
+                   Fan1Rpm: 5000,
+                   Fan2Rpm: 5000,
+                   CpuRampUpTemperatureC: null,
+                   CpuRampDownTemperatureC: 88,
+                   GpuRampUpTemperatureC: null,
+                   GpuRampDownTemperatureC: 78,
+                   RampUpRpmPerSecond: 0,
+                   RampDownRpmPerSecond: 100
+               },
+            "Advanced-curve defaults do not match the requested RPM and threshold table.");
+        Assert(AdvancedFanCurve.TryValidate(points, out _),
+            "The built-in advanced curve is invalid.");
+
+        var oldDefaults = new AdvancedFanCurveSettings
+        {
+            TemperatureSmoothing = 5,
+            Points = points.Select(AdvancedFanCurve.Clone).ToList()
+        };
+        for (var index = 0; index < oldDefaults.Points.Count; index++)
+        {
+            oldDefaults.Points[index].RampUpRpmPerSecond = index < 4 ? 20 : 50;
+            oldDefaults.Points[index].RampDownRpmPerSecond = index < 4 ? 10 : 20;
+        }
+        var migratedDefaults = CurveProfileStore
+            .MigrateOldAdvancedFanCurveDefaults(oldDefaults)!;
+        Assert(migratedDefaults.TemperatureSmoothing == 5 &&
+               migratedDefaults.Points[0].RampUpRpmPerSecond == 50 &&
+               migratedDefaults.Points[0].RampDownRpmPerSecond == 20 &&
+               migratedDefaults.Points[5].RampUpRpmPerSecond == 100 &&
+               migratedDefaults.Points[5].RampDownRpmPerSecond == 50 &&
+               migratedDefaults.Points[^1].RampUpRpmPerSecond == 0 &&
+               migratedDefaults.Points[^1].RampDownRpmPerSecond == 100,
+            "Old built-in advanced-curve rates were not migrated to the new defaults.");
+
+        var intermediateDefaults = new AdvancedFanCurveSettings
+        {
+            Points = points.Select(AdvancedFanCurve.Clone).ToList()
+        };
+        for (var index = 0; index < intermediateDefaults.Points.Count; index++)
+        {
+            intermediateDefaults.Points[index].RampUpRpmPerSecond = index < 4 ? 100 : 0;
+            intermediateDefaults.Points[index].RampDownRpmPerSecond = index < 4 ? 20 : 100;
+        }
+        var migratedIntermediate = CurveProfileStore
+            .MigrateOldAdvancedFanCurveDefaults(intermediateDefaults)!;
+        Assert(migratedIntermediate.Points[0].RampUpRpmPerSecond == 50 &&
+               migratedIntermediate.Points[5].RampUpRpmPerSecond == 100 &&
+               migratedIntermediate.Points[5].RampDownRpmPerSecond == 50,
+            "Intermediate advanced-curve defaults were not migrated.");
+        oldDefaults.Points[2].Fan1Rpm = 2100;
+        Assert(ReferenceEquals(
+                   CurveProfileStore.MigrateOldAdvancedFanCurveDefaults(oldDefaults),
+                   oldDefaults),
+            "A customized advanced curve was incorrectly replaced during default migration.");
+
+        var raised = AdvancedFanCurve.Evaluate(points, 0, 50, 20);
+        Assert(raised.Index == 1 &&
+               raised.Target == new FanTargets(1800, 1900),
+            "Advanced-curve ramp-up hysteresis selected the wrong point.");
+        var lowered = AdvancedFanCurve.Evaluate(points, raised.Index, 40, 20);
+        Assert(lowered.Index == 0 &&
+               lowered.Target == new FanTargets(0, 0),
+            "Advanced-curve ramp-down hysteresis selected the wrong point.");
+        var maximum = AdvancedFanCurve.Evaluate(points, 0, 100, 100);
+        Assert(maximum.Index == points.Count - 1 &&
+               maximum.Target == new FanTargets(5000, 5000),
+            "Advanced curve cannot reach its highest point.");
+
+        var invalid = points.Select(AdvancedFanCurve.Clone).ToList();
+        invalid[1].Fan1Rpm = 1850;
+        Assert(!AdvancedFanCurve.TryValidate(invalid, out _),
+            "Advanced curve accepts fan speeds that are not multiples of 100 RPM.");
+
+        var equalValues = points.Select(AdvancedFanCurve.Clone).ToList();
+        equalValues[2].Fan1Rpm = equalValues[1].Fan1Rpm;
+        equalValues[2].CpuRampUpTemperatureC = equalValues[1].CpuRampUpTemperatureC;
+        equalValues[2].CpuRampDownTemperatureC = equalValues[1].CpuRampDownTemperatureC;
+        equalValues[2].GpuRampUpTemperatureC = equalValues[1].GpuRampUpTemperatureC;
+        equalValues[2].GpuRampDownTemperatureC = equalValues[1].GpuRampDownTemperatureC;
+        Assert(AdvancedFanCurve.TryValidate(equalValues, out _),
+            "Advanced curve rejects equal values in adjacent columns.");
+
+        var descending = points.Select(AdvancedFanCurve.Clone).ToList();
+        descending[2].Fan1Rpm = 1700;
+        Assert(!AdvancedFanCurve.TryValidate(descending, out var descendingError) &&
+               descendingError.Contains("must not decrease", StringComparison.Ordinal),
+            "Advanced curve accepts a value that decreases from left to right.");
+
+        var limiter = new FanRateLimiter();
+        var started = limiter.Apply(
+            new FanTargets(1500, 1500),
+            100,
+            100,
+            DateTimeOffset.UnixEpoch,
+            limitChanges: true);
+        var halfway = limiter.Apply(
+            new FanTargets(2500, 2500),
+            100,
+            100,
+            DateTimeOffset.UnixEpoch.AddSeconds(0.5),
+            limitChanges: true);
+        var firstStep = limiter.Apply(
+            new FanTargets(2500, 2500),
+            100,
+            100,
+            DateTimeOffset.UnixEpoch.AddSeconds(1),
+            limitChanges: true);
+        Assert(started == new FanTargets(1500, 1500) &&
+               halfway == new FanTargets(1500, 1500) &&
+               firstStep == new FanTargets(1600, 1600) &&
+               firstStep.Fan1Rpm % 100 == 0,
+            "Fan rate limiting does not accumulate sub-100 RPM progress or round hardware targets to hundreds.");
+        var zeroTransition = limiter.Apply(
+            new FanTargets(0, 0),
+            10,
+            10,
+            DateTimeOffset.UnixEpoch.AddSeconds(1.5),
+            limitChanges: true);
+        Assert(zeroTransition == new FanTargets(0, 0),
+            "The special zero-RPM operation was incorrectly treated as an intermediate physical RPM.");
     }
 
     private static void VerifyGpuModeRestartState()
@@ -1055,6 +1256,12 @@ internal static class Program
     private static bool ContainsButtonText(DependencyObject root, string text) =>
         Descendants(root).OfType<Button>().Any(button =>
             button.Content?.ToString()?.Contains(text, StringComparison.Ordinal) == true);
+
+    private static bool IsAdvancedCurveHorizontalScroller(ScrollViewer scroll) =>
+        Equals(scroll.Tag, "AdvancedFanCurveHorizontalScroll") &&
+        scroll.HorizontalScrollBarVisibility == ScrollBarVisibility.Auto &&
+        scroll.VerticalScrollBarVisibility == ScrollBarVisibility.Disabled &&
+        scroll.PanningMode == PanningMode.HorizontalOnly;
 
     private static IReadOnlyList<string> Labels(ComboBox combo) =>
         combo.Items.OfType<ComboBoxItem>()

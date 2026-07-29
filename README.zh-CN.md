@@ -10,6 +10,8 @@ ThinkBook Toolkit 是独立开发的实验性项目，与联想公司无关，�
 
 [English](README.md)
 
+[更新日志](CHANGELOG.md)
+
 ## 项目简介
 
 ThinkBook Toolkit 是面向部分 Lenovo ThinkBook 设备的 Windows 原生控制中心。软件使用 WPF 构建，常用调控都在同一个主窗口中完成，并优先加载概览，再逐步检测其它功能。软件可以独立运行，不依赖 ThinkBook Fan Control。
@@ -17,7 +19,7 @@ ThinkBook Toolkit 是面向部分 Lenovo ThinkBook 设备的 Windows 原生控�
 目前包括以下功能：
 
 - 性能模式、GPU 工作模式、温度与功耗监控、风扇控制；
-- 固定转速、CPU/GPU 风扇曲线、配置方案、游戏检测和风扇拉满；
+- 固定转速、CPU/GPU 风扇曲线、可增减点并带迟滞阈值的高级曲线、配置方案、游戏检测和风扇拉满；
 - 充电模式、隔夜充电、持续 USB 供电、开盖启动和完整电池信息；
 - 护眼、色彩模式、Dolby、扬声器/麦克风降噪、键盘、功能键、OSD 和触摸板设置；
 - 设备、固件、存储和联想保修信息；
@@ -99,7 +101,7 @@ public sealed class ExampleFanBackend : IFanBackend
 .\scripts\build.ps1
 ```
 
-生成位于 `dist\ThinkBookToolkit-0.1.2-win-x64-framework-dependent` 的公开、依赖框架版本：
+生成位于 `dist\ThinkBookToolkit-0.2.0-win-x64-framework-dependent` 的公开、依赖框架版本：
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
@@ -111,15 +113,16 @@ public sealed class ExampleFanBackend : IFanBackend
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
 
-输出文件为 `dist\ThinkBookToolkit-0.1.2-Setup.exe`。安装位置默认为
+输出文件为 `dist\ThinkBookToolkit-0.2.0-Setup.exe`。安装位置默认为
 `Program Files\ThinkBook Toolkit`，可在安装向导中修改。如果所选文件夹非空，安装器会明确提示
-其中所有内容将被删除，并且只有确认后才继续；应始终选择 Toolkit 专用文件夹。安装器会检测
+其中所有内容将被删除，并且只有确认后才继续；应始终选择 Toolkit 专用文件夹。如果目录中已有
+文件版本兼容的风扇后端，安装器会默认保留并允许改用安装包内置后端。完成页默认勾选启动 Toolkit。安装器会检测
 64 位 .NET 9 Desktop Runtime；如果未安装，则下载微软官方 .NET 9.0.18 Desktop Runtime
 安装程序、校验固定的 SHA-256 后静默安装。只有确实需要把运行时一并打包的较大便携版本时，
 才使用 `-Publish -SelfContained`。
 
 公开发布构建默认排除本地专有联想 DLL。仅为自己的电脑生成包含本地依赖的私用构建时，可增加
-`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.1.2`，可替换风扇后端 API 和配置文件格式版本均为 `1.0`。
+`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.2.0`，可替换风扇后端 API 和配置文件格式版本均为 `1.0`。
 
 运行不会写入硬件的 UI 冒烟测试：
 

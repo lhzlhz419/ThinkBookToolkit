@@ -450,9 +450,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
             if (Snapshot.FanControlRunning || Snapshot.FullSpeed)
                 await _fanRuntime.RuntimeRestoreFirmwareAutoAsync();
 
-            var strategy = mode == FanControlMode.FanCurve
-                ? ControlStrategy.FanCurve
-                : ControlStrategy.FixedRpm;
+            var strategy = mode switch
+            {
+                FanControlMode.FanCurve => ControlStrategy.FanCurve,
+                FanControlMode.AdvancedCurve => ControlStrategy.AdvancedCurve,
+                _ => ControlStrategy.FixedRpm
+            };
             if (!_fanRuntime.RuntimeSetStrategy(strategy))
             {
                 return L(
@@ -461,7 +464,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
             }
 
             Settings.FanCurveWarningAccepted |=
-                strategy == ControlStrategy.FanCurve;
+                strategy is ControlStrategy.FanCurve or
+                    ControlStrategy.AdvancedCurve;
             CurveProfileStore.SaveSettings(Settings);
             await _fanRuntime.RuntimeSetControlEnabledAsync(true);
             await RefreshAsync(force: true);
@@ -949,6 +953,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
             strategy.DropDownItems.Add(CreateTrayFanModeItem(
                 L("风扇曲线", "Fan curve"),
                 FanControlMode.FanCurve));
+            strategy.DropDownItems.Add(CreateTrayFanModeItem(
+                L("高级曲线", "Advanced curve"),
+                FanControlMode.AdvancedCurve));
             _trayMenu.Items.Add(strategy);
         }
 
@@ -997,9 +1004,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
     {
         if (!snapshot.FanControlRunning && !snapshot.FullSpeed)
             return FanControlMode.FirmwareAutomatic;
-        return snapshot.FanStrategy == ControlStrategy.FanCurve
-            ? FanControlMode.FanCurve
-            : FanControlMode.FixedRpm;
+        return snapshot.FanStrategy switch
+        {
+            ControlStrategy.FanCurve => FanControlMode.FanCurve,
+            ControlStrategy.AdvancedCurve => FanControlMode.AdvancedCurve,
+            _ => FanControlMode.FixedRpm
+        };
     }
 
     private void UpdateTrayText()

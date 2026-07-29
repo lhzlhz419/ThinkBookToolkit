@@ -11,6 +11,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $solution = Join-Path $projectRoot "ThinkBookToolkit.sln"
 $project = Join-Path $projectRoot "src\ThinkBookToolkit\ThinkBookToolkit.csproj"
+$fanBackendProject = Join-Path $projectRoot "src\ThinkBookToolkit.FanBackend.Wmi\ThinkBookToolkit.FanBackend.Wmi.csproj"
 
 if ($Installer -and $SelfContained) {
     throw "The online installer requires a framework-dependent publish. Do not combine -Installer and -SelfContained."
@@ -28,6 +29,19 @@ if ($Publish -or $Installer) {
     }
     if ([string]::IsNullOrWhiteSpace($version)) {
         throw "Unable to resolve the application version."
+    }
+
+    $fanBackendVersionOutput = dotnet msbuild $fanBackendProject -nologo -getProperty:FileVersion
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $fanBackendVersionText = ($fanBackendVersionOutput | Out-String).Trim()
+    $fanBackendVersion = if ($fanBackendVersionText.StartsWith("{")) {
+        ($fanBackendVersionText | ConvertFrom-Json).Properties.FileVersion
+    }
+    else {
+        $fanBackendVersionText
+    }
+    if ([string]::IsNullOrWhiteSpace($fanBackendVersion)) {
+        throw "Unable to resolve the fan backend file version."
     }
 
     $publishKind = if ($SelfContained) { "self-contained" } else { "framework-dependent" }
@@ -92,6 +106,7 @@ if ($Publish -or $Installer) {
             "/DSourceDir=$output" `
             "/DOutputDir=$installerOutput" `
             "/DChineseMessagesFile=$translation" `
+            "/DFanBackendFileVersion=$fanBackendVersion" `
             $installerScript
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Write-Host "Installer output: $(Join-Path $installerOutput "ThinkBookToolkit-$version-Setup.exe")"

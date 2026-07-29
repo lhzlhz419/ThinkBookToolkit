@@ -1,14 +1,17 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "0.1.2"
+  #define AppVersion "0.2.0"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\dist\ThinkBookToolkit-0.1.2-win-x64-framework-dependent"
+  #define SourceDir "..\dist\ThinkBookToolkit-0.2.0-win-x64-framework-dependent"
 #endif
 #ifndef OutputDir
   #define OutputDir "..\dist"
 #endif
 #ifndef ChineseMessagesFile
   #define ChineseMessagesFile "compiler:Languages\ChineseSimplified.isl"
+#endif
+#ifndef FanBackendFileVersion
+  #define FanBackendFileVersion "1.0.0.0"
 #endif
 
 #define AppName "ThinkBook Toolkit"
@@ -79,6 +82,12 @@ chinesesimplified.InstallDirectoryNotEmpty=安装文件夹已包含文件：%n%n
 english.InstallDirectoryNotEmpty=The installation folder already contains files:%n%n%1%n%nContinuing will delete every file and subfolder in this directory. Continue?
 chinesesimplified.InstallDirectoryUnsafe=不能清空所选目录，因为它是系统目录或范围过大的目录：%n%n%1%n%n请新建并选择一个专用于 ThinkBook Toolkit 的子文件夹。
 english.InstallDirectoryUnsafe=Setup cannot clear the selected directory because it is a system directory or is too broad:%n%n%1%n%nCreate and select a dedicated subfolder for ThinkBook Toolkit.
+chinesesimplified.PreserveFanBackend=检测到版本兼容（%1）的现有风扇后端。是否在覆盖安装时保留该 DLL？%n%n默认选择保留；选择“否”将使用安装包中的后端。
+english.PreserveFanBackend=A compatible existing fan backend (version %1) was found. Keep this DLL during the overwrite installation?%n%nThe default is to keep it; choose No to use the backend included with Setup.
+chinesesimplified.PreserveFanBackendFailed=无法在覆盖安装前暂存现有风扇后端：%1
+english.PreserveFanBackendFailed=Could not preserve the existing fan backend before overwriting the installation: %1
+chinesesimplified.RestoreFanBackendFailed=安装已完成，但无法恢复选择保留的风扇后端：%1
+english.RestoreFanBackendFailed=Setup completed, but the preserved fan backend could not be restored: %1
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
@@ -95,12 +104,19 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Run]
 Filename: "{app}\ThinkBookToolkit.exe"; Parameters: "--configure-lenovo-dll-directory ""{code:CustomLenovoDllDirectory}"""; Flags: runhidden waituntilterminated; Check: UseCustomLenovoDllDirectory
 Filename: "{app}\ThinkBookToolkit.exe"; Parameters: "--configure-lenovo-dll-directory"; Flags: runhidden waituntilterminated; Check: not UseCustomLenovoDllDirectory
+Filename: "{app}\ThinkBookToolkit.exe"; Description: "{cm:LaunchProgram,ThinkBook Toolkit}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [Code]
 var
   LenovoDllOptionPage: TInputOptionWizardPage;
   LenovoDllDirectoryPage: TInputDirWizardPage;
   ConfirmedDeleteDirectory: String;
+  PreserveExistingFanBackend: Boolean;
+  FanBackendDecisionDirectory: String;
+  PreservedFanBackendPath: String;
+
+const
+  FanBackendFileName = 'ThinkBookToolkit.FanBackend.dll';
 
 function NormalizedDirectory(Path: String): String;
 begin
@@ -170,12 +186,50 @@ begin
   end;
 end;
 
+function CompatibleFanBackendExists(Path: String): Boolean;
+var
+  ExistingVersion: String;
+  BackendPath: String;
+begin
+  Result := False;
+  BackendPath := AddBackslash(Path) + FanBackendFileName;
+  if not FileExists(BackendPath) then
+    Exit;
+  if not GetVersionNumbersString(BackendPath, ExistingVersion) then
+    Exit;
+  Result := SameText(ExistingVersion, '{#FanBackendFileVersion}');
+end;
+
+function PreserveFanBackendBeforeCleanup: String;
+var
+  ExistingBackendPath: String;
+begin
+  Result := '';
+  if not PreserveExistingFanBackend then
+    Exit;
+
+  ExistingBackendPath := AddBackslash(ConfirmedDeleteDirectory) +
+    FanBackendFileName;
+  PreservedFanBackendPath := ExpandConstant(
+    '{tmp}\ThinkBookToolkit.FanBackend.preserved.dll');
+  if not CopyFile(
+           ExistingBackendPath,
+           PreservedFanBackendPath,
+           False) then
+  begin
+    Result := FmtMessage(
+      CustomMessage('PreserveFanBackendFailed'), [ExistingBackendPath]);
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   RuntimePath: String;
   ResultCode: Integer;
 begin
-  Result := '';
+  Result := PreserveFanBackendBeforeCleanup;
+  if Result <> '' then
+    Exit;
   if HasDotNet9DesktopRuntime then
     Exit;
 
@@ -214,8 +268,159 @@ begin
     NeedsRestart := True;
 end;
 
-procedure InitializeWizard;
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Destination: String;
 begin
+  if (CurStep <> ssPostInstall) or
+     not PreserveExistingFanBackend or
+     (PreservedFanBackendPath = '') then
+  begin
+    Exit;
+  end;
+
+  Destination := ExpandConstant('{app}\') + FanBackendFileName;
+  if not CopyFile(PreservedFanBackendPath, Destination, False) then
+  begin
+    MsgBox(
+      FmtMessage(
+        CustomMessage('RestoreFanBackendFailed'), [Destination]),
+      mbError,
+      MB_OK);
+  end;
+end;
+
+function JsonValueStart(
+  Content: String;
+  PropertyName: String;
+  var ValueStart: Integer): Boolean;
+var
+  Marker: String;
+  PropertyPosition: Integer;
+  ColonPosition: Integer;
+  Remaining: String;
+begin
+  Result := False;
+  Marker := '"' + PropertyName + '"';
+  PropertyPosition := Pos(Marker, Content);
+  if PropertyPosition = 0 then
+    Exit;
+
+  Remaining := Copy(
+    Content,
+    PropertyPosition + Length(Marker),
+    Length(Content));
+  ColonPosition := Pos(':', Remaining);
+  if ColonPosition = 0 then
+    Exit;
+
+  ValueStart := PropertyPosition + Length(Marker) + ColonPosition;
+  while (ValueStart <= Length(Content)) and
+        (Content[ValueStart] <= ' ') do
+  begin
+    ValueStart := ValueStart + 1;
+  end;
+  Result := ValueStart <= Length(Content);
+end;
+
+function TryReadJsonString(
+  Content: String;
+  PropertyName: String;
+  var Value: String): Boolean;
+var
+  Position: Integer;
+  EscapeCode: Char;
+  HexValue: Integer;
+begin
+  Result := False;
+  Value := '';
+  if not JsonValueStart(Content, PropertyName, Position) or
+     (Content[Position] <> '"') then
+  begin
+    Exit;
+  end;
+
+  Position := Position + 1;
+  while Position <= Length(Content) do
+  begin
+    if Content[Position] = '"' then
+    begin
+      Result := True;
+      Exit;
+    end;
+
+    if Content[Position] <> '\' then
+    begin
+      Value := Value + Content[Position];
+      Position := Position + 1;
+      Continue;
+    end;
+
+    Position := Position + 1;
+    if Position > Length(Content) then
+      Exit;
+    EscapeCode := Content[Position];
+    case EscapeCode of
+      '"', '\', '/': Value := Value + EscapeCode;
+      'b': Value := Value + Chr(8);
+      'f': Value := Value + Chr(12);
+      'n': Value := Value + #10;
+      'r': Value := Value + #13;
+      't': Value := Value + #9;
+      'u':
+        begin
+          if Position + 4 > Length(Content) then
+            Exit;
+          HexValue := StrToIntDef(
+            '$' + Copy(Content, Position + 1, 4), -1);
+          if HexValue < 0 then
+            Exit;
+          Value := Value + Chr(HexValue);
+          Position := Position + 4;
+        end;
+    else
+      Exit;
+    end;
+    Position := Position + 1;
+  end;
+end;
+
+function TryLoadExistingLenovoDllDirectory(
+  var Directory: String): Boolean;
+var
+  ConfigPath: String;
+  Content: AnsiString;
+  UnicodeContent: String;
+begin
+  Result := False;
+  Directory := '';
+  ConfigPath := AddBackslash(GetEnv('USERPROFILE')) +
+    '.thinkbook_toolkit\app_settings.csharp.json';
+  if not LoadStringFromFile(ConfigPath, Content) then
+    Exit;
+
+  UnicodeContent := String(Content);
+  if not TryReadJsonString(
+           UnicodeContent,
+           'CustomLenovoDllDirectory',
+           Directory) then
+  begin
+    Directory := '';
+    Exit;
+  end;
+
+  Directory := NormalizedDirectory(Trim(Directory));
+  Result := Directory <> '';
+end;
+
+procedure InitializeWizard;
+var
+  ExistingLenovoDllDirectory: String;
+  UseExistingLenovoDllDirectory: Boolean;
+begin
+  UseExistingLenovoDllDirectory :=
+    TryLoadExistingLenovoDllDirectory(ExistingLenovoDllDirectory);
+
   LenovoDllOptionPage := CreateInputOptionPage(
     wpSelectDir,
     CustomMessage('LenovoDllOptionTitle'),
@@ -224,7 +429,7 @@ begin
     False,
     False);
   LenovoDllOptionPage.Add(CustomMessage('LenovoDllOptionCheck'));
-  LenovoDllOptionPage.Values[0] := False;
+  LenovoDllOptionPage.Values[0] := UseExistingLenovoDllDirectory;
 
   LenovoDllDirectoryPage := CreateInputDirPage(
     LenovoDllOptionPage.ID,
@@ -234,6 +439,7 @@ begin
     False,
     '');
   LenovoDllDirectoryPage.Add('');
+  LenovoDllDirectoryPage.Values[0] := ExistingLenovoDllDirectory;
 end;
 
 function UseCustomLenovoDllDirectory: Boolean;
@@ -266,6 +472,11 @@ begin
   begin
     SelectedDirectory := NormalizedDirectory(WizardDirValue);
     ConfirmedDeleteDirectory := '';
+    if not SameText(FanBackendDecisionDirectory, SelectedDirectory) then
+    begin
+      PreserveExistingFanBackend := False;
+      FanBackendDecisionDirectory := '';
+    end;
     if DirectoryHasContents(SelectedDirectory) then
     begin
       if IsUnsafeCleanupDirectory(SelectedDirectory) then
@@ -287,6 +498,20 @@ begin
         Exit;
       end;
       ConfirmedDeleteDirectory := SelectedDirectory;
+      if FanBackendDecisionDirectory = '' then
+      begin
+        FanBackendDecisionDirectory := SelectedDirectory;
+        if CompatibleFanBackendExists(SelectedDirectory) then
+        begin
+          PreserveExistingFanBackend :=
+            SuppressibleMsgBox(
+              FmtMessage(
+                CustomMessage('PreserveFanBackend'), ['{#FanBackendFileVersion}']),
+              mbConfirmation,
+              MB_YESNO,
+              IDYES) = IDYES;
+        end;
+      end;
     end;
   end;
 

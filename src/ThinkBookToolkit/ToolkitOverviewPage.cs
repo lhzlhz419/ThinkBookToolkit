@@ -225,6 +225,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
         AddChoice(_fanMode, L("固件自动", "Firmware automatic"), FanControlMode.FirmwareAutomatic);
         AddChoice(_fanMode, L("固定转速", "Fixed RPM"), FanControlMode.FixedRpm);
         AddChoice(_fanMode, L("风扇曲线", "Fan curve"), FanControlMode.FanCurve);
+        AddChoice(_fanMode, L("高级曲线", "Advanced curve"), FanControlMode.AdvancedCurve);
     }
 
     private void WireModeControls()
@@ -309,9 +310,12 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
         Select(
             _fanMode,
             snapshot.FanControlRunning
-                ? snapshot.FanStrategy == ControlStrategy.FanCurve
-                    ? FanControlMode.FanCurve
-                    : FanControlMode.FixedRpm
+                ? snapshot.FanStrategy switch
+                {
+                    ControlStrategy.FanCurve => FanControlMode.FanCurve,
+                    ControlStrategy.AdvancedCurve => FanControlMode.AdvancedCurve,
+                    _ => FanControlMode.FixedRpm
+                }
                 : FanControlMode.FirmwareAutomatic);
         _itsMode.IsEnabled = !_modeWriteBusy &&
                              Runtime.Report?.IsAvailable(FeatureIds.PerformanceMode) == true;
