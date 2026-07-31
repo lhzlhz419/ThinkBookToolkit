@@ -168,6 +168,11 @@ public static class CurveProfileStore
                 defaults.FanWriteMinimumIntervalSeconds =
                     loaded.FanWriteMinimumIntervalSeconds;
             }
+            defaults.LastFanBackendIdentity =
+                loaded.LastFanBackendIdentity ?? string.Empty;
+            defaults.SuppressedFanBackendStartupNoticeIdentity =
+                loaded.SuppressedFanBackendStartupNoticeIdentity ??
+                string.Empty;
             defaults.PendingGpuMode = Enum.TryParse<GpuWorkingMode>(
                 loaded.PendingGpuMode,
                 out _)

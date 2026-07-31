@@ -78,6 +78,7 @@ internal sealed class AdvancedFanCurveEditor : Border
 
     public bool TryGetSettings(
         double smoothing,
+        FanRpmLimits limits,
         out AdvancedFanCurveSettings settings,
         out string error)
     {
@@ -96,6 +97,21 @@ internal sealed class AdvancedFanCurveEditor : Border
             error = LocalizeValidation(validationError);
             _validation.Text = error;
             return false;
+        }
+        for (var index = 0; index < points.Count; index++)
+        {
+            var point = points[index];
+            if (point.Fan1Rpm < limits.Fan1MinimumRpm ||
+                point.Fan1Rpm > limits.Fan1MaximumRpm ||
+                point.Fan2Rpm < limits.Fan2MinimumRpm ||
+                point.Fan2Rpm > limits.Fan2MaximumRpm)
+            {
+                error = L(
+                    $"点位 {index + 1} 的 Fan 1 转速必须位于 {limits.Fan1MinimumRpm}–{limits.Fan1MaximumRpm} RPM，Fan 2 转速必须位于 {limits.Fan2MinimumRpm}–{limits.Fan2MaximumRpm} RPM。",
+                    $"Point {index + 1}: Fan 1 must be within {limits.Fan1MinimumRpm}–{limits.Fan1MaximumRpm} RPM and Fan 2 within {limits.Fan2MinimumRpm}–{limits.Fan2MaximumRpm} RPM.");
+                _validation.Text = error;
+                return false;
+            }
         }
 
         settings.Points = points;

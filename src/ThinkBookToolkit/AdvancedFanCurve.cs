@@ -10,8 +10,8 @@ public static class AdvancedFanCurve
 
     public static List<AdvancedFanCurvePoint> CreateDefaultPoints()
     {
-        int[] fan1 = [0, 1800, 2000, 2400, 2500, 2700, 3100, 3400, 3700, 4100, 4400, 5000];
-        int[] fan2 = [0, 1900, 1900, 1900, 2300, 2700, 3100, 3400, 3700, 4000, 4600, 5000];
+        int[] fan1 = [1500, 1800, 2000, 2400, 2500, 2700, 3100, 3400, 3700, 4100, 4400, 5000];
+        int[] fan2 = [1500, 1900, 1900, 1900, 2300, 2700, 3100, 3400, 3700, 4000, 4600, 5000];
         int?[] cpuUp = [46, 52, 58, 64, 70, 76, 79, 82, 85, 88, 92, null];
         int?[] gpuUp = [36, 42, 48, 54, 60, 66, 69, 72, 75, 78, 81, null];
         int?[] cpuDown = [null, 43, 49, 55, 61, 67, 73, 76, 79, 82, 85, 88];
@@ -219,9 +219,7 @@ public static class AdvancedFanCurve
         previous is null || current is null || current >= previous;
 
     private static int ClampRpm(int value, int minimum, int maximum) =>
-        value == 0
-            ? 0
-            : CurveProfileStore.ClampRpm(value, minimum, maximum);
+        CurveProfileStore.ClampRpm(value, minimum, maximum);
 
     private static double NormalizeSmoothing(double value)
     {

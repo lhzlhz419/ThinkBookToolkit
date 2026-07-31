@@ -4,10 +4,49 @@ namespace ThinkBookToolkit.FanBackend;
 
 public static class FanBackendContract
 {
-    public static Version CurrentVersion { get; } = new(1, 0);
+    public static Version CurrentVersion { get; } = new(1, 1);
 }
 
 public sealed record FanBackendRange(string Fan, uint Id, int MinRpm, int MaxRpm);
+
+public sealed record FanBackendStartupNoticeText(
+    string Title,
+    string Content);
+
+public sealed record FanBackendStartupNotice(
+    IReadOnlyDictionary<string, FanBackendStartupNoticeText> Localizations,
+    FanBackendStartupNoticeText Fallback)
+{
+    public FanBackendStartupNoticeText Resolve(string? language)
+    {
+        if (!string.IsNullOrWhiteSpace(language) &&
+            Localizations.TryGetValue(
+                language,
+                out var exact))
+        {
+            return exact;
+        }
+
+        if (!string.IsNullOrWhiteSpace(language))
+        {
+            var separator = language.IndexOf('-');
+            var neutralLanguage = separator > 0
+                ? language[..separator]
+                : language;
+            var neutral = Localizations.FirstOrDefault(pair =>
+                pair.Key.Equals(
+                    neutralLanguage,
+                    StringComparison.OrdinalIgnoreCase) ||
+                pair.Key.StartsWith(
+                    neutralLanguage + "-",
+                    StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(neutral.Key))
+                return neutral.Value;
+        }
+
+        return Fallback;
+    }
+}
 
 public sealed record FanBackendSnapshot(
     DateTimeOffset Timestamp,
@@ -57,6 +96,12 @@ public interface IFanBackend
     string Name { get; }
 
     string Transport { get; }
+
+    /// <summary>
+    /// Optional localized notice shown when Toolkit starts. Return null when
+    /// the backend does not need to display a notice.
+    /// </summary>
+    FanBackendStartupNotice? StartupNotice { get; }
 
     /// <summary>
     /// Declares whether this backend should expose the option that releases fan

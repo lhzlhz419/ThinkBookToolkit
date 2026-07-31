@@ -7,6 +7,29 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-31
+
+### Changed
+
+- The installer now explicitly warns when an existing custom fan backend has
+  an incompatible or unreadable file version and will be replaced.
+- Raised the replaceable fan-backend API to 1.1. Backends can now optionally
+  provide localized startup notice text; notice suppression is reset whenever
+  the backend DLL contents change.
+- Changed the lowest Advanced Curve default target from 0/0 RPM to
+  1500/1500 RPM. Advanced Curve endpoints now obey the configured fan RPM
+  limits as well.
+- Public Release packages no longer include PDB files, and user-facing crash
+  dialogs show a concise error while retaining full diagnostics in the crash
+  log.
+
+### Fixed
+
+- Fixed the Performance page crashing while loading fixed-RPM drafts when the
+  selected fan backend is unavailable.
+- Replaced build-machine source paths in development symbols with a stable
+  mapped source root.
+
 ## [0.2.0] - 2026-07-29
 
 ### Added
@@ -60,7 +83,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.1.0...v0.1.1

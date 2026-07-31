@@ -18,7 +18,11 @@ public static class Program
             app.DispatcherUnhandledException += (_, args) =>
             {
                 LogException(args.Exception);
-                MessageBox.Show(args.Exception.ToString(), "ThinkBook Toolkit error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(
+                    FormatExceptionForDisplay(args.Exception),
+                    "ThinkBook Toolkit error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
                 args.Handled = true;
             };
             if (TryApplyInstallerConfiguration(args))
@@ -41,8 +45,21 @@ public static class Program
         catch (Exception ex)
         {
             LogException(ex);
-            MessageBox.Show(ex.ToString(), "ThinkBook Toolkit startup failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(
+                FormatExceptionForDisplay(ex),
+                "ThinkBook Toolkit startup failed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
         }
+    }
+
+    internal static string FormatExceptionForDisplay(Exception exception)
+    {
+        var error = exception.GetBaseException();
+        return
+            $"{error.GetType().Name}: {error.Message}\r\n\r\n" +
+            "详细诊断信息已写入 ~/.thinkbook_toolkit/csharp-crash.log。\r\n" +
+            "Diagnostic details were written to ~/.thinkbook_toolkit/csharp-crash.log.";
     }
 
     private static bool TryApplyInstallerConfiguration(

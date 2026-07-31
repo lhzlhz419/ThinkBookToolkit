@@ -104,6 +104,40 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public TimeSpan? FanBackendMinimumWriteInterval =>
         _fanRuntime?.RuntimeBackendMinimumWriteInterval;
 
+    internal PendingFanBackendStartupNotice?
+        PrepareFanBackendStartupNotice()
+    {
+        if (_fanRuntime is null)
+            return null;
+
+        var identity = _fanRuntime.RuntimeBackendIdentity;
+        if (FanBackendStartupNoticePreference.ReconcileBackend(
+                Settings,
+                identity))
+        {
+            TrySaveFanBackendNoticePreference();
+        }
+
+        return FanBackendStartupNoticePreference.GetPending(
+            Settings,
+            identity,
+            _fanRuntime.RuntimeBackendStartupNotice,
+            Settings.Language);
+    }
+
+    internal void SuppressFanBackendStartupNotice(
+        string backendIdentity)
+    {
+        if (!FanBackendStartupNoticePreference.Suppress(
+                Settings,
+                backendIdentity))
+        {
+            return;
+        }
+
+        TrySaveFanBackendNoticePreference();
+    }
+
     public bool FanBackendSupportsDisableControlOnSleep =>
         _fanRuntime?.RuntimeBackendSupportsDisableControlOnSleep ??
         Report?.IsAvailable(FeatureIds.SleepFanControl) == true;
@@ -152,6 +186,22 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public string L(string chinese, string english) =>
         IsChinese ? chinese : english;
+
+    private void TrySaveFanBackendNoticePreference()
+    {
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+        }
+        catch
+        {
+            StatusChanged?.Invoke(
+                this,
+                L(
+                    "无法保存风扇插件提示设置。",
+                    "The fan plug-in notice preference could not be saved."));
+        }
+    }
 
     public static bool ResolveDarkTheme(string theme)
     {

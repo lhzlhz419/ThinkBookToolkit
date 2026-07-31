@@ -45,8 +45,9 @@ Toolkit 会从程序目录加载 `ThinkBookToolkit.FanBackend.dll`。本仓库�
 
 替换用的程序集需要面向兼容的 .NET Windows 运行时，引用 `ThinkBookToolkit.FanBackend.Contracts.dll`，并提供一个具有无参构造函数、公开且非抽象的 `IFanBackend` 实现。后端必须声明：
 
-- 通过 `ApiVersion` 声明风扇后端 API 版本 `1.0`；
+- 通过 `ApiVersion` 声明风扇后端 API 版本 `1.1`；
 - 用于识别的 `Name` 和 `Transport`；
+- 可选的本地化启动提示；不需要提示时返回 `null`；
 - 是否支持在睡眠前释放风扇控制并在唤醒后恢复；
 - 普通读取和普通写入的最小间隔（同时写入两个风扇视为一个批次；风扇拉满和恢复自动不受该间隔约束）；
 - 目标转速为 `0` 时，是把对应风扇交还固件，还是在保持手动控制的同时关闭风扇；
@@ -57,6 +58,8 @@ Toolkit 会从程序目录加载 `ThinkBookToolkit.FanBackend.dll`。本仓库�
 最小声明示例：
 
 ```csharp
+using System;
+using System.Collections.Generic;
 using ThinkBookToolkit.FanBackend;
 
 public sealed class ExampleFanBackend : IFanBackend
@@ -64,6 +67,7 @@ public sealed class ExampleFanBackend : IFanBackend
     public Version ApiVersion => FanBackendContract.CurrentVersion;
     public string Name => "Example fan backend";
     public string Transport => "Vendor WMI";
+    public FanBackendStartupNotice? StartupNotice => null;
     public bool SupportsDisableControlOnSleep => false;
     public TimeSpan MinimumReadInterval => TimeSpan.FromSeconds(0.5);
     public TimeSpan MinimumWriteInterval => TimeSpan.FromSeconds(6);
@@ -91,6 +95,26 @@ public sealed class ExampleFanBackend : IFanBackend
 }
 ```
 
+需要启动提示的后端可以按语言代码声明标题和正文，并提供回退文本：
+
+```csharp
+private static readonly FanBackendStartupNoticeText EnglishNotice = new(
+    "Fan backend notice",
+    "Important information supplied by this backend.");
+
+public FanBackendStartupNotice? StartupNotice { get; } = new(
+    new Dictionary<string, FanBackendStartupNoticeText>(
+        StringComparer.OrdinalIgnoreCase)
+    {
+        ["zh-CN"] = new("风扇后端提示", "由此后端提供的重要信息。"),
+        ["en-US"] = EnglishNotice
+    },
+    EnglishNotice);
+```
+
+Toolkit 会根据当前界面语言选择文本。用户可以只确认，也可以选择“确定并不再显示”；
+后者仅对当前 DLL 内容有效。替换风扇后端后，即使文件名相同，Toolkit 也会重新记录是否隐藏提示。
+
 这些声明必须准确描述实际实现。Toolkit 不会假定 `0 RPM` 一定表示恢复自动，也不会假定风扇拉满等同于写入最大转速。
 
 ## 构建与测试
@@ -101,7 +125,7 @@ public sealed class ExampleFanBackend : IFanBackend
 .\scripts\build.ps1
 ```
 
-生成位于 `dist\ThinkBookToolkit-0.2.0-win-x64-framework-dependent` 的公开、依赖框架版本：
+生成位于 `dist\v0.2.1\ThinkBookToolkit-0.2.1-win-x64-framework-dependent` 的公开、依赖框架版本：
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
@@ -113,16 +137,18 @@ public sealed class ExampleFanBackend : IFanBackend
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
 
-输出文件为 `dist\ThinkBookToolkit-0.2.0-Setup.exe`。安装位置默认为
+输出文件为 `dist\v0.2.1\ThinkBookToolkit-0.2.1-Setup.exe`。安装位置默认为
 `Program Files\ThinkBook Toolkit`，可在安装向导中修改。如果所选文件夹非空，安装器会明确提示
 其中所有内容将被删除，并且只有确认后才继续；应始终选择 Toolkit 专用文件夹。如果目录中已有
-文件版本兼容的风扇后端，安装器会默认保留并允许改用安装包内置后端。完成页默认勾选启动 Toolkit。安装器会检测
-64 位 .NET 9 Desktop Runtime；如果未安装，则下载微软官方 .NET 9.0.18 Desktop Runtime
+文件版本兼容的风扇后端，安装器会默认保留并允许改用安装包内置后端。如果已有后端的文件版本
+不符合当前要求或无法读取，安装器会明确提示该自定义后端将被内置后端替换。完成页默认勾选
+启动 Toolkit。安装器会检测 64 位 .NET 9 Desktop Runtime；如果未安装，则下载微软官方
+.NET 9.0.18 Desktop Runtime
 安装程序、校验固定的 SHA-256 后静默安装。只有确实需要把运行时一并打包的较大便携版本时，
 才使用 `-Publish -SelfContained`。
 
 公开发布构建默认排除本地专有联想 DLL。仅为自己的电脑生成包含本地依赖的私用构建时，可增加
-`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.2.0`，可替换风扇后端 API 和配置文件格式版本均为 `1.0`。
+`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.2.1`，可替换风扇后端 API 版本为 `1.1`，配置文件格式版本为 `1.0`。
 
 运行不会写入硬件的 UI 冒烟测试：
 

@@ -1,17 +1,17 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\dist\ThinkBookToolkit-0.2.0-win-x64-framework-dependent"
+  #define SourceDir "..\dist\v0.2.1\ThinkBookToolkit-0.2.1-win-x64-framework-dependent"
 #endif
 #ifndef OutputDir
-  #define OutputDir "..\dist"
+  #define OutputDir "..\dist\v0.2.1"
 #endif
 #ifndef ChineseMessagesFile
   #define ChineseMessagesFile "compiler:Languages\ChineseSimplified.isl"
 #endif
 #ifndef FanBackendFileVersion
-  #define FanBackendFileVersion "1.0.0.0"
+  #define FanBackendFileVersion "1.1.0.0"
 #endif
 
 #define AppName "ThinkBook Toolkit"
@@ -84,6 +84,10 @@ chinesesimplified.InstallDirectoryUnsafe=不能清空所选目录，因为它是
 english.InstallDirectoryUnsafe=Setup cannot clear the selected directory because it is a system directory or is too broad:%n%n%1%n%nCreate and select a dedicated subfolder for ThinkBook Toolkit.
 chinesesimplified.PreserveFanBackend=检测到版本兼容（%1）的现有风扇后端。是否在覆盖安装时保留该 DLL？%n%n默认选择保留；选择“否”将使用安装包中的后端。
 english.PreserveFanBackend=A compatible existing fan backend (version %1) was found. Keep this DLL during the overwrite installation?%n%nThe default is to keep it; choose No to use the backend included with Setup.
+chinesesimplified.IncompatibleFanBackend=检测到安装目录中的风扇后端 DLL 版本不符合当前要求。%n%n检测到的版本：%1%n要求的版本：%2%n%n该自定义风扇后端 DLL 将被安装包内置后端替换。
+english.IncompatibleFanBackend=The fan-backend DLL in the installation directory does not match the required version.%n%nDetected version: %1%nRequired version: %2%n%nThis custom fan-backend DLL will be replaced by the backend included with Setup.
+chinesesimplified.UnknownFanBackendVersion=无法读取
+english.UnknownFanBackendVersion=unavailable
 chinesesimplified.PreserveFanBackendFailed=无法在覆盖安装前暂存现有风扇后端：%1
 english.PreserveFanBackendFailed=Could not preserve the existing fan backend before overwriting the installation: %1
 chinesesimplified.RestoreFanBackendFailed=安装已完成，但无法恢复选择保留的风扇后端：%1
@@ -186,18 +190,21 @@ begin
   end;
 end;
 
-function CompatibleFanBackendExists(Path: String): Boolean;
+function TryGetExistingFanBackendVersion(
+  Path: String;
+  var ExistingVersion: String): Boolean;
 var
-  ExistingVersion: String;
   BackendPath: String;
 begin
   Result := False;
+  ExistingVersion := '';
   BackendPath := AddBackslash(Path) + FanBackendFileName;
   if not FileExists(BackendPath) then
     Exit;
+
+  Result := True;
   if not GetVersionNumbersString(BackendPath, ExistingVersion) then
-    Exit;
-  Result := SameText(ExistingVersion, '{#FanBackendFileVersion}');
+    ExistingVersion := CustomMessage('UnknownFanBackendVersion');
 end;
 
 function PreserveFanBackendBeforeCleanup: String;
@@ -466,6 +473,7 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   SelectedDirectory: String;
+  ExistingFanBackendVersion: String;
 begin
   Result := True;
   if CurPageID = wpSelectDir then
@@ -501,15 +509,29 @@ begin
       if FanBackendDecisionDirectory = '' then
       begin
         FanBackendDecisionDirectory := SelectedDirectory;
-        if CompatibleFanBackendExists(SelectedDirectory) then
+        if TryGetExistingFanBackendVersion(
+             SelectedDirectory,
+             ExistingFanBackendVersion) then
         begin
-          PreserveExistingFanBackend :=
-            SuppressibleMsgBox(
-              FmtMessage(
-                CustomMessage('PreserveFanBackend'), ['{#FanBackendFileVersion}']),
-              mbConfirmation,
-              MB_YESNO,
-              IDYES) = IDYES;
+          if SameText(
+               ExistingFanBackendVersion,
+               '{#FanBackendFileVersion}') then
+          begin
+            PreserveExistingFanBackend :=
+              SuppressibleMsgBox(
+                FmtMessage(CustomMessage('PreserveFanBackend'), ['{#FanBackendFileVersion}']),
+                mbConfirmation,
+                MB_YESNO,
+                IDYES) = IDYES;
+          end
+          else
+          begin
+            PreserveExistingFanBackend := False;
+            MsgBox(
+              FmtMessage(CustomMessage('IncompatibleFanBackend'), [ExistingFanBackendVersion, '{#FanBackendFileVersion}']),
+              mbInformation,
+              MB_OK);
+          end;
         end;
       end;
     end;

@@ -45,7 +45,8 @@ if ($Publish -or $Installer) {
     }
 
     $publishKind = if ($SelfContained) { "self-contained" } else { "framework-dependent" }
-    $output = Join-Path $projectRoot "dist\ThinkBookToolkit-$version-win-x64-$publishKind"
+    $releaseOutput = Join-Path $projectRoot "dist\v$version"
+    $output = Join-Path $releaseOutput "ThinkBookToolkit-$version-win-x64-$publishKind"
     $publishArguments = @(
         "publish",
         $project,
@@ -60,6 +61,10 @@ if ($Publish -or $Installer) {
         $cleanDependencies = Join-Path $projectRoot ".tmp\public-release-no-proprietary-dependencies"
         $publishArguments += "-p:ExternalDependenciesRoot=$cleanDependencies"
     }
+    if ($Configuration -eq "Release") {
+        $publishArguments += "-p:DebugType=None"
+        $publishArguments += "-p:DebugSymbols=false"
+    }
 
     if (Test-Path -LiteralPath $output) {
         Remove-Item -LiteralPath $output -Recurse -Force
@@ -70,6 +75,16 @@ if ($Publish -or $Installer) {
     if (-not $IncludeLocalProprietaryDependencies) {
         Write-Host "Public release mode: proprietary Lenovo dependencies were excluded."
     }
+
+    $archive = Join-Path $releaseOutput "ThinkBookToolkit-$version-win-x64-$publishKind.zip"
+    if (Test-Path -LiteralPath $archive) {
+        Remove-Item -LiteralPath $archive -Force
+    }
+    Compress-Archive `
+        -Path (Join-Path $output "*") `
+        -DestinationPath $archive `
+        -CompressionLevel Optimal
+    Write-Host "Portable archive: $archive"
 
     if ($Installer) {
         $compilerCandidates = @(
@@ -100,7 +115,7 @@ if ($Publish -or $Installer) {
         }
 
         $installerScript = Join-Path $projectRoot "installer\ThinkBookToolkit.iss"
-        $installerOutput = Join-Path $projectRoot "dist"
+        $installerOutput = $releaseOutput
         & $compiler `
             "/DAppVersion=$version" `
             "/DSourceDir=$output" `
@@ -111,6 +126,18 @@ if ($Publish -or $Installer) {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Write-Host "Installer output: $(Join-Path $installerOutput "ThinkBookToolkit-$version-Setup.exe")"
     }
+
+    $releaseAssets = @($archive)
+    if ($Installer) {
+        $releaseAssets += Join-Path $releaseOutput "ThinkBookToolkit-$version-Setup.exe"
+    }
+    $checksumPath = Join-Path $releaseOutput "SHA256SUMS-v$version.txt"
+    $checksumLines = $releaseAssets | ForEach-Object {
+        $hash = Get-FileHash -LiteralPath $_ -Algorithm SHA256
+        "{0}  {1}" -f $hash.Hash, (Split-Path -Leaf $_)
+    }
+    Set-Content -LiteralPath $checksumPath -Value $checksumLines -Encoding ascii
+    Write-Host "Checksums: $checksumPath"
     exit 0
 }
 

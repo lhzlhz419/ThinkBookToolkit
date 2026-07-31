@@ -39,7 +39,10 @@ internal static class Program
     {
         VerifyGpuModeRestartState();
         VerifyLenovoDependencyDirectory();
+        VerifyFanBackendStartupNotice();
         VerifyAdvancedFanCurve();
+        VerifyPerformancePageWithoutFanControl();
+        VerifyUserFacingExceptionText();
         Assert(UiTypography.FontFamilyNameFor("zh-CN") == "Microsoft YaHei UI",
             "Chinese UI font must use the Windows Simplified Chinese UI family.");
         Assert(UiTypography.FontFamilyNameFor("en-US") == "Segoe UI Variable Text",
@@ -802,9 +805,12 @@ internal static class Program
             "Fan-limit lower-bound input does not accept 0 RPM.");
         Assert(typeof(IFanBackend).GetProperty(nameof(IFanBackend.ControlSemantics)) is not null,
             "Fan backends do not declare zero-RPM and automatic-restore semantics.");
-        Assert(FanBackendContract.CurrentVersion == new Version(1, 0) &&
+        Assert(FanBackendContract.CurrentVersion == new Version(1, 1) &&
                typeof(IFanBackend).GetProperty(nameof(IFanBackend.ApiVersion)) is not null,
-            "The fan-backend API version is not declared as 1.0.");
+            "The fan-backend API version is not declared as 1.1.");
+        Assert(typeof(IFanBackend).GetProperty(
+                   nameof(IFanBackend.StartupNotice)) is not null,
+            "Fan backends cannot declare an optional startup notice.");
         Assert(typeof(IFanBackend).GetProperty(nameof(IFanBackend.MinimumReadInterval)) is not null &&
                typeof(IFanBackend).GetProperty(nameof(IFanBackend.MinimumWriteInterval)) is not null,
             "Fan backends do not declare minimum read/write intervals.");
@@ -815,7 +821,8 @@ internal static class Program
             new ThinkBookToolkit.FanBackend.Wmi.WmiFanBackend();
         Assert(wmiBackend.MinimumReadInterval == TimeSpan.FromSeconds(0.5) &&
                wmiBackend.MinimumWriteInterval == TimeSpan.FromSeconds(6) &&
-               wmiBackend.ApiVersion == new Version(1, 0),
+               wmiBackend.ApiVersion == new Version(1, 1) &&
+               wmiBackend.StartupNotice is null,
             "WMI backend read/write interval defaults are incorrect.");
         Assert(MainWindow.ResolveFanIoMinimumInterval(
                    null,
@@ -885,14 +892,102 @@ internal static class Program
         window.Close();
     }
 
+    private static void VerifyFanBackendStartupNotice()
+    {
+        var chinese = new FanBackendStartupNoticeText(
+            "中文标题",
+            "中文内容");
+        var english = new FanBackendStartupNoticeText(
+            "English title",
+            "English content");
+        var notice = new FanBackendStartupNotice(
+            new Dictionary<string, FanBackendStartupNoticeText>(
+                StringComparer.OrdinalIgnoreCase)
+            {
+                ["zh-CN"] = chinese,
+                ["en-US"] = english
+            },
+            english);
+
+        Assert(notice.Resolve("zh-CN") == chinese &&
+               notice.Resolve("zh-TW") == chinese &&
+               notice.Resolve("en-US") == english &&
+               notice.Resolve("fr-FR") == english,
+            "Backend startup notice localization or fallback is incorrect.");
+
+        var settings = new AppSettings();
+        Assert(FanBackendStartupNoticePreference.ReconcileBackend(
+                   settings,
+                   "backend-a") &&
+               settings.LastFanBackendIdentity == "backend-a" &&
+               string.IsNullOrEmpty(
+                   settings.SuppressedFanBackendStartupNoticeIdentity),
+            "The first backend identity was not recorded.");
+
+        var pending = FanBackendStartupNoticePreference.GetPending(
+            settings,
+            "backend-a",
+            notice,
+            "zh-CN");
+        Assert(pending is
+               {
+                   BackendIdentity: "backend-a",
+                   Title: "中文标题",
+                   Content: "中文内容"
+               },
+            "The first declared backend notice was not prepared.");
+        Assert(FanBackendStartupNoticePreference.Suppress(
+                   settings,
+                   "backend-a") &&
+               FanBackendStartupNoticePreference.GetPending(
+                   settings,
+                   "backend-a",
+                   notice,
+                   "zh-CN") is null,
+            "The do-not-show preference was not applied.");
+
+        Assert(FanBackendStartupNoticePreference.ReconcileBackend(
+                   settings,
+                   "backend-b") &&
+               string.IsNullOrEmpty(
+                   settings.SuppressedFanBackendStartupNoticeIdentity) &&
+               FanBackendStartupNoticePreference.GetPending(
+                   settings,
+                   "backend-b",
+                   null,
+                   "zh-CN") is null,
+            "Replacing a backend did not reset the notice preference.");
+        Assert(FanBackendStartupNoticePreference.ReconcileBackend(
+                   settings,
+                   "backend-a") &&
+               FanBackendStartupNoticePreference.GetPending(
+                   settings,
+                   "backend-a",
+                   notice,
+                   "en-US")?.Title == "English title",
+            "Replacing the backend with a previously used DLL did not show its notice again.");
+
+        var dialog = new FanBackendStartupNoticeWindow(
+            chinese.Title,
+            chinese.Content,
+            "zh-CN",
+            isDark: false);
+        var labels = Descendants(dialog)
+            .OfType<Button>()
+            .Select(button => button.Content?.ToString())
+            .ToArray();
+        Assert(labels.SequenceEqual(["确定", "确定并不再显示"]),
+            "The backend notice dialog does not expose the required two actions.");
+    }
+
     private static void VerifyAdvancedFanCurve()
     {
         var points = AdvancedFanCurve.CreateDefaultPoints();
         Assert(points.Count == 12 &&
                points[0] is
                {
-                   Fan1Rpm: 0,
-                   Fan2Rpm: 0,
+                   Fan1Rpm: 1500,
+                   Fan2Rpm: 1500,
                    CpuRampUpTemperatureC: 46,
                    CpuRampDownTemperatureC: null,
                    GpuRampUpTemperatureC: 36,
@@ -955,6 +1050,17 @@ internal static class Program
                migratedIntermediate.Points[5].RampUpRpmPerSecond == 100 &&
                migratedIntermediate.Points[5].RampDownRpmPerSecond == 50,
             "Intermediate advanced-curve defaults were not migrated.");
+        var released020Defaults = new AdvancedFanCurveSettings
+        {
+            Points = points.Select(AdvancedFanCurve.Clone).ToList()
+        };
+        released020Defaults.Points[0].Fan1Rpm = 0;
+        released020Defaults.Points[0].Fan2Rpm = 0;
+        Assert(ReferenceEquals(
+                   CurveProfileStore.MigrateOldAdvancedFanCurveDefaults(
+                       released020Defaults),
+                   released020Defaults),
+            "Changing the new default unexpectedly migrated an existing v0.2.0 curve.");
         oldDefaults.Points[2].Fan1Rpm = 2100;
         Assert(ReferenceEquals(
                    CurveProfileStore.MigrateOldAdvancedFanCurveDefaults(oldDefaults),
@@ -967,7 +1073,7 @@ internal static class Program
             "Advanced-curve ramp-up hysteresis selected the wrong point.");
         var lowered = AdvancedFanCurve.Evaluate(points, raised.Index, 40, 20);
         Assert(lowered.Index == 0 &&
-               lowered.Target == new FanTargets(0, 0),
+               lowered.Target == new FanTargets(1500, 1500),
             "Advanced-curve ramp-down hysteresis selected the wrong point.");
         var maximum = AdvancedFanCurve.Evaluate(points, 0, 100, 100);
         Assert(maximum.Index == points.Count - 1 &&
@@ -987,6 +1093,29 @@ internal static class Program
         equalValues[2].GpuRampDownTemperatureC = equalValues[1].GpuRampDownTemperatureC;
         Assert(AdvancedFanCurve.TryValidate(equalValues, out _),
             "Advanced curve rejects equal values in adjacent columns.");
+
+        var outOfRange = new AdvancedFanCurveSettings
+        {
+            Points = points.Select(AdvancedFanCurve.Clone).ToList()
+        };
+        outOfRange.Points[0].Fan1Rpm = 0;
+        outOfRange.Points[0].Fan2Rpm = 0;
+        outOfRange.Points[^1].Fan1Rpm = 6000;
+        outOfRange.Points[^1].Fan2Rpm = 6000;
+        var bounded = AdvancedFanCurve.Normalize(
+            outOfRange,
+            new FanRpmLimits
+            {
+                Fan1MinimumRpm = 1600,
+                Fan1MaximumRpm = 4500,
+                Fan2MinimumRpm = 1700,
+                Fan2MaximumRpm = 4600
+            });
+        Assert(bounded.Points[0].Fan1Rpm == 1600 &&
+               bounded.Points[0].Fan2Rpm == 1700 &&
+               bounded.Points[^1].Fan1Rpm == 4500 &&
+               bounded.Points[^1].Fan2Rpm == 4600,
+            "Advanced-curve endpoints were not clamped to the configured fan RPM limits.");
 
         var descending = points.Select(AdvancedFanCurve.Clone).ToList();
         descending[2].Fan1Rpm = 1700;
@@ -1233,6 +1362,49 @@ internal static class Program
                 available(id),
                 available(id) ? "smoke test available" : "smoke test unavailable")));
 
+    private static void VerifyPerformancePageWithoutFanControl()
+    {
+        using var runtime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark"
+        });
+        runtime.SetReportForTesting(CreateReport(_ => false));
+        var page = new ToolkitPerformancePage(runtime);
+        try
+        {
+            var reload = typeof(ToolkitPerformancePage).GetMethod(
+                "ReloadFanDrafts",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new MissingMethodException(
+                    nameof(ToolkitPerformancePage),
+                    "ReloadFanDrafts");
+            reload.Invoke(page, null);
+            Assert(!ContainsText(page, "风扇控制"),
+                "The unavailable fan-control editor was unexpectedly created.");
+        }
+        finally
+        {
+            page.Dispose();
+        }
+    }
+
+    private static void VerifyUserFacingExceptionText()
+    {
+        var display = ThinkBookToolkit.Program.FormatExceptionForDisplay(
+            new TargetInvocationException(
+                new KeyNotFoundException(
+                    "PowerSavingNormalFan1Rpm was not present in the dictionary.")));
+        Assert(display.Contains("KeyNotFoundException", StringComparison.Ordinal) &&
+               display.Contains("PowerSavingNormalFan1Rpm", StringComparison.Ordinal) &&
+               display.Contains("csharp-crash.log", StringComparison.Ordinal),
+            "The user-facing exception summary omits useful diagnostic information.");
+        Assert(!display.Contains("ToolkitPerformancePage.cs", StringComparison.Ordinal) &&
+               !display.Contains(@"C:\Users\", StringComparison.OrdinalIgnoreCase) &&
+               !display.Contains("\r\n   at ", StringComparison.Ordinal),
+            "The user-facing exception summary exposes a source path or stack trace.");
+    }
+
     private static string Category(string id)
     {
         if (id.StartsWith("performance.", StringComparison.Ordinal)) return "性能与散热";
@@ -1303,6 +1475,8 @@ internal static class Program
         public Version ApiVersion => FanBackendContract.CurrentVersion;
 
         public string Transport => "Test";
+
+        public FanBackendStartupNotice? StartupNotice => null;
 
         public bool SupportsDisableControlOnSleep => false;
 

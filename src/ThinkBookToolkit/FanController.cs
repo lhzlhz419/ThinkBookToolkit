@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
 using ThinkBookToolkit.FanBackend;
 
 namespace ThinkBookToolkit;
@@ -20,11 +21,17 @@ public sealed class FanController
     public FanController()
     {
         _backend = LoadBackend();
+        BackendIdentity = ComputeBackendIdentity(_backend);
     }
 
     public string BackendName => _backend.Name;
 
     public string Transport => _backend.Transport;
+
+    public string BackendIdentity { get; }
+
+    public FanBackendStartupNotice? StartupNotice =>
+        _backend.StartupNotice;
 
     public bool SupportsDisableControlOnSleep =>
         _backend.SupportsDisableControlOnSleep;
@@ -123,6 +130,30 @@ public sealed class FanController
         {
             ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
             throw;
+        }
+    }
+
+    private static string ComputeBackendIdentity(IFanBackend backend)
+    {
+        var path = Path.Combine(
+            AppContext.BaseDirectory,
+            BackendFileName);
+        try
+        {
+            using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            return Convert.ToHexString(SHA256.HashData(stream));
+        }
+        catch
+        {
+            var module = backend.GetType().Module;
+            return string.Join(
+                "|",
+                backend.GetType().Assembly.FullName,
+                module.ModuleVersionId.ToString("D"));
         }
     }
 }

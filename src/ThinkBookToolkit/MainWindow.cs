@@ -557,6 +557,12 @@ public sealed class MainWindow : Window
     internal TimeSpan RuntimeBackendMinimumWriteInterval =>
         _fanController.MinimumWriteInterval;
 
+    internal string RuntimeBackendIdentity =>
+        _fanController.BackendIdentity;
+
+    internal FanBackendStartupNotice? RuntimeBackendStartupNotice =>
+        _fanController.StartupNotice;
+
     internal TimeSpan RuntimeEffectiveMinimumReadInterval =>
         EffectiveFanReadMinimumInterval;
 

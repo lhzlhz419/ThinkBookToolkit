@@ -521,12 +521,34 @@ internal sealed class ToolkitMainWindow : Window
                 () => { },
                 DispatcherPriority.ContextIdle);
             await _runtime.InitializeAsync();
+            ShowFanBackendStartupNotice();
             if (_startToTrayRequested && _runtime.Settings.StartWithWindows && _runtime.Settings.StartToTray)
                 _runtime.HideToTray();
         }
         catch (Exception ex)
         {
             ShowToast(L("初始化失败：", "Initialization failed: ") + ex.Message, isError: true);
+        }
+    }
+
+    private void ShowFanBackendStartupNotice()
+    {
+        var notice = _runtime.PrepareFanBackendStartupNotice();
+        if (notice is null)
+            return;
+
+        var dialog = new FanBackendStartupNoticeWindow(
+            notice.Title,
+            notice.Content,
+            _runtime.Settings.Language,
+            _runtime.IsDark)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            _runtime.SuppressFanBackendStartupNotice(
+                notice.BackendIdentity);
         }
     }
 

@@ -18,6 +18,8 @@ public sealed class WmiFanBackend : IFanBackend
 
     public string Transport => "WMI";
 
+    public FanBackendStartupNotice? StartupNotice => null;
+
     public bool SupportsDisableControlOnSleep => false;
 
     public TimeSpan MinimumReadInterval => TimeSpan.FromSeconds(0.5);

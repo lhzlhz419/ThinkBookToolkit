@@ -44,7 +44,7 @@
   "AdvancedFanCurve": {
     "TemperatureSmoothing": 3,
     "Points": [
-      { "Fan1Rpm": 0, "Fan2Rpm": 0, "CpuRampUpTemperatureC": 46, "CpuRampDownTemperatureC": null, "GpuRampUpTemperatureC": 36, "GpuRampDownTemperatureC": null, "RampUpRpmPerSecond": 50, "RampDownRpmPerSecond": 20 },
+      { "Fan1Rpm": 1500, "Fan2Rpm": 1500, "CpuRampUpTemperatureC": 46, "CpuRampDownTemperatureC": null, "GpuRampUpTemperatureC": 36, "GpuRampDownTemperatureC": null, "RampUpRpmPerSecond": 50, "RampDownRpmPerSecond": 20 },
       { "Fan1Rpm": 1800, "Fan2Rpm": 1900, "CpuRampUpTemperatureC": 52, "CpuRampDownTemperatureC": 43, "GpuRampUpTemperatureC": 42, "GpuRampDownTemperatureC": 33, "RampUpRpmPerSecond": 50, "RampDownRpmPerSecond": 20 },
       { "Fan1Rpm": 2000, "Fan2Rpm": 1900, "CpuRampUpTemperatureC": 58, "CpuRampDownTemperatureC": 49, "GpuRampUpTemperatureC": 48, "GpuRampDownTemperatureC": 39, "RampUpRpmPerSecond": 50, "RampDownRpmPerSecond": 20 },
       { "Fan1Rpm": 2400, "Fan2Rpm": 1900, "CpuRampUpTemperatureC": 64, "CpuRampDownTemperatureC": 55, "GpuRampUpTemperatureC": 54, "GpuRampDownTemperatureC": 45, "RampUpRpmPerSecond": 50, "RampDownRpmPerSecond": 20 },
@@ -68,6 +68,8 @@
   "AttemptDisableControlOnSleepWhenUnsupported": false,
   "FanReadMinimumIntervalSeconds": null,
   "FanWriteMinimumIntervalSeconds": null,
+  "LastFanBackendIdentity": "",
+  "SuppressedFanBackendStartupNoticeIdentity": "",
   "PendingGpuMode": "",
   "PendingGpuModeSource": "",
   "PendingGpuModeSourceUsesDirectGraphicsConfiguration": null,

@@ -73,8 +73,9 @@ A replacement assembly must target a compatible .NET Windows runtime, reference
 `ThinkBookToolkit.FanBackend.Contracts.dll`, expose one public non-abstract type
 with a parameterless constructor, and implement `IFanBackend`. It must declare:
 
-- fan-backend API version `1.0` through `ApiVersion`;
+- fan-backend API version `1.1` through `ApiVersion`;
 - `Name` and `Transport` for identification;
+- an optional localized startup notice, or `null` when none is needed;
 - whether fan control can be released before sleep and resumed afterward;
 - minimum ordinary read and write intervals (one two-fan write is a single
   batch, while full-speed and restore-automatic operations are exempt);
@@ -88,6 +89,8 @@ with a parameterless constructor, and implement `IFanBackend`. It must declare:
 Minimal declaration example:
 
 ```csharp
+using System;
+using System.Collections.Generic;
 using ThinkBookToolkit.FanBackend;
 
 public sealed class ExampleFanBackend : IFanBackend
@@ -95,6 +98,7 @@ public sealed class ExampleFanBackend : IFanBackend
     public Version ApiVersion => FanBackendContract.CurrentVersion;
     public string Name => "Example fan backend";
     public string Transport => "Vendor WMI";
+    public FanBackendStartupNotice? StartupNotice => null;
     public bool SupportsDisableControlOnSleep => false;
     public TimeSpan MinimumReadInterval => TimeSpan.FromSeconds(0.5);
     public TimeSpan MinimumWriteInterval => TimeSpan.FromSeconds(6);
@@ -122,6 +126,29 @@ public sealed class ExampleFanBackend : IFanBackend
 }
 ```
 
+A backend that needs a startup notice can declare localized titles and content
+with fallback text:
+
+```csharp
+private static readonly FanBackendStartupNoticeText EnglishNotice = new(
+    "Fan backend notice",
+    "Important information supplied by this backend.");
+
+public FanBackendStartupNotice? StartupNotice { get; } = new(
+    new Dictionary<string, FanBackendStartupNoticeText>(
+        StringComparer.OrdinalIgnoreCase)
+    {
+        ["zh-CN"] = new("风扇后端提示", "由此后端提供的重要信息。"),
+        ["en-US"] = EnglishNotice
+    },
+    EnglishNotice);
+```
+
+Toolkit selects the text for the current UI language. The user can acknowledge
+the notice once or suppress it for future launches. Suppression applies only to
+the current DLL contents; replacing the backend resets the preference even when
+the file name is unchanged.
+
 The declarations must describe the implementation exactly. In particular,
 Toolkit never assumes that `0 RPM` means automatic control or that full speed is
 implemented by writing a maximum RPM value.
@@ -135,8 +162,8 @@ run from the repository root:
 .\scripts\build.ps1
 ```
 
-Create the public, framework-dependent `0.2.0` release under
-`dist\ThinkBookToolkit-0.2.0-win-x64-framework-dependent`:
+Create the public, framework-dependent `0.2.1` release under
+`dist\v0.2.1\ThinkBookToolkit-0.2.1-win-x64-framework-dependent`:
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
@@ -149,23 +176,26 @@ Create the online installer (requires
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
 
-The result is `dist\ThinkBookToolkit-0.2.0-Setup.exe`. Its default destination
+The result is `dist\v0.2.1\ThinkBookToolkit-0.2.1-Setup.exe`. Its default destination
 is `Program Files\ThinkBook Toolkit`, and the destination can be changed in the
 wizard. If the selected destination is not empty, Setup warns that all of its
 contents will be removed and proceeds only after explicit confirmation; always
 select a folder dedicated to Toolkit. If a compatible fan-backend file version
 already exists there, Setup offers to preserve it and selects that choice by
-default. The completion page launches Toolkit by default. The installer checks for the 64-bit .NET
-9 Desktop Runtime. If it is
-missing, the installer downloads Microsoft's official .NET 9.0.18 Desktop
+default. If an existing backend has an incompatible or unreadable file version,
+Setup explicitly warns that the custom DLL will be replaced by the bundled
+backend. The completion page launches Toolkit by default. The installer checks
+for the 64-bit .NET 9 Desktop Runtime. If it is missing, the installer
+downloads Microsoft's official .NET 9.0.18 Desktop
 Runtime installer, verifies its pinned SHA-256, and installs it. Use
 `-Publish -SelfContained` only when a larger portable build that bundles the
 runtime is specifically required.
 
 Public release publishing excludes local proprietary Lenovo DLLs by default.
 For a private build used only on your own machine, add
-`-IncludeLocalProprietaryDependencies`. The application version is `0.2.0`;
-the replaceable fan-backend API and configuration-file format are both `1.0`.
+`-IncludeLocalProprietaryDependencies`. The application version is `0.2.1`;
+the replaceable fan-backend API is `1.1`, and the configuration-file format is
+`1.0`.
 
 Run the hardware-write-free UI smoke test:
 

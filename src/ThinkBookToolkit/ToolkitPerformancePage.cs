@@ -63,6 +63,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private bool _powerDirty;
     private bool _powerEditorExpanded;
     private bool _powerRefreshInProgress;
+    private bool _fanControlsBuilt;
     private bool _disposed;
     private bool _syncing;
 
@@ -245,6 +246,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         content.Children.Add(footer);
         content.Children.Add(_draftStatus);
         content.Children.Add(_fanStatus);
+        _fanControlsBuilt = true;
         return Card(
             L("风扇控制", "Fan control"),
             content,
@@ -983,6 +985,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
     private void ReloadFanDrafts()
     {
+        if (!_fanControlsBuilt)
+            return;
+
         _profiles = (Runtime.FanRuntime?.RuntimeProfiles() ?? CurveProfileStore.Load()).Select(CloneProfile).ToList();
         _syncing = true;
         _profile.Items.Clear();
@@ -1050,8 +1055,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             _fanStatus.Text = L("请选择有效的温度平滑、升降速限制和保持时间。", "Select valid smoothing, rate-limit, and hold-time values.");
             return;
         }
+        var fanRpmLimits = Runtime.FanRuntime.RuntimeSnapshot().FanRpmLimits;
         if (!_advancedCurve.TryGetSettings(
                 advancedSmoothing,
+                fanRpmLimits,
                 out var advancedFanCurve,
                 out var advancedError))
         {
@@ -1189,7 +1196,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             ["GeekGameFan1Rpm"] = value.GeekGameFan1Rpm, ["GeekGameFan2Rpm"] = value.GeekGameFan2Rpm
         };
         foreach (var pair in map)
-            _fixedBoxes[pair.Key].Text = pair.Value.ToString(CultureInfo.InvariantCulture);
+        {
+            if (_fixedBoxes.TryGetValue(pair.Key, out var box))
+                box.Text = pair.Value.ToString(CultureInfo.InvariantCulture);
+        }
     }
 
     private async Task LoadPowerAsync()
