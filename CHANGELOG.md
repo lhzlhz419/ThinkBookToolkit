@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-02
+
+### Changed
+
+- Moved each per-parameter power lock switch to the far right of its setting
+  row, after the slider or selector, for consistent alignment and scanning.
+
 ## [0.2.3] - 2026-08-02
 
 ### Changed
@@ -114,7 +121,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.0...v0.2.1

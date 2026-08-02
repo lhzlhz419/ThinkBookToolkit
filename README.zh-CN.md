@@ -125,7 +125,7 @@ Toolkit 会根据当前界面语言选择文本。用户可以只确认，也可
 .\scripts\build.ps1
 ```
 
-生成位于 `dist\v0.2.3\ThinkBookToolkit-0.2.3-win-x64-framework-dependent` 的公开、依赖框架版本：
+生成位于 `dist\v0.2.4\ThinkBookToolkit-0.2.4-win-x64-framework-dependent` 的公开、依赖框架版本：
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
@@ -137,7 +137,7 @@ Toolkit 会根据当前界面语言选择文本。用户可以只确认，也可
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
 
-输出文件为 `dist\v0.2.3\ThinkBookToolkit-0.2.3-Setup.exe`。安装位置默认为
+输出文件为 `dist\v0.2.4\ThinkBookToolkit-0.2.4-Setup.exe`。安装位置默认为
 `Program Files\ThinkBook Toolkit`，可在安装向导中修改。如果所选文件夹非空，安装器会明确提示
 其中所有内容将被删除，并且只有确认后才继续；应始终选择 Toolkit 专用文件夹。如果目录中已有
 文件版本兼容的风扇后端，安装器会默认保留并允许改用安装包内置后端。如果已有后端的文件版本
@@ -148,7 +148,7 @@ Toolkit 会根据当前界面语言选择文本。用户可以只确认，也可
 才使用 `-Publish -SelfContained`。
 
 公开发布构建默认排除本地专有联想 DLL。仅为自己的电脑生成包含本地依赖的私用构建时，可增加
-`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.2.3`，可替换风扇后端 API 版本为 `1.1`，配置文件格式版本为 `1.0`。
+`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.2.4`，可替换风扇后端 API 版本为 `1.1`，配置文件格式版本为 `1.0`。
 
 运行不会写入硬件的 UI 冒烟测试：
 

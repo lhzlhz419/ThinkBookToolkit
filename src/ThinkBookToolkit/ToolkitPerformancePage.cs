@@ -755,7 +755,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         {
             Content = L("锁定", "Lock"),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 18, 0),
+            Margin = new Thickness(18, 0, 0, 0),
             ToolTip = L(
                 "定期检查并只恢复这一项。",
                 "Periodically check and restore only this value.")
@@ -772,9 +772,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         {
             Width = GridLength.Auto
         });
-        layout.Children.Add(toggle);
-        Grid.SetColumn(editor, 1);
         layout.Children.Add(editor);
+        Grid.SetColumn(toggle, 1);
+        layout.Children.Add(toggle);
         return layout;
     }
 

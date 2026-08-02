@@ -408,9 +408,11 @@ internal static class Program
                               Equals(toggle.Content, "锁定") &&
                               toggle.Parent is Grid lockLayout &&
                               lockLayout.Children.Count == 2 &&
-                              ReferenceEquals(lockLayout.Children[0], toggle) &&
-                              Grid.GetColumn(toggle) == 0 &&
-                              Grid.GetColumn(lockLayout.Children[1]) == 1) &&
+                              ReferenceEquals(lockLayout.Children[1], toggle) &&
+                              Grid.GetColumn(lockLayout.Children[0]) == 0 &&
+                              Grid.GetColumn(toggle) == 1 &&
+                              toggle.Margin.Left == 18 &&
+                              toggle.Margin.Right == 0) &&
                GetPrivateField<ComboBox>(performance, "_powerLockInterval") is
                { SelectedItem: ComboBoxItem { Tag: 2 } } powerLockInterval &&
                Labels(powerLockInterval).SequenceEqual(
