@@ -559,7 +559,12 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private string FeatureDetail(FeatureAvailability feature)
     {
         if (feature.Available && !feature.PartiallyAvailable)
-            return string.Empty;
+        {
+            return feature.Id == FeatureIds.PowerSettings &&
+                   !string.IsNullOrWhiteSpace(feature.EnglishDetail)
+                ? L(feature.Detail, feature.EnglishDetail)
+                : string.Empty;
+        }
         if (!feature.Usable)
         {
             return feature.Id switch

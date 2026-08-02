@@ -53,9 +53,13 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private readonly Button _discardPower;
     private readonly Button _defaultPower;
     private readonly Button _togglePowerEditor;
+    private readonly CheckBox _lockPower = new();
+    private readonly ComboBox _powerLockInterval = new() { MinWidth = 96 };
     private readonly StackPanel _powerEditorPanel = new();
     private readonly Border _powerEditorHost = new();
     private readonly Dictionary<string, TextBlock> _powerReadouts = [];
+    private FrameworkElement? _atppReadout;
+    private FrameworkElement? _atppEditorRow;
     private List<FanProfile> _profiles = [];
     private FanProfile? _draftProfile;
     private PowerSettingsState? _confirmedPower;
@@ -506,6 +510,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         AddPowerReadout(current, "GpuTgp", "GPU Configurable TGP", "W");
         AddPowerReadout(current, "GpuTemperature", L("GPU 温度上限", "GPU temperature limit"), "°C");
         AddPowerReadout(current, "GpuToCpu", "GPU to CPU Dynamic Boost", "W");
+        _atppReadout = AddPowerReadout(current, "Atpp", "ATPP", "W");
+        _atppReadout.Visibility = Visibility.Collapsed;
         panel.Children.Add(current);
         panel.Children.Add(_powerStatus);
 
@@ -538,8 +544,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             labels.Children.Add(new TextBlock
             {
                 Text = L(
-                    "默认折叠；展开时以刚刚读取的 8 项当前值作为初始值。",
-                    "Collapsed by default; expanding seeds all controls from the eight current values."),
+                    "默认折叠；展开时以刚刚读取的全部当前值作为初始值。",
+                    "Collapsed by default; expanding seeds all controls from the current values."),
                 FontSize = 12,
                 Foreground = Brush(Palette.Muted),
                 TextWrapping = TextWrapping.Wrap,
@@ -583,7 +589,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         return Card(
             L("功耗设置", "Power settings"),
             panel,
-            L("先读取并显示全部 8 项当前值；仅支持机型提供折叠式写入区域。", "All eight current values are read first; only supported models expose the collapsible editor."),
+            L("先读取并显示全部可用参数；仅支持机型提供折叠式写入区域。", "All available values are read first; only supported models expose the collapsible editor."),
             "\uE945",
             "#F2A65A");
     }
@@ -603,18 +609,82 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         AddPowerEditor(_powerEditorPanel, "GpuTgp", "GPU Configurable TGP", 50, 100, false);
         AddPowerEditor(_powerEditorPanel, "GpuTemperature", L("GPU 温度上限", "GPU temperature limit"), 75, 87, false);
         AddPowerEditor(_powerEditorPanel, "GpuToCpu", "GPU to CPU Dynamic Boost", 0, 50, false);
+        _atppEditorRow = AddPowerEditor(
+            _powerEditorPanel,
+            "Atpp",
+            "ATPP",
+            25,
+            105,
+            true);
+        _atppEditorRow.Visibility = Visibility.Collapsed;
+        foreach (var value in PowerSettingsController.LockIntervals)
+        {
+            AddChoice(
+                _powerLockInterval,
+                Runtime.IsChinese ? $"{value} 秒" : $"{value} s",
+                value);
+        }
+        _lockPower.Content = L("锁定功耗设置", "Lock power settings");
+
+        var footer = new Grid
+        {
+            Margin = new Thickness(0, 10, 0, 0)
+        };
+        footer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        footer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        footer.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var buttons = new StackPanel
         {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(0, 10, 0, 0)
+            Orientation = Orientation.Horizontal
         };
         buttons.Children.Add(_applyPower);
         buttons.Children.Add(_discardPower);
         buttons.Children.Add(_defaultPower);
-        _powerEditorPanel.Children.Add(buttons);
+        footer.Children.Add(buttons);
+
+        var lockControls = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(18, 0, 0, 0)
+        };
+        lockControls.Children.Add(_lockPower);
+        lockControls.Children.Add(new TextBlock
+        {
+            Text = L("设置间隔", "Interval"),
+            Foreground = Brush(Palette.Muted),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 8, 0)
+        });
+        lockControls.Children.Add(_powerLockInterval);
+        Grid.SetColumn(lockControls, 1);
+        footer.Children.Add(lockControls);
+
+        void ApplyResponsiveFooter(bool compact)
+        {
+            Grid.SetRow(lockControls, compact ? 1 : 0);
+            Grid.SetColumn(lockControls, compact ? 0 : 1);
+            Grid.SetColumnSpan(lockControls, compact ? 2 : 1);
+            lockControls.HorizontalAlignment = compact
+                ? HorizontalAlignment.Left
+                : HorizontalAlignment.Right;
+            lockControls.Margin = compact
+                ? new Thickness(0, 10, 0, 0)
+                : new Thickness(18, 0, 0, 0);
+        }
+        footer.SizeChanged += (_, _) =>
+            ApplyResponsiveFooter(footer.ActualWidth < 900);
+        ApplyResponsiveFooter(compact: false);
+        _powerEditorPanel.Children.Add(footer);
+        SyncPowerLockControls();
     }
 
-    private void AddPowerReadout(
+    private Border AddPowerReadout(
         Panel panel,
         string key,
         string title,
@@ -644,7 +714,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             FontSize = 12,
             Margin = new Thickness(0, 3, 0, 0)
         });
-        panel.Children.Add(new Border
+        var card = new Border
         {
             Background = Brush(Palette.SurfaceRaised),
             BorderBrush = Brush(Palette.Border),
@@ -652,20 +722,24 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             CornerRadius = new CornerRadius(12),
             Padding = new Thickness(13),
             Child = content
-        });
+        };
+        panel.Children.Add(card);
+        return card;
     }
 
-    private void AddPowerEditor(Panel panel, string key, string title, int minimum, int maximum, bool positiveOutside)
+    private Border AddPowerEditor(Panel panel, string key, string title, int minimum, int maximum, bool positiveOutside)
     {
         var editor = new PowerIntegerEditor(minimum, maximum, positiveOutside);
         editor.Changed += MarkPowerDirty;
         _powerEditors[key] = editor;
-        panel.Children.Add(SettingRow(
+        var row = SettingRow(
             title,
             positiveOutside
                 ? L($"滑块范围 {minimum}–{maximum}；手动输入可超出，但必须是正整数。", $"Slider range {minimum}–{maximum}; manual input may exceed it but must be positive.")
                 : L($"允许范围 {minimum}–{maximum}。", $"Allowed range: {minimum}–{maximum}."),
-            editor.View));
+            editor.View);
+        panel.Children.Add(row);
+        return row;
     }
 
     private void ConfigureCurves()
@@ -824,6 +898,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _turboTime.SelectionChanged += (_, _) => MarkPowerDirty();
         _applyPower.Click += async (_, _) => await ApplyPowerAsync();
         _discardPower.Click += (_, _) => ApplyPowerState(_confirmedPower);
+        _lockPower.Click += (_, _) => ChangePowerSettingsLock();
+        _powerLockInterval.SelectionChanged += (_, _) =>
+            ChangePowerSettingsLockInterval();
         _defaultPower.Click += (_, _) =>
         {
             var defaults = PowerSettingsController.GetDefaultState(Runtime.Snapshot.ItsMode);
@@ -832,6 +909,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
                 _powerStatus.Text = L("无法确定当前性能模式，不能载入默认值。", "The current performance mode is unknown, so defaults cannot be loaded.");
                 return;
             }
+            if (_confirmedPower?.Atpp is null)
+                defaults = defaults with { Atpp = null };
             ApplyPowerState(defaults, confirmed: false);
             MarkPowerDirty();
         };
@@ -1221,7 +1300,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             _powerStatus.Text = L("正在读取当前功耗设置……", "Reading current power settings…");
         try
         {
-            var current = await Task.Run(PowerSettingsController.ReadState);
+            var current = await Runtime.ReadPowerSettingsAsync();
             _confirmedPower = current;
             UpdatePowerReadouts(current);
             if (_powerEditorExpanded && !_powerDirty)
@@ -1236,6 +1315,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         finally
         {
             _powerRefreshInProgress = false;
+            SyncPowerLockControls();
         }
     }
 
@@ -1258,7 +1338,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         SetPowerEnabled(false);
         try
         {
-            var confirmed = await Task.Run(() => PowerSettingsController.WriteAndReadState(draft));
+            var confirmed = await Runtime.ApplyPowerSettingsAsync(draft);
             _confirmedPower = confirmed;
             ApplyPowerState(confirmed);
             _powerStatus.Text = string.Empty;
@@ -1280,6 +1360,11 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         state = null!;
         foreach (var pair in _powerEditors)
         {
+            if (pair.Key == "Atpp" &&
+                _atppEditorRow?.Visibility != Visibility.Visible)
+            {
+                continue;
+            }
             if (!pair.Value.TryGetValue(out _))
             {
                 error = pair.Value.AllowOutside
@@ -1301,7 +1386,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             _powerEditors["GpuBoost"].Value,
             _powerEditors["GpuTgp"].Value,
             _powerEditors["GpuTemperature"].Value,
-            _powerEditors["GpuToCpu"].Value);
+            _powerEditors["GpuToCpu"].Value,
+            _atppEditorRow?.Visibility == Visibility.Visible
+                ? _powerEditors["Atpp"].Value
+                : null);
         error = string.Empty;
         return true;
     }
@@ -1326,6 +1414,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _powerEditors["GpuTgp"].SetValue(state.GpuConfigurableTgp);
         _powerEditors["GpuTemperature"].SetValue(state.GpuTemperatureLimit);
         _powerEditors["GpuToCpu"].SetValue(state.GpuToCpuDynamicBoost);
+        if (state.Atpp.HasValue && _powerEditors.TryGetValue("Atpp", out var atpp))
+            atpp.SetValue(state.Atpp.Value);
         _syncing = false;
         if (confirmed) _confirmedPower = state;
         _powerDirty = !confirmed;
@@ -1342,6 +1432,17 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _powerReadouts["GpuTgp"].Text = state.GpuConfigurableTgp.ToString(CultureInfo.InvariantCulture);
         _powerReadouts["GpuTemperature"].Text = state.GpuTemperatureLimit.ToString(CultureInfo.InvariantCulture);
         _powerReadouts["GpuToCpu"].Text = state.GpuToCpuDynamicBoost.ToString(CultureInfo.InvariantCulture);
+        var atppAvailable = state.Atpp.HasValue;
+        if (atppAvailable)
+            _powerReadouts["Atpp"].Text = state.Atpp!.Value.ToString(CultureInfo.InvariantCulture);
+        if (_atppReadout is not null)
+            _atppReadout.Visibility = atppAvailable
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        if (_atppEditorRow is not null)
+            _atppEditorRow.Visibility = atppAvailable
+                ? Visibility.Visible
+                : Visibility.Collapsed;
     }
 
     private void SyncRuntimeControls()
@@ -1456,6 +1557,62 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _discardPower.IsEnabled = _powerDirty;
     }
 
+    private void ChangePowerSettingsLock()
+    {
+        if (_syncing)
+            return;
+        var enabled = _lockPower.IsChecked == true;
+        if (!Runtime.TrySetPowerSettingsLock(
+                enabled,
+                enabled ? _confirmedPower : null,
+                out var error))
+        {
+            _powerStatus.Text = L(
+                "无法更改功耗锁定设置：",
+                "Could not change the power lock setting: ") + error;
+        }
+        else
+        {
+            UpdatePowerStatus();
+        }
+        SyncPowerLockControls();
+    }
+
+    private void ChangePowerSettingsLockInterval()
+    {
+        if (_syncing ||
+            Selected<int>(_powerLockInterval) is not { } seconds)
+        {
+            return;
+        }
+        if (!Runtime.TrySetPowerSettingsLockInterval(seconds, out var error))
+        {
+            _powerStatus.Text = L(
+                "无法保存功耗锁定间隔：",
+                "Could not save the power lock interval: ") + error;
+        }
+        else
+        {
+            UpdatePowerStatus();
+        }
+        SyncPowerLockControls();
+    }
+
+    private void SyncPowerLockControls(bool enabled = true)
+    {
+        var wasSyncing = _syncing;
+        _syncing = true;
+        _lockPower.IsChecked = Runtime.Settings.PowerSettingsLockEnabled;
+        Select(
+            _powerLockInterval,
+            Runtime.Settings.PowerSettingsLockIntervalSeconds);
+        _syncing = wasSyncing;
+        _lockPower.IsEnabled = enabled &&
+            (Runtime.Settings.PowerSettingsLockEnabled ||
+             _confirmedPower is not null);
+        _powerLockInterval.IsEnabled = enabled;
+    }
+
     private void SetPowerEnabled(bool value)
     {
         foreach (var editor in _powerEditors.Values) editor.View.IsEnabled = value;
@@ -1463,6 +1620,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _defaultPower.IsEnabled = value;
         _applyPower.IsEnabled = value && _powerDirty;
         _discardPower.IsEnabled = value && _powerDirty;
+        SyncPowerLockControls(value);
     }
 
     private void OnSnapshotChanged(object? sender, EventArgs args)

@@ -5,7 +5,7 @@ using System.Management;
 
 namespace ThinkBookToolkit;
 
-internal sealed record PowerSettingsState(
+public sealed record PowerSettingsState(
     int CpuPl1,
     int CpuPl2,
     int CpuTemperatureLimit,
@@ -13,10 +13,13 @@ internal sealed record PowerSettingsState(
     int GpuPowerBoost,
     int GpuConfigurableTgp,
     int GpuTemperatureLimit,
-    int GpuToCpuDynamicBoost);
+    int GpuToCpuDynamicBoost,
+    int? Atpp = null);
 
 internal static class PowerSettingsController
 {
+    private static readonly object IoSync = new();
+
     private const uint CpuPl1Id = 0x01020000;
     private const uint CpuPl2Id = 0x01010000;
     private const uint CpuTemperatureLimitId = 0x01040000;
@@ -24,44 +27,96 @@ internal static class PowerSettingsController
     private const uint GpuPowerBoostId = 0x02010000;
     private const uint GpuConfigurableTgpId = 0x02020000;
     private const uint GpuTemperatureLimitId = 0x02030000;
+    private const uint AtppId = 0x02040000;
     private const uint GpuToCpuDynamicBoostId = 0x020B0000;
 
     public static IReadOnlyList<int> TurboTimeLimits { get; } =
         [20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160];
 
+    public static IReadOnlyList<int> LockIntervals { get; } =
+        [1, 2, 3, 5, 10];
+
     public static PowerSettingsState? GetDefaultState(ItsMode mode) =>
         mode switch
         {
-            ItsMode.Intelligent => new(90, 125, 100, 56, 15, 75, 87, 10),
-            ItsMode.PowerSaving => new(35, 60, 93, 56, 10, 50, 87, 10),
-            ItsMode.Performance => new(125, 180, 100, 56, 15, 100, 87, 0),
-            ItsMode.Geek => new(130, 185, 100, 56, 15, 100, 87, 0),
+            ItsMode.Intelligent => new(90, 125, 100, 56, 15, 75, 87, 10, 45),
+            ItsMode.PowerSaving => new(35, 60, 93, 56, 10, 50, 87, 10, 25),
+            ItsMode.Performance => new(125, 180, 100, 56, 15, 100, 87, 0, 85),
+            ItsMode.Geek => new(130, 185, 100, 56, 15, 100, 87, 0, 105),
             _ => null
         };
 
     public static PowerSettingsState ReadState()
     {
-        using var other = GetActiveOtherMethod();
-        return ReadState(other);
+        lock (IoSync)
+        {
+            using var other = GetActiveOtherMethod();
+            return ReadState(other);
+        }
     }
 
     public static void WriteState(PowerSettingsState state)
     {
         Validate(state);
-        using var other = GetActiveOtherMethod();
-        WriteState(other, state);
+        lock (IoSync)
+        {
+            using var other = GetActiveOtherMethod();
+            WriteState(other, state);
+        }
     }
 
     public static PowerSettingsState WriteAndReadState(PowerSettingsState state)
     {
         Validate(state);
-        using var other = GetActiveOtherMethod();
-        WriteState(other, state);
-        return ReadState(other);
+        lock (IoSync)
+        {
+            using var other = GetActiveOtherMethod();
+            WriteState(other, state);
+            return ReadState(other);
+        }
     }
+
+    public static bool IsSupportedLockInterval(int seconds) =>
+        LockIntervals.Contains(seconds);
+
+    public static bool IsValidState(PowerSettingsState? state)
+    {
+        if (state is null)
+            return false;
+        try
+        {
+            Validate(state);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
+
+    public static bool RequiresLockReapply(
+        PowerSettingsState current,
+        PowerSettingsState target) =>
+        current.CpuPl1 != target.CpuPl1 ||
+        current.CpuPl2 != target.CpuPl2 ||
+        current.CpuTemperatureLimit != target.CpuTemperatureLimit ||
+        current.CpuTurboTimeLimit != target.CpuTurboTimeLimit ||
+        current.GpuPowerBoost != target.GpuPowerBoost ||
+        current.GpuConfigurableTgp != target.GpuConfigurableTgp ||
+        current.GpuTemperatureLimit != target.GpuTemperatureLimit ||
+        current.GpuToCpuDynamicBoost != target.GpuToCpuDynamicBoost ||
+        target.Atpp.HasValue && current.Atpp != target.Atpp;
 
     private static PowerSettingsState ReadState(ManagementObject other)
     {
+        int? atpp = TryReadFeatureValue(other, AtppId, out var atppValue) &&
+                    atppValue > 0
+            ? atppValue
+            : null;
         var state = new PowerSettingsState(
             ReadFeatureValue(other, CpuPl1Id),
             ReadFeatureValue(other, CpuPl2Id),
@@ -70,7 +125,8 @@ internal static class PowerSettingsController
             ReadFeatureValue(other, GpuPowerBoostId),
             checked(ReadFeatureValue(other, GpuConfigurableTgpId) + 50),
             ReadFeatureValue(other, GpuTemperatureLimitId),
-            ReadFeatureValue(other, GpuToCpuDynamicBoostId));
+            ReadFeatureValue(other, GpuToCpuDynamicBoostId),
+            atpp);
         Validate(state);
         return state;
     }
@@ -85,6 +141,8 @@ internal static class PowerSettingsController
         SetFeatureValue(other, GpuConfigurableTgpId, state.GpuConfigurableTgp - 50);
         SetFeatureValue(other, GpuTemperatureLimitId, state.GpuTemperatureLimit);
         SetFeatureValue(other, GpuToCpuDynamicBoostId, state.GpuToCpuDynamicBoost);
+        if (state.Atpp.HasValue)
+            SetFeatureValue(other, AtppId, state.Atpp.Value);
     }
 
     private static void Validate(PowerSettingsState state)
@@ -98,6 +156,8 @@ internal static class PowerSettingsController
         RequireRange(nameof(state.GpuConfigurableTgp), state.GpuConfigurableTgp, 50, 100);
         RequireRange(nameof(state.GpuTemperatureLimit), state.GpuTemperatureLimit, 75, 87);
         RequireRange(nameof(state.GpuToCpuDynamicBoost), state.GpuToCpuDynamicBoost, 0, 50);
+        if (state.Atpp.HasValue)
+            RequirePositive(nameof(state.Atpp), state.Atpp.Value);
     }
 
     private static void RequireRange(string name, int value, int minimum, int maximum)
@@ -163,6 +223,23 @@ internal static class PowerSettingsController
         }
 
         throw new InvalidOperationException($"GetFeatureValue(0x{id:X8}) failed. " + string.Join(" | ", errors));
+    }
+
+    private static bool TryReadFeatureValue(
+        ManagementObject other,
+        uint id,
+        out int value)
+    {
+        try
+        {
+            value = ReadFeatureValue(other, id);
+            return true;
+        }
+        catch
+        {
+            value = 0;
+            return false;
+        }
     }
 
     private static void SetFeatureValue(ManagementObject other, uint id, int value)

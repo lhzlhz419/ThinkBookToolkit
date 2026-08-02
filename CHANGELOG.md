@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-02
+
+### Added
+
+- Added persistent power-setting locking. Toolkit can check the current power
+  values every 1, 2, 3, 5, or 10 seconds and restore the saved target only
+  when a value differs.
+- Added optional ATPP read/write support through Lenovo Other Method feature
+  `0x02040000`, including a 25–105 W slider, unrestricted positive-integer
+  manual input, live readout, and per-performance-mode defaults.
+
+### Changed
+
+- Power-setting reads, manual writes, and background lock enforcement are now
+  serialized so they cannot access the firmware interface concurrently.
+- ATPP availability is reported independently: an unavailable ATPP interface
+  no longer reduces the availability of the original power controls, while a
+  detected writable interface is identified in feature monitoring.
+
 ## [0.2.1] - 2026-07-31
 
 ### Changed
@@ -83,7 +102,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.1.1...v0.1.2

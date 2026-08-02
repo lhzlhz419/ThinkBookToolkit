@@ -340,14 +340,14 @@ internal static class Program
         runtime.SetSnapshotForTesting(runtime.Snapshot with { PendingGpuMode = string.Empty });
         Assert(ContainsText(performance, "CPU PL1") &&
                ContainsText(performance, "GPU Power Boost"),
-            "Power settings do not show the current eight-value summary.");
+            "Power settings do not show the current-value summary.");
         Assert(Descendants(performance).OfType<Slider>().Any(),
             "Fully available power settings have no editor sliders.");
         Assert(GetPrivateField<StackPanel>(
                    performance,
                    "_powerEditorPanel").Visibility == Visibility.Collapsed,
             "Power editor is not collapsed by default.");
-        var confirmedPower = new PowerSettingsState(130, 185, 100, 56, 15, 100, 85, 10);
+        var confirmedPower = new PowerSettingsState(130, 185, 100, 56, 15, 100, 85, 10, 75);
         performance.GetType()
             .GetMethod("ApplyPowerState", BindingFlags.Instance | BindingFlags.NonPublic)
             ?.Invoke(performance, [confirmedPower, true]);
@@ -365,6 +365,48 @@ internal static class Program
                    .Select(box => box.Text)
                    .Contains("185"),
             "Expanding power settings did not seed the editor from current values.");
+        var atppReadout = GetPrivateField<FrameworkElement>(
+            performance,
+            "_atppReadout");
+        var atppEditorRow = GetPrivateField<FrameworkElement>(
+            performance,
+            "_atppEditorRow");
+        var atppSlider = Descendants(atppEditorRow).OfType<Slider>().Single();
+        var atppTextBox = Descendants(atppEditorRow).OfType<TextBox>().Single();
+        Assert(atppReadout.Visibility == Visibility.Visible &&
+               atppEditorRow.Visibility == Visibility.Visible &&
+               atppSlider.Minimum == 25 &&
+               atppSlider.Maximum == 105 &&
+               atppTextBox.Text == "75",
+            "Available ATPP is not shown with the required 25–105 W slider range.");
+        atppTextBox.Text = "106";
+        object?[] collectAtppArguments = [null, null];
+        Assert((bool)performance.GetType()
+                   .GetMethod(
+                       "TryCollectPower",
+                       BindingFlags.Instance | BindingFlags.NonPublic)!
+                   .Invoke(performance, collectAtppArguments)! &&
+               collectAtppArguments[0] is PowerSettingsState { Atpp: 106 },
+            "ATPP manual input above the slider range is not accepted.");
+        atppTextBox.Text = "0";
+        collectAtppArguments = [null, null];
+        Assert(!(bool)performance.GetType()
+                   .GetMethod(
+                       "TryCollectPower",
+                       BindingFlags.Instance | BindingFlags.NonPublic)!
+                   .Invoke(performance, collectAtppArguments)!,
+            "ATPP accepts a non-positive manual value.");
+        atppTextBox.Text = "75";
+        Assert(GetPrivateField<CheckBox>(performance, "_lockPower") is
+               {
+                   IsChecked: false,
+                   Content: "锁定功耗设置"
+               } &&
+               GetPrivateField<ComboBox>(performance, "_powerLockInterval") is
+               { SelectedItem: ComboBoxItem { Tag: 2 } } powerLockInterval &&
+               Labels(powerLockInterval).SequenceEqual(
+                   ["1 秒", "2 秒", "3 秒", "5 秒", "10 秒"]),
+            "Power-setting lock controls or interval defaults are incorrect.");
         Assert(Labels(GetPrivateField<ComboBox>(performance, "_smoothing"))
                    .SequenceEqual(["1", "2", "3", "5", "10"]) &&
                Labels(GetPrivateField<ComboBox>(performance, "_rampDown"))
@@ -656,6 +698,25 @@ internal static class Program
                ContainsText(partialSettingsPage, "部分可用"),
             "Partial power capability is not represented in feature monitoring.");
 
+        using var atppRuntime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "light"
+        });
+        atppRuntime.SetReportForTesting(new FeatureAvailabilityReport([
+            new FeatureAvailability(
+                FeatureIds.PowerSettings,
+                "性能与散热",
+                "功耗设置",
+                true,
+                "ATPP 可调整。",
+                EnglishDetail: "ATPP is adjustable.")
+        ]));
+        using var atppSettingsPage = new ToolkitSettingsPage(atppRuntime);
+        Assert(ContainsText(atppSettingsPage, "ATPP 可调整。") &&
+               ContainsText(atppSettingsPage, "可用"),
+            "Feature monitoring does not note that ATPP is adjustable.");
+
         window.UpdateResponsiveForTesting(900);
         Assert(window.SidebarCollapsed,
             "Sidebar did not collapse for a narrow window.");
@@ -864,9 +925,38 @@ internal static class Program
                    ConfigurationVersion: CurveProfileStore.CurrentConfigurationVersion,
                    FanReadMinimumIntervalSeconds: null,
                    FanWriteMinimumIntervalSeconds: null,
-                   AttemptDisableControlOnSleepWhenUnsupported: false
+                   AttemptDisableControlOnSleepWhenUnsupported: false,
+                   PowerSettingsLockEnabled: false,
+                   PowerSettingsLockIntervalSeconds: 2,
+                   PowerSettingsLockTarget: null
                },
             "Fan I/O interval overrides or unsupported-backend sleep behavior have unsafe defaults.");
+        Assert(PowerSettingsController.LockIntervals.SequenceEqual(
+                   [1, 2, 3, 5, 10]) &&
+               PowerSettingsController.IsSupportedLockInterval(2) &&
+               !PowerSettingsController.IsSupportedLockInterval(4) &&
+               !PowerSettingsController.RequiresLockReapply(
+                   confirmedPower,
+                   confirmedPower) &&
+               !PowerSettingsController.RequiresLockReapply(
+                   confirmedPower,
+                   confirmedPower with { Atpp = null }) &&
+               PowerSettingsController.RequiresLockReapply(
+                   confirmedPower,
+                   confirmedPower with { CpuPl1 = 129 }) &&
+               PowerSettingsController.RequiresLockReapply(
+                   confirmedPower with { Atpp = null },
+                   confirmedPower) &&
+               PowerSettingsController.IsValidState(
+                   confirmedPower with { Atpp = 106 }) &&
+               !PowerSettingsController.IsValidState(
+                   confirmedPower with { Atpp = 0 }),
+            "Power-setting lock interval or change-detection policy is incorrect.");
+        Assert(PowerSettingsController.GetDefaultState(ItsMode.PowerSaving)?.Atpp == 25 &&
+               PowerSettingsController.GetDefaultState(ItsMode.Intelligent)?.Atpp == 45 &&
+               PowerSettingsController.GetDefaultState(ItsMode.Performance)?.Atpp == 85 &&
+               PowerSettingsController.GetDefaultState(ItsMode.Geek)?.Atpp == 105,
+            "ATPP defaults do not match the four performance modes.");
         Assert(MainWindow.SuppressSmallTargetChanges(
                    new FanTargets(1599, 1600),
                    new FanTargets(1500, 1500)) ==

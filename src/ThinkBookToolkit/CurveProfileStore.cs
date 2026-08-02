@@ -168,6 +168,19 @@ public static class CurveProfileStore
                 defaults.FanWriteMinimumIntervalSeconds =
                     loaded.FanWriteMinimumIntervalSeconds;
             }
+            defaults.PowerSettingsLockIntervalSeconds =
+                PowerSettingsController.IsSupportedLockInterval(
+                    loaded.PowerSettingsLockIntervalSeconds)
+                    ? loaded.PowerSettingsLockIntervalSeconds
+                    : 2;
+            defaults.PowerSettingsLockTarget =
+                PowerSettingsController.IsValidState(
+                    loaded.PowerSettingsLockTarget)
+                    ? loaded.PowerSettingsLockTarget
+                    : null;
+            defaults.PowerSettingsLockEnabled =
+                loaded.PowerSettingsLockEnabled &&
+                defaults.PowerSettingsLockTarget is not null;
             defaults.LastFanBackendIdentity =
                 loaded.LastFanBackendIdentity ?? string.Empty;
             defaults.SuppressedFanBackendStartupNoticeIdentity =
@@ -212,6 +225,17 @@ public static class CurveProfileStore
     public static void SaveSettings(AppSettings settings)
     {
         settings.ConfigurationVersion = CurrentConfigurationVersion;
+        if (!PowerSettingsController.IsSupportedLockInterval(
+                settings.PowerSettingsLockIntervalSeconds))
+        {
+            settings.PowerSettingsLockIntervalSeconds = 2;
+        }
+        if (!PowerSettingsController.IsValidState(
+                settings.PowerSettingsLockTarget))
+        {
+            settings.PowerSettingsLockEnabled = false;
+            settings.PowerSettingsLockTarget = null;
+        }
         settings.AdvancedFanCurve = AdvancedFanCurve.Normalize(
             settings.AdvancedFanCurve,
             NormalizeFanRpmLimits(settings.FanRpmLimits));

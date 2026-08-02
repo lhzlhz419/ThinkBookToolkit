@@ -149,6 +149,9 @@ public sealed class AppSettings
     public bool AttemptDisableControlOnSleepWhenUnsupported { get; set; }
     public double? FanReadMinimumIntervalSeconds { get; set; }
     public double? FanWriteMinimumIntervalSeconds { get; set; }
+    public bool PowerSettingsLockEnabled { get; set; }
+    public int PowerSettingsLockIntervalSeconds { get; set; } = 2;
+    public PowerSettingsState? PowerSettingsLockTarget { get; set; }
     public string LastFanBackendIdentity { get; set; } = "";
     public string SuppressedFanBackendStartupNoticeIdentity { get; set; } = "";
     public string PendingGpuMode { get; set; } = "";

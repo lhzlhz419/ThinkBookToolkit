@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
@@ -65,6 +66,8 @@ internal sealed record ToolkitRuntimeSnapshot(
 internal sealed class ToolkitRuntimeService : IDisposable
 {
     private readonly DispatcherTimer _pollTimer = new();
+    private readonly DispatcherTimer _powerSettingsLockTimer = new();
+    private readonly SemaphoreSlim _powerSettingsGate = new(1, 1);
     private MainWindow? _fanRuntime;
     private TemperatureReader? _temperatureReader;
     private ToolkitMainWindow? _window;
@@ -76,6 +79,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private DateTimeOffset _lastGpuRefresh;
     private readonly string _bootSessionId;
     private bool _polling;
+    private bool _powerSettingsLockBusy;
+    private string _lastPowerSettingsLockError = string.Empty;
     private bool _disposed;
     private bool _systemThemeSubscribed;
 
@@ -86,6 +91,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
         _pollTimer.Tick += async (_, _) => await RefreshAsync();
+        _powerSettingsLockTimer.Tick += async (_, _) =>
+            await EnforcePowerSettingsLockAsync();
         SyncPollingInterval();
         SyncSystemThemeSubscription();
     }
@@ -175,6 +182,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     {
         Report = report;
         FeatureAvailabilityCache.Current = report;
+        SyncPowerSettingsLockTimer();
         AvailabilityChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -252,6 +260,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         await ApplyPendingGpuModeAsync();
         await RefreshAsync(force: true);
         _pollTimer.Start();
+        SyncPowerSettingsLockTimer();
     }
 
     public void AttachWindow(ToolkitMainWindow window, bool startToTrayRequested)
@@ -294,8 +303,117 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public async Task RestoreForExitAsync()
     {
         _pollTimer.Stop();
+        _powerSettingsLockTimer.Stop();
         if (_fanRuntime is not null)
             await _fanRuntime.RuntimeRestoreFirmwareAutoAsync();
+    }
+
+    public async Task<PowerSettingsState> ReadPowerSettingsAsync()
+    {
+        await _powerSettingsGate.WaitAsync();
+        try
+        {
+            return await Task.Run(PowerSettingsController.ReadState);
+        }
+        finally
+        {
+            _powerSettingsGate.Release();
+        }
+    }
+
+    public async Task<PowerSettingsState> ApplyPowerSettingsAsync(
+        PowerSettingsState state)
+    {
+        await _powerSettingsGate.WaitAsync();
+        try
+        {
+            var confirmed = await Task.Run(
+                () => PowerSettingsController.WriteAndReadState(state));
+            if (Settings.PowerSettingsLockEnabled)
+            {
+                Settings.PowerSettingsLockTarget = confirmed;
+                try
+                {
+                    CurveProfileStore.SaveSettings(Settings);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(L(
+                        "功耗设置已应用，但新的锁定目标无法保存：",
+                        "Power settings were applied, but the new lock target could not be saved: ") + ex.Message);
+                }
+            }
+            return confirmed;
+        }
+        finally
+        {
+            _powerSettingsGate.Release();
+        }
+    }
+
+    public bool TrySetPowerSettingsLock(
+        bool enabled,
+        PowerSettingsState? target,
+        out string? error)
+    {
+        if (enabled && !PowerSettingsController.IsValidState(target))
+        {
+            error = L(
+                "请先成功读取当前功耗设置。",
+                "Read the current power settings successfully before enabling the lock.");
+            return false;
+        }
+
+        var previousEnabled = Settings.PowerSettingsLockEnabled;
+        var previousTarget = Settings.PowerSettingsLockTarget;
+        Settings.PowerSettingsLockEnabled = enabled;
+        if (enabled)
+            Settings.PowerSettingsLockTarget = target;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            SyncPowerSettingsLockTimer();
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.PowerSettingsLockEnabled = previousEnabled;
+            Settings.PowerSettingsLockTarget = previousTarget;
+            SyncPowerSettingsLockTimer();
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    public bool TrySetPowerSettingsLockInterval(
+        int seconds,
+        out string? error)
+    {
+        if (!PowerSettingsController.IsSupportedLockInterval(seconds))
+        {
+            error = L(
+                "功耗锁定间隔无效。",
+                "The power lock interval is invalid.");
+            return false;
+        }
+
+        var previous = Settings.PowerSettingsLockIntervalSeconds;
+        Settings.PowerSettingsLockIntervalSeconds = seconds;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            SyncPowerSettingsLockTimer();
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.PowerSettingsLockIntervalSeconds = previous;
+            SyncPowerSettingsLockTimer();
+            error = ex.Message;
+            return false;
+        }
     }
 
     public async Task RefreshAsync(bool force = false)
@@ -913,6 +1031,77 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    private async Task EnforcePowerSettingsLockAsync()
+    {
+        if (_disposed ||
+            _powerSettingsLockBusy ||
+            Settings.PowerSettingsLockEnabled != true ||
+            Report?.IsFullyAvailable(FeatureIds.PowerSettings) != true)
+        {
+            return;
+        }
+
+        _powerSettingsLockBusy = true;
+        await _powerSettingsGate.WaitAsync();
+        try
+        {
+            var target = Settings.PowerSettingsLockTarget;
+            if (!Settings.PowerSettingsLockEnabled ||
+                !PowerSettingsController.IsValidState(target))
+            {
+                return;
+            }
+
+            var current = await Task.Run(PowerSettingsController.ReadState);
+            if (!Settings.PowerSettingsLockEnabled ||
+                Settings.PowerSettingsLockTarget != target)
+            {
+                return;
+            }
+
+            if (PowerSettingsController.RequiresLockReapply(current, target!))
+                await Task.Run(() => PowerSettingsController.WriteState(target!));
+            _lastPowerSettingsLockError = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            var message = L(
+                "锁定功耗设置失败：",
+                "Failed to lock power settings: ") + ex.Message;
+            if (!string.Equals(
+                    message,
+                    _lastPowerSettingsLockError,
+                    StringComparison.Ordinal))
+            {
+                _lastPowerSettingsLockError = message;
+                SetStatus(message);
+            }
+        }
+        finally
+        {
+            _powerSettingsGate.Release();
+            _powerSettingsLockBusy = false;
+        }
+    }
+
+    private void SyncPowerSettingsLockTimer()
+    {
+        _powerSettingsLockTimer.Stop();
+        _powerSettingsLockTimer.Interval = TimeSpan.FromSeconds(
+            PowerSettingsController.IsSupportedLockInterval(
+                Settings.PowerSettingsLockIntervalSeconds)
+                ? Settings.PowerSettingsLockIntervalSeconds
+                : 2);
+        if (!_disposed &&
+            Settings.PowerSettingsLockEnabled &&
+            PowerSettingsController.IsValidState(
+                Settings.PowerSettingsLockTarget) &&
+            Report?.IsFullyAvailable(FeatureIds.PowerSettings) == true)
+        {
+            _powerSettingsLockTimer.Start();
+        }
+    }
+
     private void SyncPollingInterval()
     {
         _pollTimer.Interval = TimeSpan.FromSeconds(
@@ -1092,6 +1281,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return;
         _disposed = true;
         _pollTimer.Stop();
+        _powerSettingsLockTimer.Stop();
         if (_systemThemeSubscribed)
         {
             SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
