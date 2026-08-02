@@ -98,18 +98,75 @@ internal static class PowerSettingsController
         }
     }
 
+    public static bool IsValidLockConfiguration(
+        PowerSettingsLockSelection? selection,
+        PowerSettingsState? target) =>
+        selection is { Any: true } &&
+        IsValidState(target) &&
+        (!selection.Atpp || target!.Atpp.HasValue);
+
+    public static PowerSettingsState WithSetting(
+        PowerSettingsState destination,
+        PowerSettingsState source,
+        PowerSetting setting) => setting switch
+        {
+            PowerSetting.CpuPl1 => destination with { CpuPl1 = source.CpuPl1 },
+            PowerSetting.CpuPl2 => destination with { CpuPl2 = source.CpuPl2 },
+            PowerSetting.CpuTemperatureLimit => destination with { CpuTemperatureLimit = source.CpuTemperatureLimit },
+            PowerSetting.CpuTurboTimeLimit => destination with { CpuTurboTimeLimit = source.CpuTurboTimeLimit },
+            PowerSetting.GpuPowerBoost => destination with { GpuPowerBoost = source.GpuPowerBoost },
+            PowerSetting.GpuConfigurableTgp => destination with { GpuConfigurableTgp = source.GpuConfigurableTgp },
+            PowerSetting.GpuTemperatureLimit => destination with { GpuTemperatureLimit = source.GpuTemperatureLimit },
+            PowerSetting.GpuToCpuDynamicBoost => destination with { GpuToCpuDynamicBoost = source.GpuToCpuDynamicBoost },
+            PowerSetting.Atpp => destination with { Atpp = source.Atpp },
+            _ => destination
+        };
+
     public static bool RequiresLockReapply(
         PowerSettingsState current,
-        PowerSettingsState target) =>
-        current.CpuPl1 != target.CpuPl1 ||
-        current.CpuPl2 != target.CpuPl2 ||
-        current.CpuTemperatureLimit != target.CpuTemperatureLimit ||
-        current.CpuTurboTimeLimit != target.CpuTurboTimeLimit ||
-        current.GpuPowerBoost != target.GpuPowerBoost ||
-        current.GpuConfigurableTgp != target.GpuConfigurableTgp ||
-        current.GpuTemperatureLimit != target.GpuTemperatureLimit ||
-        current.GpuToCpuDynamicBoost != target.GpuToCpuDynamicBoost ||
-        target.Atpp.HasValue && current.Atpp != target.Atpp;
+        PowerSettingsState target,
+        PowerSettingsLockSelection selection) =>
+        selection.CpuPl1 && current.CpuPl1 != target.CpuPl1 ||
+        selection.CpuPl2 && current.CpuPl2 != target.CpuPl2 ||
+        selection.CpuTemperatureLimit && current.CpuTemperatureLimit != target.CpuTemperatureLimit ||
+        selection.CpuTurboTimeLimit && current.CpuTurboTimeLimit != target.CpuTurboTimeLimit ||
+        selection.GpuPowerBoost && current.GpuPowerBoost != target.GpuPowerBoost ||
+        selection.GpuConfigurableTgp && current.GpuConfigurableTgp != target.GpuConfigurableTgp ||
+        selection.GpuTemperatureLimit && current.GpuTemperatureLimit != target.GpuTemperatureLimit ||
+        selection.GpuToCpuDynamicBoost && current.GpuToCpuDynamicBoost != target.GpuToCpuDynamicBoost ||
+        selection.Atpp && current.Atpp.HasValue && current.Atpp != target.Atpp;
+
+    public static void WriteLockedState(
+        PowerSettingsState current,
+        PowerSettingsState target,
+        PowerSettingsLockSelection selection)
+    {
+        if (!IsValidLockConfiguration(selection, target))
+            throw new ArgumentException("The power lock configuration is invalid.");
+
+        lock (IoSync)
+        {
+            using var other = GetActiveOtherMethod();
+            if (selection.CpuPl1 && current.CpuPl1 != target.CpuPl1)
+                SetFeatureValue(other, CpuPl1Id, target.CpuPl1);
+            if (selection.CpuPl2 && current.CpuPl2 != target.CpuPl2)
+                SetFeatureValue(other, CpuPl2Id, target.CpuPl2);
+            if (selection.CpuTemperatureLimit && current.CpuTemperatureLimit != target.CpuTemperatureLimit)
+                SetFeatureValue(other, CpuTemperatureLimitId, target.CpuTemperatureLimit - 5);
+            if (selection.CpuTurboTimeLimit && current.CpuTurboTimeLimit != target.CpuTurboTimeLimit)
+                SetFeatureValue(other, CpuTurboTimeLimitId, target.CpuTurboTimeLimit);
+            if (selection.GpuPowerBoost && current.GpuPowerBoost != target.GpuPowerBoost)
+                SetFeatureValue(other, GpuPowerBoostId, target.GpuPowerBoost);
+            if (selection.GpuConfigurableTgp && current.GpuConfigurableTgp != target.GpuConfigurableTgp)
+                SetFeatureValue(other, GpuConfigurableTgpId, target.GpuConfigurableTgp - 50);
+            if (selection.GpuTemperatureLimit && current.GpuTemperatureLimit != target.GpuTemperatureLimit)
+                SetFeatureValue(other, GpuTemperatureLimitId, target.GpuTemperatureLimit);
+            if (selection.GpuToCpuDynamicBoost && current.GpuToCpuDynamicBoost != target.GpuToCpuDynamicBoost)
+                SetFeatureValue(other, GpuToCpuDynamicBoostId, target.GpuToCpuDynamicBoost);
+            if (selection.Atpp && current.Atpp.HasValue && current.Atpp != target.Atpp)
+                SetFeatureValue(other, AtppId, target.Atpp!.Value);
+        }
+    }
 
     private static PowerSettingsState ReadState(ManagementObject other)
     {

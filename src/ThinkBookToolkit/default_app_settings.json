@@ -68,7 +68,17 @@
   "AttemptDisableControlOnSleepWhenUnsupported": false,
   "FanReadMinimumIntervalSeconds": null,
   "FanWriteMinimumIntervalSeconds": null,
-  "PowerSettingsLockEnabled": false,
+  "PowerSettingsLocks": {
+    "CpuPl1": false,
+    "CpuPl2": false,
+    "CpuTemperatureLimit": false,
+    "CpuTurboTimeLimit": false,
+    "GpuPowerBoost": false,
+    "GpuConfigurableTgp": false,
+    "GpuTemperatureLimit": false,
+    "GpuToCpuDynamicBoost": false,
+    "Atpp": false
+  },
   "PowerSettingsLockIntervalSeconds": 2,
   "PowerSettingsLockTarget": null,
   "LastFanBackendIdentity": "",

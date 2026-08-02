@@ -397,15 +397,26 @@ internal static class Program
                    .Invoke(performance, collectAtppArguments)!,
             "ATPP accepts a non-positive manual value.");
         atppTextBox.Text = "75";
-        Assert(GetPrivateField<CheckBox>(performance, "_lockPower") is
-               {
-                   IsChecked: false,
-                   Content: "锁定功耗设置"
-               } &&
+        var powerLockToggles = GetPrivateField<
+            Dictionary<PowerSetting, CheckBox>>(
+                performance,
+                "_powerLockToggles");
+        Assert(powerLockToggles.Count == 9 &&
+               Enum.GetValues<PowerSetting>().All(
+                   setting => powerLockToggles.TryGetValue(setting, out var toggle) &&
+                              toggle.IsChecked == false &&
+                              Equals(toggle.Content, "锁定") &&
+                              toggle.Parent is Grid lockLayout &&
+                              lockLayout.Children.Count == 2 &&
+                              ReferenceEquals(lockLayout.Children[0], toggle) &&
+                              Grid.GetColumn(toggle) == 0 &&
+                              Grid.GetColumn(lockLayout.Children[1]) == 1) &&
                GetPrivateField<ComboBox>(performance, "_powerLockInterval") is
                { SelectedItem: ComboBoxItem { Tag: 2 } } powerLockInterval &&
                Labels(powerLockInterval).SequenceEqual(
-                   ["1 秒", "2 秒", "3 秒", "5 秒", "10 秒"]),
+                   ["1 秒", "2 秒", "3 秒", "5 秒", "10 秒"]) &&
+               ContainsText(powerEditorHost, "锁定检查间隔") &&
+               !ContainsText(powerEditorHost, "锁定功耗设置"),
             "Power-setting lock controls or interval defaults are incorrect.");
         Assert(Labels(GetPrivateField<ComboBox>(performance, "_smoothing"))
                    .SequenceEqual(["1", "2", "3", "5", "10"]) &&
@@ -924,31 +935,55 @@ internal static class Program
                {
                    ConfigurationVersion: CurveProfileStore.CurrentConfigurationVersion,
                    FanReadMinimumIntervalSeconds: null,
-                   FanWriteMinimumIntervalSeconds: null,
-                   AttemptDisableControlOnSleepWhenUnsupported: false,
-                   PowerSettingsLockEnabled: false,
-                   PowerSettingsLockIntervalSeconds: 2,
-                   PowerSettingsLockTarget: null
+                    FanWriteMinimumIntervalSeconds: null,
+                    AttemptDisableControlOnSleepWhenUnsupported: false,
+                    PowerSettingsLocks: { Any: false },
+                    PowerSettingsLockIntervalSeconds: 2,
+                    PowerSettingsLockTarget: null
                },
             "Fan I/O interval overrides or unsupported-backend sleep behavior have unsafe defaults.");
-        Assert(PowerSettingsController.LockIntervals.SequenceEqual(
+        var cpuPl1Lock = new PowerSettingsLockSelection { CpuPl1 = true };
+        var atppLock = new PowerSettingsLockSelection { Atpp = true };
+        Assert(CurveProfileStore.IsLegacyPowerSettingsLockEnabled(
+                   "{\"PowerSettingsLockEnabled\":true}") &&
+               !CurveProfileStore.IsLegacyPowerSettingsLockEnabled(
+                   "{\"PowerSettingsLockEnabled\":false}") &&
+               PowerSettingsController.LockIntervals.SequenceEqual(
                    [1, 2, 3, 5, 10]) &&
                PowerSettingsController.IsSupportedLockInterval(2) &&
                !PowerSettingsController.IsSupportedLockInterval(4) &&
                !PowerSettingsController.RequiresLockReapply(
-                   confirmedPower,
-                   confirmedPower) &&
+                    confirmedPower,
+                    confirmedPower,
+                    cpuPl1Lock) &&
                !PowerSettingsController.RequiresLockReapply(
-                   confirmedPower,
-                   confirmedPower with { Atpp = null }) &&
+                    confirmedPower,
+                    confirmedPower with { GpuPowerBoost = 14 },
+                    cpuPl1Lock) &&
                PowerSettingsController.RequiresLockReapply(
-                   confirmedPower,
-                   confirmedPower with { CpuPl1 = 129 }) &&
-               PowerSettingsController.RequiresLockReapply(
-                   confirmedPower with { Atpp = null },
-                   confirmedPower) &&
+                    confirmedPower,
+                    confirmedPower with { CpuPl1 = 129 },
+                    cpuPl1Lock) &&
+               !PowerSettingsController.RequiresLockReapply(
+                    confirmedPower with { Atpp = null },
+                    confirmedPower,
+                    atppLock) &&
+               PowerSettingsController.IsValidLockConfiguration(
+                    cpuPl1Lock,
+                    confirmedPower) &&
+               !PowerSettingsController.IsValidLockConfiguration(
+                    new PowerSettingsLockSelection(),
+                    confirmedPower) &&
+               !PowerSettingsController.IsValidLockConfiguration(
+                    atppLock,
+                    confirmedPower with { Atpp = null }) &&
+               PowerSettingsController.WithSetting(
+                    confirmedPower,
+                    confirmedPower with { CpuPl1 = 129, CpuPl2 = 150 },
+                    PowerSetting.CpuPl1) ==
+                    confirmedPower with { CpuPl1 = 129 } &&
                PowerSettingsController.IsValidState(
-                   confirmedPower with { Atpp = 106 }) &&
+                    confirmedPower with { Atpp = 106 }) &&
                !PowerSettingsController.IsValidState(
                    confirmedPower with { Atpp = 0 }),
             "Power-setting lock interval or change-detection policy is incorrect.");

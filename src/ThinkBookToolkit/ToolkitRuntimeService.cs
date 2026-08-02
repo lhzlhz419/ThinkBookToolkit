@@ -329,7 +329,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             var confirmed = await Task.Run(
                 () => PowerSettingsController.WriteAndReadState(state));
-            if (Settings.PowerSettingsLockEnabled)
+            if (Settings.PowerSettingsLocks is { Any: true })
             {
                 Settings.PowerSettingsLockTarget = confirmed;
                 try
@@ -351,12 +351,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
-    public bool TrySetPowerSettingsLock(
+    public bool TrySetPowerSettingLock(
+        PowerSetting setting,
         bool enabled,
         PowerSettingsState? target,
         out string? error)
     {
-        if (enabled && !PowerSettingsController.IsValidState(target))
+        if (enabled &&
+            (!PowerSettingsController.IsValidState(target) ||
+             setting == PowerSetting.Atpp && !target!.Atpp.HasValue))
         {
             error = L(
                 "请先成功读取当前功耗设置。",
@@ -364,11 +367,25 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return false;
         }
 
-        var previousEnabled = Settings.PowerSettingsLockEnabled;
+        var previousSelection = Settings.PowerSettingsLocks ??
+            new PowerSettingsLockSelection();
         var previousTarget = Settings.PowerSettingsLockTarget;
-        Settings.PowerSettingsLockEnabled = enabled;
+        var selection = previousSelection.With(setting, enabled);
+        Settings.PowerSettingsLocks = selection;
         if (enabled)
-            Settings.PowerSettingsLockTarget = target;
+        {
+            Settings.PowerSettingsLockTarget =
+                PowerSettingsController.IsValidState(previousTarget)
+                    ? PowerSettingsController.WithSetting(
+                        previousTarget!,
+                        target!,
+                        setting)
+                    : target;
+        }
+        else if (!selection.Any)
+        {
+            Settings.PowerSettingsLockTarget = null;
+        }
         try
         {
             CurveProfileStore.SaveSettings(Settings);
@@ -378,7 +395,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         catch (Exception ex)
         {
-            Settings.PowerSettingsLockEnabled = previousEnabled;
+            Settings.PowerSettingsLocks = previousSelection;
             Settings.PowerSettingsLockTarget = previousTarget;
             SyncPowerSettingsLockTimer();
             error = ex.Message;
@@ -1035,7 +1052,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     {
         if (_disposed ||
             _powerSettingsLockBusy ||
-            Settings.PowerSettingsLockEnabled != true ||
+            Settings.PowerSettingsLocks is not { Any: true } ||
             Report?.IsFullyAvailable(FeatureIds.PowerSettings) != true)
         {
             return;
@@ -1046,28 +1063,38 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             var target = Settings.PowerSettingsLockTarget;
-            if (!Settings.PowerSettingsLockEnabled ||
-                !PowerSettingsController.IsValidState(target))
+            var selection = Settings.PowerSettingsLocks with { };
+            if (!PowerSettingsController.IsValidLockConfiguration(
+                    selection,
+                    target))
             {
                 return;
             }
 
             var current = await Task.Run(PowerSettingsController.ReadState);
-            if (!Settings.PowerSettingsLockEnabled ||
+            if (Settings.PowerSettingsLocks != selection ||
                 Settings.PowerSettingsLockTarget != target)
             {
                 return;
             }
 
-            if (PowerSettingsController.RequiresLockReapply(current, target!))
-                await Task.Run(() => PowerSettingsController.WriteState(target!));
+            if (PowerSettingsController.RequiresLockReapply(
+                    current,
+                    target!,
+                    selection))
+            {
+                await Task.Run(() => PowerSettingsController.WriteLockedState(
+                    current,
+                    target!,
+                    selection));
+            }
             _lastPowerSettingsLockError = string.Empty;
         }
         catch (Exception ex)
         {
             var message = L(
-                "锁定功耗设置失败：",
-                "Failed to lock power settings: ") + ex.Message;
+                "恢复锁定的功耗参数失败：",
+                "Failed to restore locked power parameters: ") + ex.Message;
             if (!string.Equals(
                     message,
                     _lastPowerSettingsLockError,
@@ -1093,8 +1120,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 ? Settings.PowerSettingsLockIntervalSeconds
                 : 2);
         if (!_disposed &&
-            Settings.PowerSettingsLockEnabled &&
-            PowerSettingsController.IsValidState(
+            PowerSettingsController.IsValidLockConfiguration(
+                Settings.PowerSettingsLocks,
                 Settings.PowerSettingsLockTarget) &&
             Report?.IsFullyAvailable(FeatureIds.PowerSettings) == true)
         {

@@ -23,7 +23,7 @@ ThinkBook Toolkit 是面向部分 Lenovo ThinkBook 设备的 Windows 原生控�
 - 充电模式、隔夜充电、持续 USB 供电、开盖启动和完整电池信息；
 - 护眼、色彩模式、Dolby、扬声器/麦克风降噪、键盘、功能键、OSD 和触摸板设置；
 - 设备、固件、存储和联想保修信息；
-- 功耗参数查看，以及受支持设备上的参数调整；
+- 功耗参数查看、受支持设备上的参数调整，以及按参数独立启用的功耗锁定；
 - BIOS 启动操作和开机 Logo 更换；
 - 深浅色主题、中英文、托盘控制和开机自启。
 
@@ -125,7 +125,7 @@ Toolkit 会根据当前界面语言选择文本。用户可以只确认，也可
 .\scripts\build.ps1
 ```
 
-生成位于 `dist\v0.2.2\ThinkBookToolkit-0.2.2-win-x64-framework-dependent` 的公开、依赖框架版本：
+生成位于 `dist\v0.2.3\ThinkBookToolkit-0.2.3-win-x64-framework-dependent` 的公开、依赖框架版本：
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
@@ -137,7 +137,7 @@ Toolkit 会根据当前界面语言选择文本。用户可以只确认，也可
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
 
-输出文件为 `dist\v0.2.2\ThinkBookToolkit-0.2.2-Setup.exe`。安装位置默认为
+输出文件为 `dist\v0.2.3\ThinkBookToolkit-0.2.3-Setup.exe`。安装位置默认为
 `Program Files\ThinkBook Toolkit`，可在安装向导中修改。如果所选文件夹非空，安装器会明确提示
 其中所有内容将被删除，并且只有确认后才继续；应始终选择 Toolkit 专用文件夹。如果目录中已有
 文件版本兼容的风扇后端，安装器会默认保留并允许改用安装包内置后端。如果已有后端的文件版本
@@ -148,7 +148,7 @@ Toolkit 会根据当前界面语言选择文本。用户可以只确认，也可
 才使用 `-Publish -SelfContained`。
 
 公开发布构建默认排除本地专有联想 DLL。仅为自己的电脑生成包含本地依赖的私用构建时，可增加
-`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.2.2`，可替换风扇后端 API 版本为 `1.1`，配置文件格式版本为 `1.0`。
+`-IncludeLocalProprietaryDependencies`。当前软件版本为 `0.2.3`，可替换风扇后端 API 版本为 `1.1`，配置文件格式版本为 `1.0`。
 
 运行不会写入硬件的 UI 冒烟测试：
 

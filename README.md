@@ -39,7 +39,8 @@ Current feature groups include:
 - eye care, color modes, Dolby settings, speaker/microphone noise reduction,
   keyboard, function-key, OSD, and touchpad controls;
 - device, firmware, storage, and Lenovo warranty information;
-- power-limit viewing and supported-device adjustment;
+- power-limit viewing, supported-device adjustment, and independent locks for
+  each available power parameter;
 - BIOS startup actions and boot-logo customization;
 - light/dark themes, Chinese/English UI, tray controls, and Windows startup.
 
@@ -162,8 +163,8 @@ run from the repository root:
 .\scripts\build.ps1
 ```
 
-Create the public, framework-dependent `0.2.2` release under
-`dist\v0.2.2\ThinkBookToolkit-0.2.2-win-x64-framework-dependent`:
+Create the public, framework-dependent `0.2.3` release under
+`dist\v0.2.3\ThinkBookToolkit-0.2.3-win-x64-framework-dependent`:
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Publish
@@ -176,7 +177,7 @@ Create the online installer (requires
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
 
-The result is `dist\v0.2.2\ThinkBookToolkit-0.2.2-Setup.exe`. Its default destination
+The result is `dist\v0.2.3\ThinkBookToolkit-0.2.3-Setup.exe`. Its default destination
 is `Program Files\ThinkBook Toolkit`, and the destination can be changed in the
 wizard. If the selected destination is not empty, Setup warns that all of its
 contents will be removed and proceeds only after explicit confirmation; always
@@ -193,7 +194,7 @@ runtime is specifically required.
 
 Public release publishing excludes local proprietary Lenovo DLLs by default.
 For a private build used only on your own machine, add
-`-IncludeLocalProprietaryDependencies`. The application version is `0.2.2`;
+`-IncludeLocalProprietaryDependencies`. The application version is `0.2.3`;
 the replaceable fan-backend API is `1.1`, and the configuration-file format is
 `1.0`.
 

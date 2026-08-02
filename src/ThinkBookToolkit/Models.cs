@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace ThinkBookToolkit;
 
@@ -116,6 +117,83 @@ public sealed class AdvancedFanCurveSettings
         AdvancedFanCurve.CreateDefaultPoints();
 }
 
+public enum PowerSetting
+{
+    CpuPl1,
+    CpuPl2,
+    CpuTemperatureLimit,
+    CpuTurboTimeLimit,
+    GpuPowerBoost,
+    GpuConfigurableTgp,
+    GpuTemperatureLimit,
+    GpuToCpuDynamicBoost,
+    Atpp
+}
+
+public sealed record PowerSettingsLockSelection
+{
+    public bool CpuPl1 { get; set; }
+    public bool CpuPl2 { get; set; }
+    public bool CpuTemperatureLimit { get; set; }
+    public bool CpuTurboTimeLimit { get; set; }
+    public bool GpuPowerBoost { get; set; }
+    public bool GpuConfigurableTgp { get; set; }
+    public bool GpuTemperatureLimit { get; set; }
+    public bool GpuToCpuDynamicBoost { get; set; }
+    public bool Atpp { get; set; }
+
+    [JsonIgnore]
+    public bool Any =>
+        CpuPl1 || CpuPl2 || CpuTemperatureLimit || CpuTurboTimeLimit ||
+        GpuPowerBoost || GpuConfigurableTgp || GpuTemperatureLimit ||
+        GpuToCpuDynamicBoost || Atpp;
+
+    public bool IsLocked(PowerSetting setting) => setting switch
+    {
+        PowerSetting.CpuPl1 => CpuPl1,
+        PowerSetting.CpuPl2 => CpuPl2,
+        PowerSetting.CpuTemperatureLimit => CpuTemperatureLimit,
+        PowerSetting.CpuTurboTimeLimit => CpuTurboTimeLimit,
+        PowerSetting.GpuPowerBoost => GpuPowerBoost,
+        PowerSetting.GpuConfigurableTgp => GpuConfigurableTgp,
+        PowerSetting.GpuTemperatureLimit => GpuTemperatureLimit,
+        PowerSetting.GpuToCpuDynamicBoost => GpuToCpuDynamicBoost,
+        PowerSetting.Atpp => Atpp,
+        _ => false
+    };
+
+    public PowerSettingsLockSelection With(PowerSetting setting, bool value)
+    {
+        var copy = this with { };
+        switch (setting)
+        {
+            case PowerSetting.CpuPl1: copy.CpuPl1 = value; break;
+            case PowerSetting.CpuPl2: copy.CpuPl2 = value; break;
+            case PowerSetting.CpuTemperatureLimit: copy.CpuTemperatureLimit = value; break;
+            case PowerSetting.CpuTurboTimeLimit: copy.CpuTurboTimeLimit = value; break;
+            case PowerSetting.GpuPowerBoost: copy.GpuPowerBoost = value; break;
+            case PowerSetting.GpuConfigurableTgp: copy.GpuConfigurableTgp = value; break;
+            case PowerSetting.GpuTemperatureLimit: copy.GpuTemperatureLimit = value; break;
+            case PowerSetting.GpuToCpuDynamicBoost: copy.GpuToCpuDynamicBoost = value; break;
+            case PowerSetting.Atpp: copy.Atpp = value; break;
+        }
+        return copy;
+    }
+
+    public static PowerSettingsLockSelection All(bool includeAtpp) => new()
+    {
+        CpuPl1 = true,
+        CpuPl2 = true,
+        CpuTemperatureLimit = true,
+        CpuTurboTimeLimit = true,
+        GpuPowerBoost = true,
+        GpuConfigurableTgp = true,
+        GpuTemperatureLimit = true,
+        GpuToCpuDynamicBoost = true,
+        Atpp = includeAtpp
+    };
+}
+
 public sealed class AppSettings
 {
     public string ConfigurationVersion { get; set; } = CurveProfileStore.CurrentConfigurationVersion;
@@ -149,7 +227,7 @@ public sealed class AppSettings
     public bool AttemptDisableControlOnSleepWhenUnsupported { get; set; }
     public double? FanReadMinimumIntervalSeconds { get; set; }
     public double? FanWriteMinimumIntervalSeconds { get; set; }
-    public bool PowerSettingsLockEnabled { get; set; }
+    public PowerSettingsLockSelection PowerSettingsLocks { get; set; } = new();
     public int PowerSettingsLockIntervalSeconds { get; set; } = 2;
     public PowerSettingsState? PowerSettingsLockTarget { get; set; }
     public string LastFanBackendIdentity { get; set; } = "";

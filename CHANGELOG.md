@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-02
+
+### Changed
+
+- Replaced the single power-setting lock switch with an independent lock
+  switch for every available power parameter. The common check interval remains
+  configurable at 1, 2, 3, 5, or 10 seconds.
+- Background enforcement now compares and writes only locked parameters;
+  changes to unlocked parameters no longer trigger a restore.
+- Existing v0.2.2 configurations with the global power lock enabled are
+  migrated to per-parameter locks without changing their saved target values.
+
 ## [0.2.2] - 2026-08-02
 
 ### Added
@@ -102,7 +114,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.1.2...v0.2.0

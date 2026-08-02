@@ -178,9 +178,25 @@ public static class CurveProfileStore
                     loaded.PowerSettingsLockTarget)
                     ? loaded.PowerSettingsLockTarget
                     : null;
-            defaults.PowerSettingsLockEnabled =
-                loaded.PowerSettingsLockEnabled &&
-                defaults.PowerSettingsLockTarget is not null;
+            var hasPerSettingLocks = settingsJson.Contains(
+                "PowerSettingsLocks",
+                StringComparison.OrdinalIgnoreCase);
+            defaults.PowerSettingsLocks = hasPerSettingLocks
+                ? NormalizePowerSettingsLocks(
+                    loaded.PowerSettingsLocks,
+                    defaults.PowerSettingsLockTarget)
+                : IsLegacyPowerSettingsLockEnabled(settingsJson) &&
+                  defaults.PowerSettingsLockTarget is not null
+                    ? PowerSettingsLockSelection.All(
+                        defaults.PowerSettingsLockTarget.Atpp.HasValue)
+                    : new PowerSettingsLockSelection();
+            if (!PowerSettingsController.IsValidLockConfiguration(
+                    defaults.PowerSettingsLocks,
+                    defaults.PowerSettingsLockTarget))
+            {
+                defaults.PowerSettingsLocks = new PowerSettingsLockSelection();
+                defaults.PowerSettingsLockTarget = null;
+            }
             defaults.LastFanBackendIdentity =
                 loaded.LastFanBackendIdentity ?? string.Empty;
             defaults.SuppressedFanBackendStartupNoticeIdentity =
@@ -230,10 +246,14 @@ public static class CurveProfileStore
         {
             settings.PowerSettingsLockIntervalSeconds = 2;
         }
-        if (!PowerSettingsController.IsValidState(
+        settings.PowerSettingsLocks = NormalizePowerSettingsLocks(
+            settings.PowerSettingsLocks,
+            settings.PowerSettingsLockTarget);
+        if (!PowerSettingsController.IsValidLockConfiguration(
+                settings.PowerSettingsLocks,
                 settings.PowerSettingsLockTarget))
         {
-            settings.PowerSettingsLockEnabled = false;
+            settings.PowerSettingsLocks = new PowerSettingsLockSelection();
             settings.PowerSettingsLockTarget = null;
         }
         settings.AdvancedFanCurve = AdvancedFanCurve.Normalize(
@@ -242,6 +262,35 @@ public static class CurveProfileStore
         WriteTextAtomically(
             SettingsPath,
             JsonSerializer.Serialize(settings, JsonOptions));
+    }
+
+    internal static PowerSettingsLockSelection NormalizePowerSettingsLocks(
+        PowerSettingsLockSelection? selection,
+        PowerSettingsState? target)
+    {
+        var normalized = selection is null
+            ? new PowerSettingsLockSelection()
+            : selection with { };
+        if (target?.Atpp is null)
+            normalized.Atpp = false;
+        return normalized;
+    }
+
+    internal static bool IsLegacyPowerSettingsLockEnabled(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (property.Name.Equals(
+                    "PowerSettingsLockEnabled",
+                    StringComparison.OrdinalIgnoreCase) &&
+                property.Value.ValueKind is JsonValueKind.True or
+                    JsonValueKind.False)
+            {
+                return property.Value.GetBoolean();
+            }
+        }
+        return false;
     }
 
     public static void StageInstallerSettings(

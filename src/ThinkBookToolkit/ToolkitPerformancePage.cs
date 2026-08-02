@@ -53,7 +53,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private readonly Button _discardPower;
     private readonly Button _defaultPower;
     private readonly Button _togglePowerEditor;
-    private readonly CheckBox _lockPower = new();
+    private readonly Dictionary<PowerSetting, CheckBox> _powerLockToggles = [];
     private readonly ComboBox _powerLockInterval = new() { MinWidth = 96 };
     private readonly StackPanel _powerEditorPanel = new();
     private readonly Border _powerEditorHost = new();
@@ -596,22 +596,23 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
     private void BuildPowerEditorPanel()
     {
-        AddPowerEditor(_powerEditorPanel, "CpuPl1", "CPU PL1", 30, 150, true);
-        AddPowerEditor(_powerEditorPanel, "CpuPl2", "CPU PL2", 30, 200, true);
-        AddPowerEditor(_powerEditorPanel, "CpuTemperature", L("CPU 温度上限", "CPU temperature limit"), 75, 105, false);
+        AddPowerEditor(_powerEditorPanel, "CpuPl1", PowerSetting.CpuPl1, "CPU PL1", 30, 150, true);
+        AddPowerEditor(_powerEditorPanel, "CpuPl2", PowerSetting.CpuPl2, "CPU PL2", 30, 200, true);
+        AddPowerEditor(_powerEditorPanel, "CpuTemperature", PowerSetting.CpuTemperatureLimit, L("CPU 温度上限", "CPU temperature limit"), 75, 105, false);
         foreach (var value in PowerSettingsController.TurboTimeLimits)
             AddChoice(_turboTime, $"{value}", value);
         _powerEditorPanel.Children.Add(SettingRow(
             "CPU Turbo Time Limit",
             L("选择固件支持的持续时间。", "Choose a firmware-supported duration."),
-            _turboTime));
-        AddPowerEditor(_powerEditorPanel, "GpuBoost", "GPU Power Boost", 0, 15, false);
-        AddPowerEditor(_powerEditorPanel, "GpuTgp", "GPU Configurable TGP", 50, 100, false);
-        AddPowerEditor(_powerEditorPanel, "GpuTemperature", L("GPU 温度上限", "GPU temperature limit"), 75, 87, false);
-        AddPowerEditor(_powerEditorPanel, "GpuToCpu", "GPU to CPU Dynamic Boost", 0, 50, false);
+            PowerLockControl(PowerSetting.CpuTurboTimeLimit, _turboTime)));
+        AddPowerEditor(_powerEditorPanel, "GpuBoost", PowerSetting.GpuPowerBoost, "GPU Power Boost", 0, 15, false);
+        AddPowerEditor(_powerEditorPanel, "GpuTgp", PowerSetting.GpuConfigurableTgp, "GPU Configurable TGP", 50, 100, false);
+        AddPowerEditor(_powerEditorPanel, "GpuTemperature", PowerSetting.GpuTemperatureLimit, L("GPU 温度上限", "GPU temperature limit"), 75, 87, false);
+        AddPowerEditor(_powerEditorPanel, "GpuToCpu", PowerSetting.GpuToCpuDynamicBoost, "GPU to CPU Dynamic Boost", 0, 50, false);
         _atppEditorRow = AddPowerEditor(
             _powerEditorPanel,
             "Atpp",
+            PowerSetting.Atpp,
             "ATPP",
             25,
             105,
@@ -624,8 +625,6 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
                 Runtime.IsChinese ? $"{value} 秒" : $"{value} s",
                 value);
         }
-        _lockPower.Content = L("锁定功耗设置", "Lock power settings");
-
         var footer = new Grid
         {
             Margin = new Thickness(0, 10, 0, 0)
@@ -653,13 +652,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(18, 0, 0, 0)
         };
-        lockControls.Children.Add(_lockPower);
         lockControls.Children.Add(new TextBlock
         {
-            Text = L("设置间隔", "Interval"),
+            Text = L("锁定检查间隔", "Lock check interval"),
             Foreground = Brush(Palette.Muted),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(8, 0, 8, 0)
+            Margin = new Thickness(0, 0, 8, 0)
         });
         lockControls.Children.Add(_powerLockInterval);
         Grid.SetColumn(lockControls, 1);
@@ -727,7 +725,14 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         return card;
     }
 
-    private Border AddPowerEditor(Panel panel, string key, string title, int minimum, int maximum, bool positiveOutside)
+    private Border AddPowerEditor(
+        Panel panel,
+        string key,
+        PowerSetting setting,
+        string title,
+        int minimum,
+        int maximum,
+        bool positiveOutside)
     {
         var editor = new PowerIntegerEditor(minimum, maximum, positiveOutside);
         editor.Changed += MarkPowerDirty;
@@ -737,9 +742,40 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             positiveOutside
                 ? L($"滑块范围 {minimum}–{maximum}；手动输入可超出，但必须是正整数。", $"Slider range {minimum}–{maximum}; manual input may exceed it but must be positive.")
                 : L($"允许范围 {minimum}–{maximum}。", $"Allowed range: {minimum}–{maximum}."),
-            editor.View);
+            PowerLockControl(setting, editor.View));
         panel.Children.Add(row);
         return row;
+    }
+
+    private FrameworkElement PowerLockControl(
+        PowerSetting setting,
+        UIElement editor)
+    {
+        var toggle = new CheckBox
+        {
+            Content = L("锁定", "Lock"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 18, 0),
+            ToolTip = L(
+                "定期检查并只恢复这一项。",
+                "Periodically check and restore only this value.")
+        };
+        toggle.Click += (_, _) => ChangePowerSettingLock(setting);
+        _powerLockToggles[setting] = toggle;
+
+        var layout = new Grid();
+        layout.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = GridLength.Auto
+        });
+        layout.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = GridLength.Auto
+        });
+        layout.Children.Add(toggle);
+        Grid.SetColumn(editor, 1);
+        layout.Children.Add(editor);
+        return layout;
     }
 
     private void ConfigureCurves()
@@ -898,7 +934,6 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _turboTime.SelectionChanged += (_, _) => MarkPowerDirty();
         _applyPower.Click += async (_, _) => await ApplyPowerAsync();
         _discardPower.Click += (_, _) => ApplyPowerState(_confirmedPower);
-        _lockPower.Click += (_, _) => ChangePowerSettingsLock();
         _powerLockInterval.SelectionChanged += (_, _) =>
             ChangePowerSettingsLockInterval();
         _defaultPower.Click += (_, _) =>
@@ -1557,19 +1592,23 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _discardPower.IsEnabled = _powerDirty;
     }
 
-    private void ChangePowerSettingsLock()
+    private void ChangePowerSettingLock(PowerSetting setting)
     {
-        if (_syncing)
+        if (_syncing ||
+            !_powerLockToggles.TryGetValue(setting, out var toggle))
+        {
             return;
-        var enabled = _lockPower.IsChecked == true;
-        if (!Runtime.TrySetPowerSettingsLock(
+        }
+        var enabled = toggle.IsChecked == true;
+        if (!Runtime.TrySetPowerSettingLock(
+                setting,
                 enabled,
                 enabled ? _confirmedPower : null,
                 out var error))
         {
             _powerStatus.Text = L(
-                "无法更改功耗锁定设置：",
-                "Could not change the power lock setting: ") + error;
+                "无法更改这一项的功耗锁定：",
+                "Could not change this power-setting lock: ") + error;
         }
         else
         {
@@ -1602,14 +1641,22 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         var wasSyncing = _syncing;
         _syncing = true;
-        _lockPower.IsChecked = Runtime.Settings.PowerSettingsLockEnabled;
+        var selection = Runtime.Settings.PowerSettingsLocks ??
+            new PowerSettingsLockSelection();
+        foreach (var pair in _powerLockToggles)
+            pair.Value.IsChecked = selection.IsLocked(pair.Key);
         Select(
             _powerLockInterval,
             Runtime.Settings.PowerSettingsLockIntervalSeconds);
         _syncing = wasSyncing;
-        _lockPower.IsEnabled = enabled &&
-            (Runtime.Settings.PowerSettingsLockEnabled ||
-             _confirmedPower is not null);
+        foreach (var pair in _powerLockToggles)
+        {
+            pair.Value.IsEnabled = enabled &&
+                (selection.IsLocked(pair.Key) ||
+                 _confirmedPower is not null &&
+                 (pair.Key != PowerSetting.Atpp ||
+                  _confirmedPower.Atpp.HasValue));
+        }
         _powerLockInterval.IsEnabled = enabled;
     }
 
