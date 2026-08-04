@@ -967,7 +967,7 @@ public sealed class MainWindow : Window
         AddLabeledControl(settingsActions, _gpuModeLabel, _gpuModeCombo);
 
         _powerSettingsButton.Click += (_, _) => ShowPowerSettingsWindow();
-        _powerSettingsButton.Visibility = DeviceModelDetector.IsThinkBook16pG6Iax()
+        _powerSettingsButton.Visibility = DeviceModelDetector.IsPowerSettingsWritable()
             ? Visibility.Visible
             : Visibility.Collapsed;
         settingsActions.Children.Add(_powerSettingsButton);
@@ -1007,7 +1007,7 @@ public sealed class MainWindow : Window
 
     private void ShowPowerSettingsWindow()
     {
-        if (!DeviceModelDetector.IsThinkBook16pG6Iax())
+        if (!DeviceModelDetector.IsPowerSettingsWritable())
             return;
 
         var window = new PowerSettingsWindow(T, SelectedItsMode, IsDark, FontFamily, FontSize)

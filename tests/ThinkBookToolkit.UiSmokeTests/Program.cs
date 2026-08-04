@@ -43,6 +43,7 @@ internal static class Program
         VerifyAdvancedFanCurve();
         VerifyPerformancePageWithoutFanControl();
         VerifyUserFacingExceptionText();
+        VerifyDeviceModelDetector();
         Assert(UiTypography.FontFamilyNameFor("zh-CN") == "Microsoft YaHei UI",
             "Chinese UI font must use the Windows Simplified Chinese UI family.");
         Assert(UiTypography.FontFamilyNameFor("en-US") == "Segoe UI Variable Text",
@@ -703,7 +704,7 @@ internal static class Program
                partialReport.IsPartiallyAvailable(FeatureIds.PowerSettings),
             "Partially available power capability is not modeled correctly.");
         Assert(ContainsText(partialPowerPage, "CPU PL1") &&
-               ContainsText(partialPowerPage, "仅 ThinkBook 16p G6 IAX 可以修改") &&
+               ContainsText(partialPowerPage, "仅 ThinkBook 16p G6 IAX 与 G5 IRX 可以修改") &&
                !Descendants(partialPowerPage).OfType<Slider>().Any(),
             "Read-only power values or partial-availability write guard are incorrect.");
         using var partialSettingsPage = new ToolkitSettingsPage(partialRuntime);
@@ -729,6 +730,62 @@ internal static class Program
         Assert(ContainsText(atppSettingsPage, "ATPP 可调整。") &&
                ContainsText(atppSettingsPage, "可用"),
             "Feature monitoring does not note that ATPP is adjustable.");
+
+        using var writablePowerRuntime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "light"
+        });
+        writablePowerRuntime.SetReportForTesting(new FeatureAvailabilityReport([
+            new FeatureAvailability(
+                FeatureIds.PowerSettings,
+                "性能与散热",
+                "功耗设置",
+                true,
+                "8 项功耗参数可读取和写入")
+        ]));
+        using var writablePowerPage = new ToolkitPerformancePage(writablePowerRuntime);
+        Assert(Descendants(writablePowerPage).OfType<Slider>().Any() &&
+               !ContainsText(writablePowerPage, "可以修改") &&
+               ContainsText(writablePowerPage, "CPU PL1"),
+            "The writable power editor is not rendered for a fully available power capability.");
+
+        using var fanG5Runtime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "light"
+        });
+        fanG5Runtime.SetReportForTesting(new FeatureAvailabilityReport([
+            new FeatureAvailability(
+                FeatureIds.FanControl,
+                "性能与散热",
+                "风扇监控与控制",
+                false,
+                "此机型风扇由固件自动控制，不可调节",
+                EnglishDetail: "Fan control is managed automatically by firmware on this model; it cannot be adjusted.")
+        ]));
+        using var fanG5SettingsPage = new ToolkitSettingsPage(fanG5Runtime);
+        Assert(ContainsText(fanG5SettingsPage, "此机型风扇由固件自动控制") &&
+               !ContainsText(fanG5SettingsPage, "当前设备上无法使用风扇监控与控制"),
+            "The firmware-managed fan message is not rendered for a G5 model.");
+
+        using var fanGenericRuntime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "light"
+        });
+        fanGenericRuntime.SetReportForTesting(new FeatureAvailabilityReport([
+            new FeatureAvailability(
+                FeatureIds.FanControl,
+                "性能与散热",
+                "风扇监控与控制",
+                false,
+                "No active LENOVO_FAN_TEST_DATA instance found.")
+        ]));
+        using var fanGenericSettingsPage = new ToolkitSettingsPage(fanGenericRuntime);
+        Assert(ContainsText(fanGenericSettingsPage, "当前设备上无法使用风扇监控与控制") &&
+               !ContainsText(fanGenericSettingsPage, "此机型风扇由固件自动控制"),
+            "The generic fan-unavailable message is not rendered without model detail.");
 
         window.UpdateResponsiveForTesting(900);
         Assert(window.SidebarCollapsed,
@@ -989,11 +1046,38 @@ internal static class Program
                !PowerSettingsController.IsValidState(
                    confirmedPower with { Atpp = 0 }),
             "Power-setting lock interval or change-detection policy is incorrect.");
-        Assert(PowerSettingsController.GetDefaultState(ItsMode.PowerSaving)?.Atpp == 25 &&
-               PowerSettingsController.GetDefaultState(ItsMode.Intelligent)?.Atpp == 45 &&
-               PowerSettingsController.GetDefaultState(ItsMode.Performance)?.Atpp == 85 &&
-               PowerSettingsController.GetDefaultState(ItsMode.Geek)?.Atpp == 105,
-            "ATPP defaults do not match the four performance modes.");
+        try
+        {
+            DeviceModelDetector.SetIdentityForTesting(
+                new DeviceIdentity("ThinkBook 16p G6 IAX", "", "", "", "", ""));
+            Assert(PowerSettingsController.GetDefaultState(ItsMode.PowerSaving)?.Atpp == 25 &&
+                   PowerSettingsController.GetDefaultState(ItsMode.Intelligent)?.Atpp == 45 &&
+                   PowerSettingsController.GetDefaultState(ItsMode.Performance)?.Atpp == 85 &&
+                   PowerSettingsController.GetDefaultState(ItsMode.Geek)?.Atpp == 105,
+                "ATPP defaults do not match the four performance modes.");
+        }
+        finally
+        {
+            DeviceModelDetector.SetIdentityForTesting(null);
+        }
+        try
+        {
+            DeviceModelDetector.SetIdentityForTesting(
+                new DeviceIdentity("ThinkBook 16p G5 IRX", "", "", "", "", ""));
+            Assert(PowerSettingsController.GetDefaultState(ItsMode.PowerSaving)?.Atpp is null &&
+                   PowerSettingsController.GetDefaultState(ItsMode.Intelligent)?.Atpp is null &&
+                   PowerSettingsController.GetDefaultState(ItsMode.Performance)?.Atpp is null &&
+                   PowerSettingsController.GetDefaultState(ItsMode.Geek)?.Atpp is null &&
+                   PowerSettingsController.GetDefaultState(ItsMode.Performance)?.CpuPl1 == 125 &&
+                   PowerSettingsController.GetDefaultState(ItsMode.Performance)?.CpuPl2 == 157 &&
+                   PowerSettingsController.GetDefaultState(ItsMode.Geek)?.CpuPl2 == 170 &&
+                   PowerSettingsController.GetDefaultState(ItsMode.PowerSaving)?.GpuToCpuDynamicBoost == 15,
+                "G5 IRX default power wall does not match the collected values.");
+        }
+        finally
+        {
+            DeviceModelDetector.SetIdentityForTesting(null);
+        }
         Assert(MainWindow.SuppressSmallTargetChanges(
                    new FanTargets(1599, 1600),
                    new FanTargets(1500, 1500)) ==
@@ -1530,6 +1614,40 @@ internal static class Program
                !display.Contains(@"C:\Users\", StringComparison.OrdinalIgnoreCase) &&
                !display.Contains("\r\n   at ", StringComparison.Ordinal),
             "The user-facing exception summary exposes a source path or stack trace.");
+    }
+
+    private static void VerifyDeviceModelDetector()
+    {
+        void Check(string model, bool g6, bool g5Irx, bool g5Arx, bool g5, bool writable)
+        {
+            try
+            {
+                DeviceModelDetector.SetIdentityForTesting(
+                    new DeviceIdentity(model, "", "", "", "", ""));
+                Assert(DeviceModelDetector.IsThinkBook16pG6Iax() == g6,
+                    $"G6 IAX detection mismatch for model '{model}'.");
+                Assert(DeviceModelDetector.IsThinkBook16pG5Irx() == g5Irx,
+                    $"G5 IRX detection mismatch for model '{model}'.");
+                Assert(DeviceModelDetector.IsThinkBook16pG5Arx() == g5Arx,
+                    $"G5 ARX detection mismatch for model '{model}'.");
+                Assert(DeviceModelDetector.IsThinkBook16pG5() == g5,
+                    $"G5 family detection mismatch for model '{model}'.");
+                Assert(DeviceModelDetector.IsPowerSettingsWritable() == writable,
+                    $"Power-settings writability mismatch for model '{model}'.");
+            }
+            finally
+            {
+                DeviceModelDetector.SetIdentityForTesting(null);
+            }
+        }
+
+        Check("ThinkBook 16p G6 IAX", g6: true, g5Irx: false, g5Arx: false, g5: false, writable: true);
+        Check("ThinkBook 16p G5 IRX", g6: false, g5Irx: true, g5Arx: false, g5: true, writable: true);
+        Check("ThinkBook 16p G5 IRX (21N5)", g6: false, g5Irx: true, g5Arx: false, g5: true, writable: true);
+        Check("ThinkBook 16p G5 ARX", g6: false, g5Irx: false, g5Arx: true, g5: true, writable: false);
+        Check("ThinkBook 16p G4 IRH", g6: false, g5Irx: false, g5Arx: false, g5: false, writable: false);
+        Check("ThinkPad T14", g6: false, g5Irx: false, g5Arx: false, g5: false, writable: false);
+        Check("", g6: false, g5Irx: false, g5Arx: false, g5: false, writable: false);
     }
 
     private static string Category(string id)

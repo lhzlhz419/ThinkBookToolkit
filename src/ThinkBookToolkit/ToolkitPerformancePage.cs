@@ -579,8 +579,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
                 Child = new TextBlock
                 {
                     Text = L(
-                        "当前设备支持查看这些参数；仅 ThinkBook 16p G6 IAX 可以修改。",
-                        "This device can show these values. Changes are enabled only on ThinkBook 16p G6 IAX."),
+                        "当前设备支持查看这些参数；仅 ThinkBook 16p G6 IAX 与 G5 IRX 可以修改。",
+                        "This device can show these values. Changes are enabled only on ThinkBook 16p G6 IAX and G5 IRX."),
                     Foreground = Brush(Palette.Warning),
                     TextWrapping = TextWrapping.Wrap
                 }

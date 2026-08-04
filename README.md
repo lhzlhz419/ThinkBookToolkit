@@ -13,9 +13,12 @@ your own risk and are solely responsible for every consequence. If you do not
 understand or accept these risks, do not install or use it.
 
 **Every feature has been tested only on ThinkBook 16p G6 IAX with BIOS
-R2CN57WW. No feature is guaranteed to work or be safe on another model or BIOS
+R2CN57WW, and power-limit writes have been verified on ThinkBook 16p G5 IRX
+(2024). No feature is guaranteed to work or be safe on another model or BIOS
 version. Capability detection only controls what the interface displays; it is
-not a compatibility or safety guarantee.**
+not a compatibility or safety guarantee. On the ThinkBook 16p G5 family
+(2024), fan control is managed automatically by the firmware and cannot be
+adjusted.**
 
 [简体中文](README.zh-CN.md)
 

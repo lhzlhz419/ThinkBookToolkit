@@ -7,6 +7,27 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added ThinkBook 16p G5 IRX (2024) support: power-limit writes are now
+  enabled on this verified model (previously ThinkBook 16p G6 IAX only).
+- Fan control on the ThinkBook 16p G5 family is reported as
+  firmware-managed and not adjustable, replacing the generic
+  unavailable message.
+- Current-mode default power limits are chosen per model: ThinkBook 16p
+  G5 IRX uses its measured defaults, while other models keep the
+  existing ThinkBook 16p G6 IAX defaults.
+
+### Changed
+
+- The power-settings write gate was widened from ThinkBook 16p G6 IAX
+  to G6 IAX and G5 IRX; other models remain read-only.
+
+### Fixed
+
+- Zero-valued temperature and power readings from LibreHardwareMonitor are
+  treated as unavailable instead of being displayed as 0.0.
+
 ## [0.2.4] - 2026-08-02
 
 ### Changed

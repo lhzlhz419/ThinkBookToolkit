@@ -572,6 +572,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 FeatureIds.SleepFanControl => L("当前风扇控制方式不支持此功能。", "The current fan-control method does not support this feature."),
                 FeatureIds.PowerSettings => L("当前设备不支持查看或调整功耗参数。", "Power values cannot be viewed or changed on this device."),
                 FeatureIds.WarrantyInformation => L("需要有效的序列号和网络连接。", "A valid serial number and network connection are required."),
+                FeatureIds.FanControl when !string.IsNullOrWhiteSpace(feature.EnglishDetail) =>
+                    L(feature.Detail, feature.EnglishDetail),
                 FeatureIds.FanControl => L("当前设备上无法使用风扇监控与控制。", "Fan monitoring and control are unavailable on this device."),
                 _ => L("当前设备上未检测到此功能。", "This feature was not detected on the current device.")
             };

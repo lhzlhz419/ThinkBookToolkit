@@ -59,23 +59,27 @@ public sealed class TemperatureReader : IDisposable
 
         foreach (var sensor in hardware.Sensors)
         {
-            if (sensor.SensorType == SensorType.Temperature && sensor.Value is not null)
+            if (sensor.SensorType == SensorType.Temperature &&
+                sensor.Value is { } temperature &&
+                temperature > 0)
             {
                 temperatureSensors.Add(new TemperatureSensor(
                     sensor.Name,
                     hardware.Name,
                     hardware.HardwareType,
                     hardwarePath + "/" + sensor.Name,
-                    sensor.Value.Value));
+                    temperature));
             }
-            else if (sensor.SensorType == SensorType.Power && sensor.Value is not null)
+            else if (sensor.SensorType == SensorType.Power &&
+                     sensor.Value is { } power &&
+                     power > 0)
             {
                 powerSensors.Add(new PowerSensor(
                     sensor.Name,
                     hardware.Name,
                     hardware.HardwareType,
                     hardwarePath + "/" + sensor.Name,
-                    sensor.Value.Value));
+                    power));
             }
         }
 

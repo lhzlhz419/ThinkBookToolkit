@@ -37,14 +37,23 @@ internal static class PowerSettingsController
         [1, 2, 3, 5, 10];
 
     public static PowerSettingsState? GetDefaultState(ItsMode mode) =>
-        mode switch
-        {
-            ItsMode.Intelligent => new(90, 125, 100, 56, 15, 75, 87, 10, 45),
-            ItsMode.PowerSaving => new(35, 60, 93, 56, 10, 50, 87, 10, 25),
-            ItsMode.Performance => new(125, 180, 100, 56, 15, 100, 87, 0, 85),
-            ItsMode.Geek => new(130, 185, 100, 56, 15, 100, 87, 0, 105),
-            _ => null
-        };
+        DeviceModelDetector.IsThinkBook16pG5Irx()
+            ? mode switch
+            {
+                ItsMode.Intelligent => new(95, 135, 102, 56, 10, 65, 87, 0, null),
+                ItsMode.PowerSaving => new(44, 60, 99, 56, 10, 50, 87, 15, null),
+                ItsMode.Performance => new(125, 157, 102, 56, 10, 100, 87, 0, null),
+                ItsMode.Geek => new(130, 170, 102, 56, 10, 100, 87, 0, null),
+                _ => null
+            }
+            : mode switch
+            {
+                ItsMode.Intelligent => new(90, 125, 100, 56, 15, 75, 87, 10, 45),
+                ItsMode.PowerSaving => new(35, 60, 93, 56, 10, 50, 87, 10, 25),
+                ItsMode.Performance => new(125, 180, 100, 56, 15, 100, 87, 0, 85),
+                ItsMode.Geek => new(130, 185, 100, 56, 15, 100, 87, 0, 105),
+                _ => null
+            };
 
     public static PowerSettingsState ReadState()
     {

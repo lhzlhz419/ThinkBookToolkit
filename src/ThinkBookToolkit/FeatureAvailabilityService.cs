@@ -113,12 +113,18 @@ internal static class FeatureAvailabilityService
         }
         catch (Exception ex)
         {
+            var g5 = DeviceModelDetector.IsThinkBook16pG5();
             result.Add(new(
                 FeatureIds.FanControl,
                 "性能与散热",
                 "风扇监控与控制",
                 false,
-                ex.Message));
+                g5
+                    ? "此机型风扇由固件自动控制，不可调节"
+                    : ex.Message,
+                EnglishDetail: g5
+                    ? "Fan control is managed automatically by firmware on this model; it cannot be adjusted."
+                    : null));
         }
 
         result.Add(new(
@@ -151,7 +157,7 @@ internal static class FeatureAvailabilityService
         try
         {
             var power = PowerSettingsController.ReadState();
-            var writable = DeviceModelDetector.IsThinkBook16pG6Iax();
+            var writable = DeviceModelDetector.IsPowerSettingsWritable();
             var atppAvailable = power.Atpp.HasValue;
             var readableCount = atppAvailable ? 9 : 8;
             result.Add(new(
@@ -163,7 +169,7 @@ internal static class FeatureAvailabilityService
                     ? atppAvailable
                         ? "ATPP 可调整。"
                         : "8 项功耗参数可读取和写入"
-                    : $"{readableCount} 项功耗参数可读取；写入仅支持 ThinkBook 16p G6 IAX，当前为 {DeviceModelDetector.CurrentIdentity.Model}",
+                    : $"{readableCount} 项功耗参数可读取；写入仅支持 ThinkBook 16p G6 IAX 与 G5 IRX，当前为 {DeviceModelDetector.CurrentIdentity.Model}",
                 PartiallyAvailable: !writable,
                 EnglishDetail: writable && atppAvailable
                     ? "ATPP is adjustable."
