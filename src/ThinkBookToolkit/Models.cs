@@ -20,7 +20,33 @@ public sealed record TemperatureSnapshot(
     double? GpuPowerW,
     string CpuSensor,
     string GpuSensor,
-    string VramSensor);
+    string VramSensor)
+{
+    public string CpuName { get; init; } = string.Empty;
+    public double? CpuLoadPercent { get; init; }
+    public double? CpuAverageClockMhz { get; init; }
+    public double? CpuMaximumClockMhz { get; init; }
+
+    public string GpuName { get; init; } = string.Empty;
+    public double? GpuLoadPercent { get; init; }
+    public double? GpuMemoryLoadPercent { get; init; }
+    public double? GpuCoreClockMhz { get; init; }
+    public double? GpuMemoryClockMhz { get; init; }
+    public double? GpuHotSpotTempC { get; init; }
+    public IReadOnlyList<double> VramChipTemperaturesC { get; init; } = [];
+
+    public double? PhysicalMemoryUsedGb { get; init; }
+    public double? PhysicalMemoryTotalGb { get; init; }
+    public double? VirtualMemoryUsedGb { get; init; }
+    public double? VirtualMemoryTotalGb { get; init; }
+    public IReadOnlyList<double> MemorySlotTemperaturesC { get; init; } = [];
+    public IReadOnlyList<StorageTemperatureSnapshot> StorageDevices { get; init; } = [];
+}
+
+public sealed record StorageTemperatureSnapshot(
+    string Name,
+    IReadOnlyList<double> TemperaturesC,
+    double? LifePercent = null);
 
 public sealed record FanTargets(int Fan1Rpm, int Fan2Rpm);
 

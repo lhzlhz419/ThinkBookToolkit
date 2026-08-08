@@ -28,16 +28,52 @@ internal static class Program
         };
         runtime.SetReportForTesting(CreateReport());
         runtime.SetSnapshotForTesting(new ToolkitRuntimeSnapshot(
-            new TemperatureSnapshot(63, 51, 58, 28.4, 18.7, "Preview CPU", "Preview GPU", "Preview VRAM"),
+            new TemperatureSnapshot(63, 51, 58, 28.4, 18.7, "Preview CPU", "Preview GPU", "Preview VRAM")
+            {
+                CpuName = "Intel Core Ultra 7 255HX",
+                CpuLoadPercent = 18.4,
+                CpuAverageClockMhz = 2388,
+                CpuMaximumClockMhz = 4812,
+                GpuName = "NVIDIA GeForce RTX 5060 Laptop GPU",
+                GpuLoadPercent = 24.6,
+                GpuMemoryLoadPercent = 12.8,
+                GpuCoreClockMhz = 1552,
+                GpuMemoryClockMhz = 6001,
+                GpuHotSpotTempC = 57.4,
+                VramChipTemperaturesC = [56, 58, 56, 54],
+                PhysicalMemoryUsedGb = 16.5,
+                PhysicalMemoryTotalGb = 31.4,
+                VirtualMemoryUsedGb = 25.9,
+                VirtualMemoryTotalGb = 37.2,
+                MemorySlotTemperaturesC = [47],
+                StorageDevices =
+                [
+                    new StorageTemperatureSnapshot("YMTC PC411-1024GB-B", [30, 40, 30]),
+                    new StorageTemperatureSnapshot("Samsung SSD 990 PRO", [32, 43, 35])
+                ]
+            },
             new FanSnapshot(DateTimeOffset.Now, 2200, 2100, new Dictionary<string, FanLimit>()),
-            null,
+            new BatteryInformationSnapshot(
+                32.8,
+                -11.4,
+                -22,
+                -65,
+                69.1,
+                86.9,
+                85.8,
+                101.23,
+                DateTime.Now.AddHours(-1),
+                32,
+                null,
+                null,
+                false),
             ItsMode.Intelligent,
             GpuWorkingMode.HybridAuto,
             [GpuWorkingMode.Hybrid, GpuWorkingMode.HybridAuto, GpuWorkingMode.Discrete],
-            false,
+            true,
             false,
             ControlStrategy.FanCurve,
-            null,
+            new FanTargets(2500, 2400),
             string.Empty,
             DateTimeOffset.Now,
             null));

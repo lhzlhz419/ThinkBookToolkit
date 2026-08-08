@@ -116,7 +116,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         var root = new StackPanel();
         if (Runtime.Report?.AnyAvailable(
                 FeatureIds.TemperatureMonitoring,
-                FeatureIds.FanControl) != false)
+                FeatureIds.FanControl,
+                FeatureIds.BatteryInformation) != false)
         {
             root.Children.Add(BuildTelemetry());
         }
@@ -134,24 +135,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
     private UIElement BuildTelemetry()
     {
-        var panel = new AdaptiveUniformPanel { MinimumItemWidth = 170, Spacing = 9 };
-        panel.Children.Add(MetricCard(L("CPU", "CPU"), BoundMetric(nameof(PerformanceViewModel.Cpu)), L("温度 / 功耗", "Temperature / power"), "\uE950", Palette.Accent, 18, true));
-        panel.Children.Add(MetricCard(L("GPU", "GPU"), BoundMetric(nameof(PerformanceViewModel.Gpu)), L("温度 / 功耗", "Temperature / power"), "\uE7F4", "#A984FF", 18, true));
-        panel.Children.Add(MetricCard(L("显存", "VRAM"), BoundMetric(nameof(PerformanceViewModel.Vram)), L("显存温度", "VRAM temperature"), "\uE964", "#43B7E8", 18, true));
-        panel.Children.Add(MetricCard(L("双风扇", "Dual fans"), BoundMetric(nameof(PerformanceViewModel.Fans)), "FAN1 / FAN2", "\uE9CA", "#56C2C9", 18, true));
-        panel.Children.Add(MetricCard(L("转速目标", "RPM target"), BoundMetric(nameof(PerformanceViewModel.Target)), "FAN1 / FAN2", "\uE768", Palette.Warning, 18, true));
+        var panel = HardwareMonitorCards();
         return Card(
             L("实时状态", "Live status"),
             panel,
             L("使用全局刷新间隔更新。", "Updated using the global refresh interval."),
             "\uE9D9");
-    }
-
-    private TextBlock BoundMetric(string property)
-    {
-        var value = new TextBlock();
-        value.SetBinding(TextBlock.TextProperty, property);
-        return value;
     }
 
     private UIElement BuildModeCard()
@@ -596,19 +585,19 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
     private void BuildPowerEditorPanel()
     {
-        AddPowerEditor(_powerEditorPanel, "CpuPl1", PowerSetting.CpuPl1, "CPU PL1", 30, 150, true);
-        AddPowerEditor(_powerEditorPanel, "CpuPl2", PowerSetting.CpuPl2, "CPU PL2", 30, 200, true);
-        AddPowerEditor(_powerEditorPanel, "CpuTemperature", PowerSetting.CpuTemperatureLimit, L("CPU 温度上限", "CPU temperature limit"), 75, 105, false);
+        AddPowerEditor(_powerEditorPanel, "CpuPl1", PowerSetting.CpuPl1, "CPU PL1", 30, 150, 1);
+        AddPowerEditor(_powerEditorPanel, "CpuPl2", PowerSetting.CpuPl2, "CPU PL2", 30, 200, 1);
+        AddPowerEditor(_powerEditorPanel, "CpuTemperature", PowerSetting.CpuTemperatureLimit, L("CPU 温度上限", "CPU temperature limit"), 75, 105);
         foreach (var value in PowerSettingsController.TurboTimeLimits)
             AddChoice(_turboTime, $"{value}", value);
         _powerEditorPanel.Children.Add(SettingRow(
             "CPU Turbo Time Limit",
             L("选择固件支持的持续时间。", "Choose a firmware-supported duration."),
             PowerLockControl(PowerSetting.CpuTurboTimeLimit, _turboTime)));
-        AddPowerEditor(_powerEditorPanel, "GpuBoost", PowerSetting.GpuPowerBoost, "GPU Power Boost", 0, 15, false);
-        AddPowerEditor(_powerEditorPanel, "GpuTgp", PowerSetting.GpuConfigurableTgp, "GPU Configurable TGP", 50, 100, false);
-        AddPowerEditor(_powerEditorPanel, "GpuTemperature", PowerSetting.GpuTemperatureLimit, L("GPU 温度上限", "GPU temperature limit"), 75, 87, false);
-        AddPowerEditor(_powerEditorPanel, "GpuToCpu", PowerSetting.GpuToCpuDynamicBoost, "GPU to CPU Dynamic Boost", 0, 50, false);
+        AddPowerEditor(_powerEditorPanel, "GpuBoost", PowerSetting.GpuPowerBoost, "GPU Power Boost", 0, 15, 0);
+        AddPowerEditor(_powerEditorPanel, "GpuTgp", PowerSetting.GpuConfigurableTgp, "GPU Configurable TGP", 50, 100);
+        AddPowerEditor(_powerEditorPanel, "GpuTemperature", PowerSetting.GpuTemperatureLimit, L("GPU 温度上限", "GPU temperature limit"), 75, 87);
+        AddPowerEditor(_powerEditorPanel, "GpuToCpu", PowerSetting.GpuToCpuDynamicBoost, "GPU to CPU Dynamic Boost", 0, 50);
         _atppEditorRow = AddPowerEditor(
             _powerEditorPanel,
             "Atpp",
@@ -616,7 +605,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             "ATPP",
             25,
             105,
-            true);
+            1);
         _atppEditorRow.Visibility = Visibility.Collapsed;
         foreach (var value in PowerSettingsController.LockIntervals)
         {
@@ -732,15 +721,17 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         string title,
         int minimum,
         int maximum,
-        bool positiveOutside)
+        int? manualMinimum = null)
     {
-        var editor = new PowerIntegerEditor(minimum, maximum, positiveOutside);
+        var editor = new PowerIntegerEditor(minimum, maximum, manualMinimum);
         editor.Changed += MarkPowerDirty;
         _powerEditors[key] = editor;
         var row = SettingRow(
             title,
-            positiveOutside
-                ? L($"滑块范围 {minimum}–{maximum}；手动输入可超出，但必须是正整数。", $"Slider range {minimum}–{maximum}; manual input may exceed it but must be positive.")
+            manualMinimum.HasValue
+                ? manualMinimum == 0
+                    ? L($"滑块范围 {minimum}–{maximum}；手动输入可超出，但必须是非负整数。", $"Slider range {minimum}–{maximum}; manual input may exceed it but must be non-negative.")
+                    : L($"滑块范围 {minimum}–{maximum}；手动输入可超出，但必须是正整数。", $"Slider range {minimum}–{maximum}; manual input may exceed it but must be positive.")
                 : L($"允许范围 {minimum}–{maximum}。", $"Allowed range: {minimum}–{maximum}."),
             PowerLockControl(setting, editor.View));
         panel.Children.Add(row);
@@ -1282,14 +1273,22 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         }
         value = new FixedRpmSettings
         {
-            PowerSavingNormalFan1Rpm = values["PowerSavingNormalFan1Rpm"], PowerSavingNormalFan2Rpm = values["PowerSavingNormalFan2Rpm"],
-            PowerSavingGameFan1Rpm = values["PowerSavingGameFan1Rpm"], PowerSavingGameFan2Rpm = values["PowerSavingGameFan2Rpm"],
-            IntelligentNormalFan1Rpm = values["IntelligentNormalFan1Rpm"], IntelligentNormalFan2Rpm = values["IntelligentNormalFan2Rpm"],
-            IntelligentGameFan1Rpm = values["IntelligentGameFan1Rpm"], IntelligentGameFan2Rpm = values["IntelligentGameFan2Rpm"],
-            PerformanceNormalFan1Rpm = values["PerformanceNormalFan1Rpm"], PerformanceNormalFan2Rpm = values["PerformanceNormalFan2Rpm"],
-            PerformanceGameFan1Rpm = values["PerformanceGameFan1Rpm"], PerformanceGameFan2Rpm = values["PerformanceGameFan2Rpm"],
-            GeekNormalFan1Rpm = values["GeekNormalFan1Rpm"], GeekNormalFan2Rpm = values["GeekNormalFan2Rpm"],
-            GeekGameFan1Rpm = values["GeekGameFan1Rpm"], GeekGameFan2Rpm = values["GeekGameFan2Rpm"]
+            PowerSavingNormalFan1Rpm = values["PowerSavingNormalFan1Rpm"],
+            PowerSavingNormalFan2Rpm = values["PowerSavingNormalFan2Rpm"],
+            PowerSavingGameFan1Rpm = values["PowerSavingGameFan1Rpm"],
+            PowerSavingGameFan2Rpm = values["PowerSavingGameFan2Rpm"],
+            IntelligentNormalFan1Rpm = values["IntelligentNormalFan1Rpm"],
+            IntelligentNormalFan2Rpm = values["IntelligentNormalFan2Rpm"],
+            IntelligentGameFan1Rpm = values["IntelligentGameFan1Rpm"],
+            IntelligentGameFan2Rpm = values["IntelligentGameFan2Rpm"],
+            PerformanceNormalFan1Rpm = values["PerformanceNormalFan1Rpm"],
+            PerformanceNormalFan2Rpm = values["PerformanceNormalFan2Rpm"],
+            PerformanceGameFan1Rpm = values["PerformanceGameFan1Rpm"],
+            PerformanceGameFan2Rpm = values["PerformanceGameFan2Rpm"],
+            GeekNormalFan1Rpm = values["GeekNormalFan1Rpm"],
+            GeekNormalFan2Rpm = values["GeekNormalFan2Rpm"],
+            GeekGameFan1Rpm = values["GeekGameFan1Rpm"],
+            GeekGameFan2Rpm = values["GeekGameFan2Rpm"]
         };
         value = CurveProfileStore.NormalizeFixedRpmSettings(value, limits);
         error = string.Empty;
@@ -1300,14 +1299,22 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         var map = new Dictionary<string, int>
         {
-            ["PowerSavingNormalFan1Rpm"] = value.PowerSavingNormalFan1Rpm, ["PowerSavingNormalFan2Rpm"] = value.PowerSavingNormalFan2Rpm,
-            ["PowerSavingGameFan1Rpm"] = value.PowerSavingGameFan1Rpm, ["PowerSavingGameFan2Rpm"] = value.PowerSavingGameFan2Rpm,
-            ["IntelligentNormalFan1Rpm"] = value.IntelligentNormalFan1Rpm, ["IntelligentNormalFan2Rpm"] = value.IntelligentNormalFan2Rpm,
-            ["IntelligentGameFan1Rpm"] = value.IntelligentGameFan1Rpm, ["IntelligentGameFan2Rpm"] = value.IntelligentGameFan2Rpm,
-            ["PerformanceNormalFan1Rpm"] = value.PerformanceNormalFan1Rpm, ["PerformanceNormalFan2Rpm"] = value.PerformanceNormalFan2Rpm,
-            ["PerformanceGameFan1Rpm"] = value.PerformanceGameFan1Rpm, ["PerformanceGameFan2Rpm"] = value.PerformanceGameFan2Rpm,
-            ["GeekNormalFan1Rpm"] = value.GeekNormalFan1Rpm, ["GeekNormalFan2Rpm"] = value.GeekNormalFan2Rpm,
-            ["GeekGameFan1Rpm"] = value.GeekGameFan1Rpm, ["GeekGameFan2Rpm"] = value.GeekGameFan2Rpm
+            ["PowerSavingNormalFan1Rpm"] = value.PowerSavingNormalFan1Rpm,
+            ["PowerSavingNormalFan2Rpm"] = value.PowerSavingNormalFan2Rpm,
+            ["PowerSavingGameFan1Rpm"] = value.PowerSavingGameFan1Rpm,
+            ["PowerSavingGameFan2Rpm"] = value.PowerSavingGameFan2Rpm,
+            ["IntelligentNormalFan1Rpm"] = value.IntelligentNormalFan1Rpm,
+            ["IntelligentNormalFan2Rpm"] = value.IntelligentNormalFan2Rpm,
+            ["IntelligentGameFan1Rpm"] = value.IntelligentGameFan1Rpm,
+            ["IntelligentGameFan2Rpm"] = value.IntelligentGameFan2Rpm,
+            ["PerformanceNormalFan1Rpm"] = value.PerformanceNormalFan1Rpm,
+            ["PerformanceNormalFan2Rpm"] = value.PerformanceNormalFan2Rpm,
+            ["PerformanceGameFan1Rpm"] = value.PerformanceGameFan1Rpm,
+            ["PerformanceGameFan2Rpm"] = value.PerformanceGameFan2Rpm,
+            ["GeekNormalFan1Rpm"] = value.GeekNormalFan1Rpm,
+            ["GeekNormalFan2Rpm"] = value.GeekNormalFan2Rpm,
+            ["GeekGameFan1Rpm"] = value.GeekGameFan1Rpm,
+            ["GeekGameFan2Rpm"] = value.GeekGameFan2Rpm
         };
         foreach (var pair in map)
         {
@@ -1402,8 +1409,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             }
             if (!pair.Value.TryGetValue(out _))
             {
-                error = pair.Value.AllowOutside
-                    ? L($"{pair.Key} 必须是正整数；滑动条范围不限制手动输入。", $"{pair.Key} must be a positive integer; the slider range does not limit manual input.")
+                error = pair.Value.ManualMinimum.HasValue
+                    ? pair.Value.ManualMinimum == 0
+                        ? L($"{pair.Key} 必须是非负整数；滑动条范围不限制手动输入。", $"{pair.Key} must be a non-negative integer; the slider range does not limit manual input.")
+                        : L($"{pair.Key} 必须是正整数；滑动条范围不限制手动输入。", $"{pair.Key} must be a positive integer; the slider range does not limit manual input.")
                     : L($"{pair.Key} 必须在 {pair.Value.Minimum}–{pair.Value.Maximum} 之间。", $"{pair.Key} must be from {pair.Value.Minimum} to {pair.Value.Maximum}.");
                 return false;
             }
@@ -1722,9 +1731,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         RampUpRpmPerSecond = profile.RampUpRpmPerSecond,
         FullRangeRampDownRpmPerSecond = profile.FullRangeRampDownRpmPerSecond,
         RampDownRpmPerSecond = profile.RampDownRpmPerSecond,
-        CpuFan1Curve = [.. profile.CpuFan1Curve], CpuFan2Curve = [.. profile.CpuFan2Curve],
-        GpuFan1Curve = [.. profile.GpuFan1Curve], GpuFan2Curve = [.. profile.GpuFan2Curve],
-        CpuCurve = [.. profile.CpuCurve], GpuCurve = [.. profile.GpuCurve]
+        CpuFan1Curve = [.. profile.CpuFan1Curve],
+        CpuFan2Curve = [.. profile.CpuFan2Curve],
+        GpuFan1Curve = [.. profile.GpuFan1Curve],
+        GpuFan2Curve = [.. profile.GpuFan2Curve],
+        CpuCurve = [.. profile.CpuCurve],
+        GpuCurve = [.. profile.GpuCurve]
     };
 
     public override void Dispose()
@@ -1734,45 +1746,22 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         base.Dispose();
     }
 
-    private sealed class PerformanceViewModel : ToolkitViewModelBase
+    private sealed class PerformanceViewModel : HardwareMonitorViewModel
     {
-        private ToolkitRuntimeSnapshot _snapshot;
         public PerformanceViewModel(ToolkitRuntimeService runtime) : base(runtime)
         {
-            _snapshot = runtime.Snapshot;
+            Update(runtime.Snapshot);
         }
-        public string Cpu => Pair(_snapshot.Temperatures?.CpuTempC, _snapshot.Temperatures?.CpuPowerW);
-        public string Gpu => Pair(_snapshot.Temperatures?.GpuTempC, _snapshot.Temperatures?.GpuPowerW);
-        public string Vram => _snapshot.Temperatures?.VramTempC is { } value ? $"{value:0.0} °C" : "--";
-        public string Fans => _snapshot.Fans is { } fans
-            ? $"{fans.Fan1Rpm} / {fans.Fan2Rpm} RPM"
-            : "--";
-        public string Target => _snapshot.FullSpeed
-            ? "MAX / MAX"
-            : _snapshot.FanControlRunning && _snapshot.FanTarget is { } target
-                ? $"{target.Fan1Rpm} / {target.Fan2Rpm} RPM"
-                : "--";
-        public void Update(ToolkitRuntimeSnapshot value)
-        {
-            _snapshot = value;
-            Notify(nameof(Cpu));
-            Notify(nameof(Gpu));
-            Notify(nameof(Vram));
-            Notify(nameof(Fans));
-            Notify(nameof(Target));
-        }
-        private static string Pair(double? temperature, double? power) =>
-            $"{(temperature.HasValue ? $"{temperature.Value:0.0} °C" : "--")} · {(power.HasValue ? $"{power.Value:0.0} W" : "--")}";
     }
 
     private sealed class PowerIntegerEditor
     {
         private bool _syncing;
-        public PowerIntegerEditor(int minimum, int maximum, bool allowOutside)
+        public PowerIntegerEditor(int minimum, int maximum, int? manualMinimum)
         {
             Minimum = minimum;
             Maximum = maximum;
-            AllowOutside = allowOutside;
+            ManualMinimum = manualMinimum;
             Slider = new Slider
             {
                 Minimum = minimum,
@@ -1804,7 +1793,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             {
                 if (_syncing) return;
                 if (int.TryParse(TextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) &&
-                    (AllowOutside ? value > 0 : value >= Minimum && value <= Maximum))
+                    (ManualMinimum.HasValue
+                        ? value >= ManualMinimum.Value
+                        : value >= Minimum && value <= Maximum))
                 {
                     _syncing = true;
                     Slider.Value = Math.Clamp(value, Minimum, Maximum);
@@ -1815,7 +1806,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         }
         public int Minimum { get; }
         public int Maximum { get; }
-        public bool AllowOutside { get; }
+        public int? ManualMinimum { get; }
         public Slider Slider { get; }
         public TextBox TextBox { get; }
         public StackPanel View { get; }
@@ -1823,7 +1814,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         public event Action? Changed;
         public bool TryGetValue(out int value) =>
             int.TryParse(TextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value) &&
-            (AllowOutside ? value > 0 : value >= Minimum && value <= Maximum);
+            (ManualMinimum.HasValue
+                ? value >= ManualMinimum.Value
+                : value >= Minimum && value <= Maximum);
         public void SetValue(int value)
         {
             _syncing = true;

@@ -78,16 +78,16 @@ internal sealed class PowerSettingsWindow : Window
             _t("CpuPl1"),
             30,
             150,
-            allowManualPositiveOutsideSliderRange: true);
+            manualMinimum: 1);
         _cpuPl2 = AddSliderRow(
             1,
             _t("CpuPl2"),
             30,
             200,
-            allowManualPositiveOutsideSliderRange: true);
+            manualMinimum: 1);
         _cpuTemperatureLimit = AddSliderRow(2, _t("CpuTemperatureLimit"), 75, 105);
         AddComboRow(3, _t("CpuTurboTimeLimit"), _cpuTurboTimeLimitCombo);
-        _gpuPowerBoost = AddSliderRow(4, _t("GpuPowerBoost"), 0, 15);
+        _gpuPowerBoost = AddSliderRow(4, _t("GpuPowerBoost"), 0, 15, manualMinimum: 0);
         _gpuConfigurableTgp = AddSliderRow(5, _t("GpuConfigurableTgp"), 50, 100);
         _gpuTemperatureLimit = AddSliderRow(6, _t("GpuTemperatureLimit"), 75, 87);
         _gpuToCpuDynamicBoost = AddSliderRow(7, _t("GpuToCpuDynamicBoost"), 0, 50);
@@ -160,7 +160,7 @@ internal sealed class PowerSettingsWindow : Window
         string label,
         int minimum,
         int maximum,
-        bool allowManualPositiveOutsideSliderRange = false)
+        int? manualMinimum = null)
     {
         _settingsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         AddLabel(row, label);
@@ -168,7 +168,7 @@ internal sealed class PowerSettingsWindow : Window
         var editor = new IntegerSliderEditor(
             minimum,
             maximum,
-            allowManualPositiveOutsideSliderRange);
+            manualMinimum);
         _sliderEditors.Add(editor);
 
         Grid.SetRow(editor.Slider, row);
@@ -350,9 +350,11 @@ internal sealed class PowerSettingsWindow : Window
         if (editor.TryGetValue(out value))
             return true;
 
-        var message = editor.AllowManualPositiveOutsideSliderRange
+        var message = editor.ManualMinimum.HasValue
             ? string.Format(
-                _t("PowerSettingPositiveIntegerFormat"),
+                _t(editor.ManualMinimum == 0
+                    ? "PowerSettingNonNegativeIntegerFormat"
+                    : "PowerSettingPositiveIntegerFormat"),
                 _t(labelKey))
             : string.Format(
                 _t("PowerSettingRangeFormat"),
@@ -404,12 +406,11 @@ internal sealed class PowerSettingsWindow : Window
         public IntegerSliderEditor(
             int minimum,
             int maximum,
-            bool allowManualPositiveOutsideSliderRange)
+            int? manualMinimum)
         {
             Minimum = minimum;
             Maximum = maximum;
-            AllowManualPositiveOutsideSliderRange =
-                allowManualPositiveOutsideSliderRange;
+            ManualMinimum = manualMinimum;
             Slider = new Slider
             {
                 Minimum = minimum,
@@ -441,8 +442,8 @@ internal sealed class PowerSettingsWindow : Window
             {
                 if (_syncing ||
                     !int.TryParse(TextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ||
-                    (AllowManualPositiveOutsideSliderRange
-                        ? value <= 0
+                    (ManualMinimum.HasValue
+                        ? value < ManualMinimum.Value
                         : value < Minimum || value > Maximum))
                 {
                     return;
@@ -458,7 +459,7 @@ internal sealed class PowerSettingsWindow : Window
 
         public int Maximum { get; }
 
-        public bool AllowManualPositiveOutsideSliderRange { get; }
+        public int? ManualMinimum { get; }
 
         public Slider Slider { get; }
 
@@ -466,8 +467,8 @@ internal sealed class PowerSettingsWindow : Window
 
         public void SetValue(int value)
         {
-            if (AllowManualPositiveOutsideSliderRange
-                    ? value <= 0
+            if (ManualMinimum.HasValue
+                    ? value < ManualMinimum.Value
                     : value < Minimum || value > Maximum)
                 throw new ArgumentOutOfRangeException(nameof(value), value, $"Value must be between {Minimum} and {Maximum}.");
 
@@ -484,8 +485,8 @@ internal sealed class PowerSettingsWindow : Window
                        NumberStyles.Integer,
                        CultureInfo.InvariantCulture,
                        out value) &&
-                   (AllowManualPositiveOutsideSliderRange
-                       ? value > 0
+                   (ManualMinimum.HasValue
+                       ? value >= ManualMinimum.Value
                        : value >= Minimum && value <= Maximum);
         }
     }

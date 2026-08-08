@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Media;
 
 namespace ThinkBookToolkit;
@@ -287,6 +289,401 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             Child = content
         };
     }
+
+    protected AdaptiveUniformPanel HardwareMonitorCards()
+    {
+        var panel = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 230,
+            Spacing = 8
+        };
+        panel.Children.Add(HardwareMonitorCard(
+            "CPU",
+            nameof(HardwareMonitorViewModel.CpuModel),
+            new MonitorSection(null,
+            [
+                new(L("利用率", "Utilization"), nameof(HardwareMonitorViewModel.CpuUtilization)),
+                new(L("平均频率", "Average frequency"), nameof(HardwareMonitorViewModel.CpuAverageFrequency)),
+                new(L("最高频率", "Maximum frequency"), nameof(HardwareMonitorViewModel.CpuMaximumFrequency)),
+                new(L("温度", "Temperature"), nameof(HardwareMonitorViewModel.CpuTemperature)),
+                new(L("功耗", "Power"), nameof(HardwareMonitorViewModel.CpuPower))
+            ])));
+        panel.Children.Add(HardwareMonitorCard(
+            "GPU",
+            nameof(HardwareMonitorViewModel.GpuModel),
+            new MonitorSection(null,
+            [
+                new(L("利用率", "Utilization"), nameof(HardwareMonitorViewModel.GpuUtilization)),
+                new(L("显存利用率", "VRAM utilization"), nameof(HardwareMonitorViewModel.GpuMemoryUtilization)),
+                new(
+                    L("核心频率", "Core frequency"),
+                    nameof(HardwareMonitorViewModel.GpuCoreFrequency),
+                    false,
+                    L("显存频率", "VRAM frequency"),
+                    nameof(HardwareMonitorViewModel.GpuMemoryFrequency)),
+                new(
+                    L("核心温度", "Core temperature"),
+                    nameof(HardwareMonitorViewModel.GpuCoreTemperature),
+                    false,
+                    L("热点温度", "Hot spot temperature"),
+                    nameof(HardwareMonitorViewModel.GpuHotSpotTemperature)),
+                new(L("显存温度", "VRAM temperature"), nameof(HardwareMonitorViewModel.GpuMemoryTemperature)),
+                new(L("功耗", "Power"), nameof(HardwareMonitorViewModel.GpuPower))
+            ])));
+        panel.Children.Add(HardwareMonitorCard(
+            L("电池", "Battery"),
+            null,
+            new MonitorSection(null,
+            [
+                new(L("当前状态", "Status"), nameof(HardwareMonitorViewModel.BatteryState)),
+                new(L("电量", "Charge"), nameof(HardwareMonitorViewModel.BatteryCharge)),
+                new(L("健康度", "Health"), nameof(HardwareMonitorViewModel.BatteryHealth)),
+                new(L("功率", "Power"), nameof(HardwareMonitorViewModel.BatteryPower))
+            ])));
+        panel.Children.Add(HardwareMonitorCard(
+            L("内存与硬盘", "Memory and storage"),
+            null,
+            new MonitorSection(null,
+            [
+                new(L("物理内存", "Physical memory"), nameof(HardwareMonitorViewModel.PhysicalMemory)),
+                new(L("虚拟内存", "Virtual memory"), nameof(HardwareMonitorViewModel.VirtualMemory)),
+                new(L("内存插槽1温度", "Memory slot 1 temperature"), nameof(HardwareMonitorViewModel.MemorySlot1Temperature)),
+                new(L("内存插槽2温度", "Memory slot 2 temperature"), nameof(HardwareMonitorViewModel.MemorySlot2Temperature))
+            ],
+            nameof(HardwareMonitorViewModel.StorageMetrics))));
+        panel.Children.Add(HardwareMonitorCard(
+            L("风扇", "Fans"),
+            null,
+            new MonitorSection(L("风扇转速", "Fan speed"),
+            [
+                new(L("风扇1转速", "Fan 1 speed"), nameof(HardwareMonitorViewModel.Fan1Speed)),
+                new(L("风扇2转速", "Fan 2 speed"), nameof(HardwareMonitorViewModel.Fan2Speed))
+            ]),
+            new MonitorSection(L("转速目标", "Speed target"),
+            [
+                new(L("风扇1目标", "Fan 1 target"), nameof(HardwareMonitorViewModel.Fan1Target)),
+                new(L("风扇2目标", "Fan 2 target"), nameof(HardwareMonitorViewModel.Fan2Target))
+            ])));
+        return panel;
+    }
+
+    private Border HardwareMonitorCard(
+        string title,
+        string? modelProperty,
+        params MonitorSection[] sections)
+    {
+        var content = new StackPanel();
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        header.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brush(Palette.Text),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        if (!string.IsNullOrWhiteSpace(modelProperty))
+        {
+            var model = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = Brush(Palette.Muted),
+                TextAlignment = TextAlignment.Right,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                TextWrapping = TextWrapping.NoWrap,
+                Margin = new Thickness(8, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            if (string.Equals(
+                    modelProperty,
+                    nameof(HardwareMonitorViewModel.GpuModel),
+                    StringComparison.Ordinal))
+            {
+                var binding = new MultiBinding
+                {
+                    Converter = new OptionalSuffixWhenNarrowConverter("Laptop GPU")
+                };
+                binding.Bindings.Add(new Binding(modelProperty));
+                binding.Bindings.Add(new Binding(nameof(FrameworkElement.ActualWidth))
+                {
+                    RelativeSource = new RelativeSource(RelativeSourceMode.Self)
+                });
+                binding.Bindings.Add(new Binding(nameof(TextBlock.FontFamily))
+                {
+                    RelativeSource = new RelativeSource(RelativeSourceMode.Self)
+                });
+                binding.Bindings.Add(new Binding(nameof(TextBlock.FontSize))
+                {
+                    RelativeSource = new RelativeSource(RelativeSourceMode.Self)
+                });
+                model.SetBinding(TextBlock.TextProperty, binding);
+            }
+            else
+            {
+                model.SetBinding(TextBlock.TextProperty, new Binding(modelProperty));
+            }
+            model.SetBinding(FrameworkElement.ToolTipProperty, new Binding(modelProperty));
+            Grid.SetColumn(model, 1);
+            header.Children.Add(model);
+        }
+        content.Children.Add(header);
+
+        for (var sectionIndex = 0; sectionIndex < sections.Length; sectionIndex++)
+        {
+            var section = sections[sectionIndex];
+            if (sectionIndex > 0)
+            {
+                content.Children.Add(new Border
+                {
+                    Height = 1,
+                    Background = Brush(Palette.Border),
+                    Margin = new Thickness(0, 8, 0, 7)
+                });
+            }
+            if (!string.IsNullOrWhiteSpace(section.Title))
+            {
+                content.Children.Add(new TextBlock
+                {
+                    Text = section.Title,
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = Brush(Palette.Text),
+                    Margin = new Thickness(0, sectionIndex == 0 ? 10 : 0, 0, 3)
+                });
+            }
+            else if (sectionIndex == 0)
+            {
+                content.Children.Add(new Border { Height = 8 });
+            }
+            foreach (var row in section.Rows)
+                content.Children.Add(HardwareMonitorRow(row));
+            if (!string.IsNullOrWhiteSpace(section.DynamicRowsProperty))
+                content.Children.Add(HardwareMonitorRows(section.DynamicRowsProperty));
+        }
+
+        return new Border
+        {
+            MinHeight = 210,
+            Background = Brush(Palette.Surface),
+            BorderBrush = Brush(Palette.Border),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(12, 11, 12, 11),
+            Child = content
+        };
+    }
+
+    private FrameworkElement HardwareMonitorRow(MonitorRow row)
+    {
+        if (!string.IsNullOrWhiteSpace(row.SecondaryProperty))
+            return HardwareMonitorPairRow(row);
+
+        var value = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = Brush(Palette.Text),
+            TextAlignment = row.WideValue ? TextAlignment.Left : TextAlignment.Right,
+            HorizontalAlignment = row.WideValue
+                ? HorizontalAlignment.Stretch
+                : HorizontalAlignment.Right,
+            TextWrapping = row.WideValue ? TextWrapping.Wrap : TextWrapping.NoWrap,
+            TextTrimming = row.WideValue ? TextTrimming.None : TextTrimming.CharacterEllipsis
+        };
+        value.SetBinding(TextBlock.TextProperty, new Binding(row.Property));
+        if (row.WideValue)
+        {
+            value.Margin = new Thickness(0, 2, 0, 0);
+            return value;
+        }
+
+        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        grid.Children.Add(new TextBlock
+        {
+            Text = row.Label,
+            FontSize = 12,
+            Foreground = Brush(Palette.Muted),
+            Margin = new Thickness(0, 0, 8, 0)
+        });
+        Grid.SetColumn(value, 1);
+        grid.Children.Add(value);
+        return grid;
+    }
+
+    private FrameworkElement HardwareMonitorPairRow(MonitorRow row)
+    {
+        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+
+        var left = HardwareMonitorPairCell(row.Label, row.Property);
+        left.Margin = new Thickness(0, 0, 8, 0);
+        grid.Children.Add(left);
+
+        var right = HardwareMonitorPairCell(
+            row.SecondaryLabel ?? string.Empty,
+            row.SecondaryProperty!);
+        Grid.SetColumn(right, 1);
+        grid.Children.Add(right);
+        return grid;
+    }
+
+    private FrameworkElement HardwareMonitorPairCell(
+        string label,
+        string property)
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        grid.Children.Add(new TextBlock
+        {
+            Text = label,
+            FontSize = 12,
+            Foreground = Brush(Palette.Muted),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, 0, 5, 0)
+        });
+        var value = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = Brush(Palette.Text),
+            TextAlignment = TextAlignment.Right,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        value.SetBinding(TextBlock.TextProperty, new Binding(property));
+        Grid.SetColumn(value, 1);
+        grid.Children.Add(value);
+        return grid;
+    }
+
+    private FrameworkElement HardwareMonitorRows(string property)
+    {
+        var items = new ItemsControl
+        {
+            Focusable = false
+        };
+        items.SetBinding(ItemsControl.ItemsSourceProperty, new Binding(property));
+
+        var template = new DataTemplate(typeof(HardwareMonitorMetric));
+        var row = new FrameworkElementFactory(typeof(DockPanel));
+        row.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 2, 0, 2));
+        row.SetValue(DockPanel.LastChildFillProperty, true);
+
+        var value = new FrameworkElementFactory(typeof(TextBlock));
+        value.SetValue(DockPanel.DockProperty, Dock.Right);
+        value.SetValue(TextBlock.FontSizeProperty, 12d);
+        value.SetValue(TextBlock.ForegroundProperty, Brush(Palette.Text));
+        value.SetValue(TextBlock.TextAlignmentProperty, TextAlignment.Right);
+        value.SetValue(TextBlock.TextWrappingProperty, TextWrapping.NoWrap);
+        value.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+        value.SetBinding(TextBlock.TextProperty, new Binding(nameof(HardwareMonitorMetric.Value)));
+        row.AppendChild(value);
+
+        var label = new FrameworkElementFactory(typeof(TextBlock));
+        label.SetValue(TextBlock.FontSizeProperty, 12d);
+        label.SetValue(TextBlock.ForegroundProperty, Brush(Palette.Muted));
+        label.SetValue(TextBlock.MarginProperty, new Thickness(0, 0, 8, 0));
+        label.SetValue(TextBlock.TextWrappingProperty, TextWrapping.NoWrap);
+        label.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+        label.SetBinding(TextBlock.TextProperty, new Binding(nameof(HardwareMonitorMetric.Label)));
+        row.AppendChild(label);
+
+        template.VisualTree = row;
+        items.ItemTemplate = template;
+        return items;
+    }
+
+    private sealed class OptionalSuffixWhenNarrowConverter : IMultiValueConverter
+    {
+        private readonly string _suffix;
+
+        public OptionalSuffixWhenNarrowConverter(string suffix)
+        {
+            _suffix = suffix;
+        }
+
+        public object Convert(
+            object[] values,
+            Type targetType,
+            object parameter,
+            CultureInfo culture)
+        {
+            var fullText = values.Length > 0 && values[0] is string text
+                ? text
+                : "--";
+            if (!fullText.EndsWith(_suffix, StringComparison.OrdinalIgnoreCase))
+                return fullText;
+
+            var compactText = fullText[..^_suffix.Length].TrimEnd();
+            if (values.Length < 2 ||
+                values[1] is not double availableWidth ||
+                availableWidth <= 0)
+            {
+                return compactText;
+            }
+
+            var fontFamily = values.Length > 2 && values[2] is FontFamily family
+                ? family
+                : SystemFonts.MessageFontFamily;
+            var fontSize = values.Length > 3 && values[3] is double size && size > 0
+                ? size
+                : 11d;
+            var formatted = new FormattedText(
+                fullText,
+                culture,
+                FlowDirection.LeftToRight,
+                new Typeface(
+                    fontFamily,
+                    FontStyles.Normal,
+                    FontWeights.Normal,
+                    FontStretches.Normal),
+                fontSize,
+                Brushes.Black,
+                1d);
+            return formatted.WidthIncludingTrailingWhitespace <= availableWidth
+                ? fullText
+                : compactText;
+        }
+
+        public object[] ConvertBack(
+            object value,
+            Type[] targetTypes,
+            object parameter,
+            CultureInfo culture) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed record MonitorSection(
+        string? Title,
+        IReadOnlyList<MonitorRow> Rows,
+        string? DynamicRowsProperty = null);
+
+    private sealed record MonitorRow(
+        string Label,
+        string Property,
+        bool WideValue = false,
+        string? SecondaryLabel = null,
+        string? SecondaryProperty = null);
 
     protected Button ActionButton(
         string text,

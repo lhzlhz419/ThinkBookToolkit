@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -33,44 +32,8 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
     {
         var root = new StackPanel();
         root.Children.Add(BuildHero());
-        var metrics = new AdaptiveUniformPanel
-        {
-            MinimumItemWidth = 260,
-            Spacing = 10,
-            Margin = new Thickness(0, 0, 0, 12)
-        };
-        metrics.Children.Add(MetricCard(
-            "CPU",
-            BoundText(nameof(OverviewViewModel.Cpu)),
-            L("温度与功耗", "Temperature and power"),
-            "\uE950",
-            Palette.Accent,
-            20,
-            true));
-        metrics.Children.Add(MetricCard(
-            "GPU",
-            BoundText(nameof(OverviewViewModel.Gpu)),
-            L("温度与功耗", "Temperature and power"),
-            "\uE7F4",
-            "#A984FF",
-            20,
-            true));
-        metrics.Children.Add(MetricCard(
-            L("电池", "Battery"),
-            BoundText(nameof(OverviewViewModel.Battery)),
-            L("电量、健康度与功率", "Charge, health and power"),
-            "\uE850",
-            Palette.Success,
-            20,
-            true));
-        metrics.Children.Add(MetricCard(
-            L("双风扇", "Dual fans"),
-            BoundText(nameof(OverviewViewModel.Fans)),
-            "FAN1 / FAN2",
-            "\uE9CA",
-            "#56C2C9",
-            20,
-            true));
+        var metrics = HardwareMonitorCards();
+        metrics.Margin = new Thickness(0, 0, 0, 12);
         root.Children.Add(metrics);
         return root;
     }
@@ -338,85 +301,29 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
             .OfType<ComboBoxItem>()
             .FirstOrDefault(item => Equals(item.Tag, value));
 
-    private static TextBlock BoundText(string property)
+    private sealed class OverviewViewModel : HardwareMonitorViewModel
     {
-        var text = new TextBlock();
-        text.SetBinding(TextBlock.TextProperty, new Binding(property));
-        return text;
-    }
-
-    private sealed class OverviewViewModel : ToolkitViewModelBase
-    {
-        private string _cpu = "--";
-        private string _gpu = "--";
-        private string _fans = "--";
-        private string _battery = "--";
         private string _pendingRestart = "--";
 
         public OverviewViewModel(ToolkitRuntimeService runtime)
             : base(runtime)
         {
             runtime.SnapshotChanged += OnSnapshotChanged;
-            Update();
+            Update(runtime.Snapshot);
         }
 
-        public string Cpu { get => _cpu; private set => SetField(ref _cpu, value); }
-        public string Gpu { get => _gpu; private set => SetField(ref _gpu, value); }
-        public string Fans { get => _fans; private set => SetField(ref _fans, value); }
-        public string Battery { get => _battery; private set => SetField(ref _battery, value); }
         public string PendingRestart { get => _pendingRestart; private set => SetField(ref _pendingRestart, value); }
 
-        private void OnSnapshotChanged(object? sender, EventArgs args) => Update();
+        private void OnSnapshotChanged(object? sender, EventArgs args) =>
+            Update(Runtime.Snapshot);
 
-        private void Update()
+        public override void Update(ToolkitRuntimeSnapshot snapshot)
         {
-            var snapshot = Runtime.Snapshot;
-            Cpu = Pair(
-                snapshot.Temperatures?.CpuTempC,
-                "°C",
-                snapshot.Temperatures?.CpuPowerW,
-                "W");
-            Gpu = Pair(
-                snapshot.Temperatures?.GpuTempC,
-                "°C",
-                snapshot.Temperatures?.GpuPowerW,
-                "W");
-            Fans = snapshot.Fans is null
-                ? "--"
-                : $"{snapshot.Fans.Fan1Rpm} / {snapshot.Fans.Fan2Rpm} RPM";
-            if (snapshot.Battery is { } battery)
-            {
-                var charge = battery.FullChargeCapacityWh > 0
-                    ? battery.CurrentCapacityWh * 100 / battery.FullChargeCapacityWh
-                    : 0;
-                Battery = $"{charge:0}% · {battery.HealthPercent:0}% " +
-                          Runtime.L("健康", "health") +
-                          $" · {battery.ChargeDischargePowerW:+0.0;-0.0;0.0} W";
-            }
-            else
-            {
-                Battery = "--";
-            }
+            base.Update(snapshot);
             PendingRestart = string.IsNullOrWhiteSpace(
                     snapshot.PendingGpuMode)
                 ? Runtime.L("无需重启", "No restart required")
                 : Runtime.L("需要重启", "Restart required");
-        }
-
-        private static string Pair(
-            double? first,
-            string firstUnit,
-            double? second = null,
-            string secondUnit = "")
-        {
-            if (!first.HasValue && !second.HasValue)
-                return "--";
-            var firstText = first.HasValue
-                ? first.Value.ToString("0.0", CultureInfo.InvariantCulture) + " " + firstUnit
-                : "--";
-            return second.HasValue
-                ? firstText + "   " + second.Value.ToString("0.0", CultureInfo.InvariantCulture) + " " + secondUnit
-                : firstText;
         }
 
         public override void Dispose()

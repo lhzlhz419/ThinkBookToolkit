@@ -209,7 +209,7 @@ internal static class PowerSettingsController
         RequireRange(nameof(state.CpuTemperatureLimit), state.CpuTemperatureLimit, 75, 105);
         if (!TurboTimeLimits.Contains(state.CpuTurboTimeLimit))
             throw new ArgumentOutOfRangeException(nameof(state.CpuTurboTimeLimit), state.CpuTurboTimeLimit, "Unsupported CPU turbo time limit.");
-        RequireRange(nameof(state.GpuPowerBoost), state.GpuPowerBoost, 0, 15);
+        RequireNonNegative(nameof(state.GpuPowerBoost), state.GpuPowerBoost);
         RequireRange(nameof(state.GpuConfigurableTgp), state.GpuConfigurableTgp, 50, 100);
         RequireRange(nameof(state.GpuTemperatureLimit), state.GpuTemperatureLimit, 75, 87);
         RequireRange(nameof(state.GpuToCpuDynamicBoost), state.GpuToCpuDynamicBoost, 0, 50);
@@ -230,6 +230,15 @@ internal static class PowerSettingsController
                 name,
                 value,
                 "Value must be a positive integer.");
+    }
+
+    private static void RequireNonNegative(string name, int value)
+    {
+        if (value < 0)
+            throw new ArgumentOutOfRangeException(
+                name,
+                value,
+                "Value must be a non-negative integer.");
     }
 
     private static ManagementObject GetActiveOtherMethod()

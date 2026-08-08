@@ -41,6 +41,8 @@ internal static class Program
         VerifyLenovoDependencyDirectory();
         VerifyFanBackendStartupNotice();
         VerifyAdvancedFanCurve();
+        VerifyNvidiaPrivateTelemetryDecoding();
+        VerifyPowerSettingsWindowManualInput();
         VerifyPerformancePageWithoutFanControl();
         VerifyUserFacingExceptionText();
         Assert(UiTypography.FontFamilyNameFor("zh-CN") == "Microsoft YaHei UI",
@@ -72,6 +74,40 @@ internal static class Program
             FanStrategy = ControlStrategy.FanCurve,
             FanControlRunning = true,
             FanTarget = new FanTargets(2600, 2700),
+            Temperatures = new TemperatureSnapshot(
+                54.2,
+                43.8,
+                52,
+                13.6,
+                12.8,
+                "CPU Package",
+                "GPU Core",
+                "GPU Memory")
+            {
+                CpuName = "Intel Core Ultra 7 255HX",
+                CpuLoadPercent = 16.4,
+                CpuAverageClockMhz = 2350,
+                CpuMaximumClockMhz = 4800,
+                GpuName = "NVIDIA GeForce RTX 5060 Laptop GPU",
+                GpuLoadPercent = 22.5,
+                GpuMemoryLoadPercent = 18.2,
+                GpuCoreClockMhz = 1552,
+                GpuMemoryClockMhz = 6001,
+                GpuHotSpotTempC = 51.3,
+                VramChipTemperaturesC = [56, 58, 56, 54],
+                PhysicalMemoryUsedGb = 16.5,
+                PhysicalMemoryTotalGb = 31.4,
+                VirtualMemoryUsedGb = 25.9,
+                VirtualMemoryTotalGb = 37.2,
+                MemorySlotTemperaturesC = [47],
+                StorageDevices =
+                [
+                    new StorageTemperatureSnapshot(
+                        "YMTC PC411-1024GB-B",
+                        [30, 40, 30],
+                        98.5)
+                ]
+            },
             Fans = new FanSnapshot(
                 DateTimeOffset.Now,
                 2400,
@@ -214,23 +250,66 @@ internal static class Program
                Descendants(performance).OfType<ComboBoxItem>()
                    .Any(item => item.Content?.ToString() == "固件自动"),
             "Fan ownership was not replaced by the unified firmware-automatic strategy.");
-        Assert(ContainsText(performance, "双风扇"),
-            "Live fan readings were not combined.");
-        var targetValue = performance.DataContext?.GetType()
-            .GetProperty("Target")
+        Assert(ContainsText(performance, "风扇转速"),
+            "Live fan readings were not combined in the fan card.");
+        var fan1Target = performance.DataContext?.GetType()
+            .GetProperty("Fan1Target")
+            ?.GetValue(performance.DataContext)
+            ?.ToString();
+        var fan2Target = performance.DataContext?.GetType()
+            .GetProperty("Fan2Target")
             ?.GetValue(performance.DataContext)
             ?.ToString();
         Assert(ContainsText(performance, "转速目标") &&
-               targetValue == "2600 / 2700 RPM",
+               fan1Target == "2600 RPM" &&
+               fan2Target == "2700 RPM",
             "Live status does not expose the actual fan target.");
+        var telemetryViewModel = performance.DataContext!;
+        var storageMetrics = PropertyValue<IReadOnlyList<HardwareMonitorMetric>>(
+            telemetryViewModel,
+            "StorageMetrics");
+        Assert(ContainsText(performance, "平均频率") &&
+               ContainsText(performance, "显存利用率") &&
+               PropertyText(telemetryViewModel, "GpuMemoryTemperature") == "56/58/56/54 °C" &&
+               PropertyText(telemetryViewModel, "PhysicalMemory") == "16.5 / 31.4 GB" &&
+               storageMetrics.Count == 2 &&
+               storageMetrics[0].Label.Contains(
+                   "YMTC PC411-1024GB-B",
+                   StringComparison.Ordinal) &&
+               storageMetrics[0].Value == "30.0/40.0/30.0 °C" &&
+               storageMetrics[1] == new HardwareMonitorMetric(
+                   "硬盘1健康度",
+                   "98.5%"),
+            "Expanded CPU, GPU, memory, or storage telemetry is missing.");
+        Assert(PropertyText(telemetryViewModel, "MemorySlot1Temperature") == "47.0 °C" &&
+               PropertyText(telemetryViewModel, "MemorySlot2Temperature") == "-",
+            "Missing memory-slot temperatures are not represented correctly.");
+        var populatedTemperatures = runtime.Snapshot.Temperatures!;
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            FanTarget = new FanTargets(0, 0),
+            Temperatures = populatedTemperatures with
+            {
+                VramChipTemperaturesC = []
+            }
+        });
+        Assert(PropertyText(telemetryViewModel, "Fan1Target") == "固件自动" &&
+               PropertyText(telemetryViewModel, "Fan2Target") == "固件自动" &&
+               PropertyText(telemetryViewModel, "GpuMemoryTemperature") == "52.0 °C",
+            "Firmware-auto zero targets or the LHM VRAM-temperature fallback are incorrect.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            FanTarget = new FanTargets(2600, 2700),
+            Temperatures = populatedTemperatures
+        });
         var telemetry = Descendants(performance)
             .OfType<AdaptiveUniformPanel>()
             .FirstOrDefault(panel => panel.Children.Count == 5);
         Assert(telemetry is not null,
             "Live status does not contain five compact metrics.");
-        telemetry!.Measure(new Size(1000, double.PositiveInfinity));
-        Assert(telemetry.DesiredSize.Height < 260,
-            "Five live metrics do not fit on one row at the target width.");
+        telemetry!.Measure(new Size(1400, double.PositiveInfinity));
+        Assert(telemetry.DesiredSize.Height < 340,
+            "Five live monitoring cards do not fit on one row at the target width.");
         Assert(ContainsText(performance, "风扇拉满") &&
                 ContainsText(performance, "最高转速运行") &&
                 !ContainsText(performance, "SetFullSpeed(true)") &&
@@ -397,6 +476,35 @@ internal static class Program
                    .Invoke(performance, collectAtppArguments)!,
             "ATPP accepts a non-positive manual value.");
         atppTextBox.Text = "75";
+        var gpuBoostSlider = Descendants(powerEditorHost)
+            .OfType<Slider>()
+            .Single(slider => slider.Minimum == 0 && slider.Maximum == 15);
+        var gpuBoostTextBox = ((Panel)gpuBoostSlider.Parent)
+            .Children
+            .OfType<TextBox>()
+            .Single();
+        gpuBoostTextBox.Text = "0";
+        object?[] collectGpuBoostArguments = [null, null];
+        Assert((bool)performance.GetType()
+                   .GetMethod(
+                       "TryCollectPower",
+                       BindingFlags.Instance | BindingFlags.NonPublic)!
+                   .Invoke(performance, collectGpuBoostArguments)! &&
+               collectGpuBoostArguments[0] is PowerSettingsState
+               {
+                   GpuPowerBoost: 0
+               } &&
+               gpuBoostSlider.Value == 0,
+            "GPU Power Boost does not accept zero while preserving the 0–15 slider range.");
+        gpuBoostTextBox.Text = "-1";
+        collectGpuBoostArguments = [null, null];
+        Assert(!(bool)performance.GetType()
+                   .GetMethod(
+                       "TryCollectPower",
+                       BindingFlags.Instance | BindingFlags.NonPublic)!
+                   .Invoke(performance, collectGpuBoostArguments)!,
+            "GPU Power Boost accepts a negative manual value.");
+        gpuBoostTextBox.Text = "15";
         var powerLockToggles = GetPrivateField<
             Dictionary<PowerSetting, CheckBox>>(
                 performance,
@@ -986,6 +1094,10 @@ internal static class Program
                     confirmedPower with { CpuPl1 = 129 } &&
                PowerSettingsController.IsValidState(
                     confirmedPower with { Atpp = 106 }) &&
+               PowerSettingsController.IsValidState(
+                    confirmedPower with { GpuPowerBoost = 0 }) &&
+               !PowerSettingsController.IsValidState(
+                    confirmedPower with { GpuPowerBoost = -1 }) &&
                !PowerSettingsController.IsValidState(
                    confirmedPower with { Atpp = 0 }),
             "Power-setting lock interval or change-detection policy is incorrect.");
@@ -1105,6 +1217,78 @@ internal static class Program
             .ToArray();
         Assert(labels.SequenceEqual(["确定", "确定并不再显示"]),
             "The backend notice dialog does not expose the required two actions.");
+    }
+
+    private static void VerifyNvidiaPrivateTelemetryDecoding()
+    {
+        var memoryRaw = 48u << 16;
+        Assert(NvidiaPrivateTelemetryReader.DecodeMemoryChipTemperature(memoryRaw) == 56,
+            "The per-chip VRAM MR-code decoder does not match the HWiNFO 6034 formula.");
+        var hotSpotRaw = 0x40000000u | (2416u << 3);
+        var hotSpot = NvidiaPrivateTelemetryReader.DecodeBlackwellHotSpot(
+            [null, hotSpotRaw, 0u]);
+        Assert(hotSpot == 75.5,
+            "The RTX 50-series hot-spot decoder does not match the HWiNFO 6034 formula.");
+
+        var smartLog = new byte[512];
+        WriteUInt16(smartLog, 1, 303);
+        WriteUInt16(smartLog, 200, 313);
+        WriteUInt16(smartLog, 202, 304);
+        var storageTemperatures = StorageTemperatureReader.ReadNvmeTemperatures(smartLog);
+        Assert(storageTemperatures.Count == 3 &&
+               Math.Abs(storageTemperatures[0] - 29.85) < 0.001 &&
+               Math.Abs(storageTemperatures[1] - 39.85) < 0.001 &&
+               Math.Abs(storageTemperatures[2] - 30.85) < 0.001,
+            "NVMe composite and per-sensor temperatures are not decoded correctly.");
+        smartLog[5] = 12;
+        Assert(StorageTemperatureReader.ReadNvmeHealthPercent(smartLog) == 88 &&
+               StorageTemperatureReader.ReadNvmeHealthPercent([]) is null,
+            "NVMe remaining-health fallback does not decode Percentage Used correctly.");
+    }
+
+    private static void VerifyPowerSettingsWindowManualInput()
+    {
+        var window = new PowerSettingsWindow(
+            key => key,
+            () => ItsMode.Intelligent,
+            false,
+            new System.Windows.Media.FontFamily("Segoe UI"),
+            14,
+            embeddedMode: true);
+        try
+        {
+            var editor = GetPrivateField<object>(window, "_gpuPowerBoost");
+            var editorType = editor.GetType();
+            var setValue = editorType.GetMethod("SetValue")!;
+            var tryGetValue = editorType.GetMethod("TryGetValue")!;
+            var slider = (Slider)editorType.GetProperty("Slider")!.GetValue(editor)!;
+
+            setValue.Invoke(editor, [0]);
+            object?[] zeroArguments = [null];
+            Assert((bool)tryGetValue.Invoke(editor, zeroArguments)! &&
+                   zeroArguments[0] is 0 &&
+                   slider.Minimum == 0 &&
+                   slider.Maximum == 15,
+                "The legacy GPU Power Boost editor does not accept zero with its original slider range.");
+
+            var textBox = (TextBox)editorType
+                .GetProperty("TextBox")!
+                .GetValue(editor)!;
+            textBox.Text = "-1";
+            object?[] negativeArguments = [null];
+            Assert(!(bool)tryGetValue.Invoke(editor, negativeArguments)!,
+                "The legacy GPU Power Boost editor accepts a negative value.");
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    private static void WriteUInt16(byte[] target, int offset, ushort value)
+    {
+        target[offset] = (byte)value;
+        target[offset + 1] = (byte)(value >> 8);
     }
 
     private static void VerifyAdvancedFanCurve()
@@ -1573,6 +1757,15 @@ internal static class Program
                 .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
                 ?.GetValue(owner)
             ?? throw new MissingFieldException(owner.GetType().Name, name));
+
+    private static string PropertyText(object owner, string name) =>
+        owner.GetType().GetProperty(name)?.GetValue(owner)?.ToString() ??
+        throw new MissingMemberException(owner.GetType().Name, name);
+
+    private static T PropertyValue<T>(object owner, string name) =>
+        owner.GetType().GetProperty(name)?.GetValue(owner) is T value
+            ? value
+            : throw new MissingMemberException(owner.GetType().Name, name);
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {
