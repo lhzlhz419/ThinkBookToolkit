@@ -208,6 +208,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         }
         Grid.SetColumn(control, offset + 1);
         row.Children.Add(control);
+        var keepControlOnRight = control is CheckBox;
         void ApplyResponsiveRow(bool compact)
         {
             Grid.SetRow(control, compact ? 1 : 0);
@@ -225,7 +226,8 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                     : new Thickness(14, 0, 0, 0);
             }
         }
-        row.SizeChanged += (_, _) => ApplyResponsiveRow(row.ActualWidth < 610);
+        row.SizeChanged += (_, _) => ApplyResponsiveRow(
+            !keepControlOnRight && row.ActualWidth < 610);
         ApplyResponsiveRow(compact: false);
         return new Border
         {

@@ -745,9 +745,13 @@ internal static class Program
             .OfType<AdaptiveUniformPanel>()
             .ToArray();
         var globalSettings = settingsPanels.Single(panel => panel.Children.Count == 5);
-        var startupSettings = settingsPanels.Single(panel => panel.Children.Count >= 8);
+        var startupSettings = settingsPanels.Single(panel =>
+            ContainsText(panel, "开机自启"));
+        var fanBehaviorSettings = settingsPanels.Single(panel =>
+            ContainsText(panel, "持续写入风扇值"));
         ArrangePanel(globalSettings, 1000);
         ArrangePanel(startupSettings, 900);
+        ArrangePanel(fanBehaviorSettings, 900);
         Assert(SameRow(globalSettings.Children[0], globalSettings.Children[1]) &&
                SameRow(globalSettings.Children[1], globalSettings.Children[2]) &&
                SameRow(globalSettings.Children[3], globalSettings.Children[4]) &&
@@ -755,8 +759,31 @@ internal static class Program
             "Global settings require too much width for the requested 3+2 layout.");
         Assert(SameRow(startupSettings.Children[0], startupSettings.Children[1]) &&
                SameRow(startupSettings.Children[2], startupSettings.Children[3]) &&
-               SameRow(startupSettings.Children[^2], startupSettings.Children[^1]),
+               SameRow(fanBehaviorSettings.Children[0], fanBehaviorSettings.Children[1]) &&
+               !ContainsText(startupSettings, "睡眠时关闭风扇控制") &&
+               !ContainsText(startupSettings, "风扇读写最小间隔") &&
+               !ContainsText(fanBehaviorSettings, "睡眠时关闭风扇控制") &&
+               !ContainsText(fanBehaviorSettings, "风扇读写最小间隔"),
             "Startup and fan behavior settings require too much width for two-column rows.");
+        var settingSwitchRows = Descendants(settingsPage)
+            .OfType<Border>()
+            .Where(border => border.Child is Grid grid &&
+                grid.Children.OfType<CheckBox>().Any())
+            .ToArray();
+        foreach (var border in settingSwitchRows)
+        {
+            border.Measure(new Size(400, double.PositiveInfinity));
+            border.Arrange(new Rect(0, 0, 400, border.DesiredSize.Height));
+        }
+        Assert(settingSwitchRows.Length >= 7 && settingSwitchRows.All(border =>
+            border.Child is Grid grid &&
+            grid.Children.OfType<CheckBox>().All(toggle =>
+                Grid.GetRow(toggle) == 0 &&
+                Grid.GetColumn(toggle) == grid.ColumnDefinitions.Count - 1)),
+            "One or more setting switches move below their labels at compact widths.");
+        Assert(ContainsText(settingsPage, "启动与程序行为") &&
+               !ContainsText(settingsPage, "启动与窗口行为"),
+            "The startup section does not use the requested program-behavior title.");
         Assert(!ContainsText(settingsPage, "关闭单项后，同一行剩余的数据会自动占满整行。") &&
                settingsPage.GetType().GetField(
                        "_overviewEditorWindow",

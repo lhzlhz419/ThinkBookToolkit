@@ -109,35 +109,36 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("管理界面语言、外观和信息更新频率。", "Manage language, appearance, and information updates."),
             "\uE713"));
 
-        var startup = new AdaptiveUniformPanel
+        var startup = new StackPanel();
+        var startupPrimary = new AdaptiveUniformPanel
         {
             MinimumItemWidth = 400,
             Spacing = 8
         };
-        startup.Children.Add(SettingRow(
+        startupPrimary.Children.Add(SettingRow(
             L("开机自启", "Start with Windows"),
             L("登录 Windows 后自动打开 Toolkit。", "Open Toolkit automatically after signing in to Windows."),
-            _startWithWindows,
-            "\uE7E8"));
-        startup.Children.Add(SettingRow(
+            _startWithWindows));
+        startupPrimary.Children.Add(SettingRow(
             L("启动到托盘", "Start in tray"),
             L("仅在开机自启时生效。", "Used when Toolkit is launched at sign-in."),
             _startToTray));
-        startup.Children.Add(SettingRow(
+        startupPrimary.Children.Add(SettingRow(
             L("最小化到托盘", "Minimize to tray"),
             L("最小化主窗口时隐藏任务栏按钮。", "Hide the taskbar button when the main window is minimized."),
             _minimizeToTray));
-        startup.Children.Add(SettingRow(
+        startupPrimary.Children.Add(SettingRow(
             L("关闭时最小化", "Close to tray"),
             L("关闭按钮隐藏窗口；从托盘菜单选择退出才结束程序。", "The close button hides the window; Exit in the tray menu ends the app."),
             _closeToTray));
+        startup.Children.Add(startupPrimary);
         if (Runtime.Report?.IsAvailable(FeatureIds.FanControl) == true)
         {
             _disableOnSleepRow = SettingRow(
                 Runtime.FanBackendSupportsDisableControlOnSleep
                     ? L("睡眠时关闭风扇控制", "Release fan control while sleeping")
                     : L(
-                        "即使当前控制方式不支持，也尝试在睡眠时关闭控制",
+                        "即使风扇后端声明不支持，也尝试在睡眠时关闭控制",
                         "Try to release fan control for sleep even when the current control method does not support it"),
                 Runtime.FanBackendSupportsDisableControlOnSleep
                     ? L(
@@ -149,23 +150,28 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             startup.Children.Add(SettingRow(
                 L("风扇读写最小间隔", "Minimum fan I/O intervals"),
                 FanIoIntervalDescription(),
-                BuildFanIoIntervalEditor(),
-                "\uE823"));
-            startup.Children.Add(SettingRow(
+                BuildFanIoIntervalEditor()));
+            var fanBehavior = new AdaptiveUniformPanel
+            {
+                MinimumItemWidth = 400,
+                Spacing = 8
+            };
+            fanBehavior.Children.Add(SettingRow(
                 L("使用替代方案维持风扇满转", "Use alternative full-speed method"),
                 L(
                     "写入设置的风扇上限作为满转手段。",
                     "Use the configured fan maximum as the full-speed target."),
                 _alternativeFullSpeed));
-            startup.Children.Add(SettingRow(
+            fanBehavior.Children.Add(SettingRow(
                 L("持续写入风扇值", "Continuously write fan targets"),
                 L(
                     "目标不变时也持续写入；间隔取状态刷新与风扇写入间隔中的较大值。",
                     "Rewrite unchanged targets using the longer of the status-refresh and fan-write intervals."),
                 _continuousFanWrites));
+            startup.Children.Add(fanBehavior);
         }
         root.Children.Add(Card(
-            L("启动与窗口行为", "Startup and window behavior"),
+            L("启动与程序行为", "Startup and application behavior"),
             startup,
             L("设置 Toolkit 的启动、托盘和睡眠行为。", "Choose how Toolkit starts, uses the tray, and behaves during sleep."),
             "\uE7E8"));
