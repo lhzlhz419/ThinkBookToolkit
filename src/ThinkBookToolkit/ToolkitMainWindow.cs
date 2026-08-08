@@ -93,6 +93,7 @@ internal sealed class ToolkitMainWindow : Window
         _runtime.SnapshotChanged += OnSnapshotChanged;
         _runtime.AvailabilityChanged += OnAvailabilityChanged;
         _runtime.AppearanceChanged += OnAppearanceChanged;
+        _runtime.OverviewLayoutChanged += OnOverviewLayoutChanged;
         _runtime.StatusChanged += OnStatusChanged;
         Loaded += OnLoaded;
         StateChanged += OnStateChanged;
@@ -574,6 +575,19 @@ internal sealed class ToolkitMainWindow : Window
         RebuildShell(disposePages: true);
     }
 
+    private void OnOverviewLayoutChanged(object? sender, EventArgs args)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => OnOverviewLayoutChanged(sender, args)));
+            return;
+        }
+        if (_pages.Remove("overview", out var overview))
+            overview.Dispose();
+        if (_selectedPage == "overview")
+            RenderPage();
+    }
+
     private void RebuildShell(bool disposePages)
     {
         if (disposePages) DisposePages();
@@ -659,6 +673,7 @@ internal sealed class ToolkitMainWindow : Window
         _runtime.SnapshotChanged -= OnSnapshotChanged;
         _runtime.AvailabilityChanged -= OnAvailabilityChanged;
         _runtime.AppearanceChanged -= OnAppearanceChanged;
+        _runtime.OverviewLayoutChanged -= OnOverviewLayoutChanged;
         _runtime.StatusChanged -= OnStatusChanged;
         _toastTimer.Stop();
         if (_ownsRuntime) _runtime.Dispose();

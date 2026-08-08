@@ -19,6 +19,16 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly CheckBox _minimizeToTray = new();
     private readonly CheckBox _closeToTray = new();
     private readonly CheckBox _disableOnSleep = new();
+    private readonly CheckBox _alternativeFullSpeed = new();
+    private readonly CheckBox _continuousFanWrites = new();
+    private readonly Button _editOverview;
+    private readonly Button _restartReaders;
+    private readonly Border _overviewEditorHost = new();
+    private readonly Dictionary<string, CheckBox> _overviewCardToggles =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<(string Card, string Item), CheckBox>
+        _overviewItemToggles = new();
+    private OverviewLayoutSettings _overviewDraft = new();
     private Border? _disableOnSleepRow;
     private readonly TextBox _fanReadMinimumInterval = new()
     {
@@ -42,6 +52,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _viewModel = new SettingsViewModel(runtime);
         DataContext = _viewModel;
         _status = StatusText();
+        _editOverview = ActionButton(L("编辑概览页", "Edit overview"));
+        _restartReaders = ActionButton(L("强制刷新读数", "Restart readers"));
         Content = BuildLayout();
         SyncControls();
     }
@@ -77,11 +89,25 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("浅色、深色或跟随 Windows。", "Light, dark, or follow Windows."),
             _theme,
             "\uE790"));
+        global.Children.Add(SettingRow(
+            L("概览页内容", "Overview contents"),
+            L("选择概览页显示的卡片和数据项。", "Choose the cards and readings shown on the overview page."),
+            _editOverview,
+            "\uE8A9"));
+        global.Children.Add(SettingRow(
+            L("强制刷新读数", "Force-refresh readings"),
+            L("关闭并重新创建硬件数据读取组件。", "Close and recreate the hardware data readers."),
+            _restartReaders,
+            "\uE72C"));
         root.Children.Add(Card(
             L("全局设置", "Global settings"),
             global,
             L("管理界面语言、外观和信息更新频率。", "Manage language, appearance, and information updates."),
             "\uE713"));
+        _overviewEditorHost.Child = BuildOverviewEditor();
+        _overviewEditorHost.Visibility = Visibility.Collapsed;
+        _overviewEditorHost.Margin = new Thickness(0, -4, 0, 12);
+        root.Children.Add(_overviewEditorHost);
 
         var startup = new StackPanel();
         startup.Children.Add(SettingRow(
@@ -121,6 +147,18 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 FanIoIntervalDescription(),
                 BuildFanIoIntervalEditor(),
                 "\uE823"));
+            startup.Children.Add(SettingRow(
+                L("使用替代方案维持风扇满转", "Use alternative full-speed method"),
+                L(
+                    "写入设置的风扇上限作为满转手段。",
+                    "Use the configured fan maximum as the full-speed target."),
+                _alternativeFullSpeed));
+            startup.Children.Add(SettingRow(
+                L("持续写入风扇值", "Continuously write fan targets"),
+                L(
+                    "目标不变时也持续写入；间隔取状态刷新与风扇写入间隔中的较大值。",
+                    "Rewrite unchanged targets using the longer of the status-refresh and fan-write intervals."),
+                _continuousFanWrites));
         }
         root.Children.Add(Card(
             L("启动与窗口行为", "Startup and window behavior"),
@@ -342,6 +380,53 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 : L("设置失败，已回滚：", "Setting failed and was rolled back: ") + error;
             SyncControls();
         };
+        _alternativeFullSpeed.Click += (_, _) =>
+        {
+            if (_syncing) return;
+            _viewModel.Status = Runtime.TrySetAlternativeFullSpeedMethod(
+                    _alternativeFullSpeed.IsChecked == true,
+                    out var error)
+                ? string.Empty
+                : L("设置失败，已回滚：", "Setting failed and was rolled back: ") + error;
+            SyncControls();
+        };
+        _continuousFanWrites.Click += (_, _) =>
+        {
+            if (_syncing) return;
+            _viewModel.Status = Runtime.TrySetContinuouslyWriteFanTargets(
+                    _continuousFanWrites.IsChecked == true,
+                    out var error)
+                ? string.Empty
+                : L("设置失败，已回滚：", "Setting failed and was rolled back: ") + error;
+            SyncControls();
+        };
+        _editOverview.Click += (_, _) =>
+        {
+            var show = _overviewEditorHost.Visibility != Visibility.Visible;
+            if (show)
+            {
+                _overviewDraft = OverviewLayoutDefaults.Clone(
+                    Runtime.Settings.OverviewLayout);
+                SyncOverviewEditor();
+            }
+            _overviewEditorHost.Visibility = show
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            _editOverview.Content = show
+                ? L("收起编辑", "Close editor")
+                : L("编辑概览页", "Edit overview");
+        };
+        _restartReaders.Click += async (_, _) =>
+        {
+            _restartReaders.IsEnabled = false;
+            _viewModel.Status = L("正在重新加载读数……", "Restarting readers…");
+            var error = await Runtime.RestartDataReadersAsync();
+            _viewModel.Status = string.IsNullOrWhiteSpace(error)
+                ? L("读数已刷新。", "Readings refreshed.")
+                : L("刷新失败：", "Refresh failed: ") + error;
+            _restartReaders.IsEnabled = true;
+            _status.Text = _viewModel.Status;
+        };
         _fanReadMinimumInterval.LostKeyboardFocus += (_, _) =>
             SaveFanIoIntervals();
         _fanWriteMinimumInterval.LostKeyboardFocus += (_, _) =>
@@ -366,6 +451,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             Runtime.FanBackendSupportsDisableControlOnSleep
                 ? settings.DisableControlOnSleep
                 : settings.AttemptDisableControlOnSleepWhenUnsupported;
+        _alternativeFullSpeed.IsChecked = settings.UseAlternativeFullSpeedMethod;
+        _continuousFanWrites.IsChecked = settings.ContinuouslyWriteFanTargets;
         if (_disableOnSleepRow is not null)
         {
             _disableOnSleepRow.Visibility = Runtime.CanConfigureSleepFanControl
@@ -379,6 +466,164 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _status.Text = _viewModel.Status;
         _syncing = false;
     }
+
+    private UIElement BuildOverviewEditor()
+    {
+        var content = new StackPanel();
+        foreach (var definition in OverviewLayoutDefaults.CardDefinitions)
+        {
+            var items = new StackPanel { Margin = new Thickness(28, 5, 0, 0) };
+            var cardToggle = new CheckBox
+            {
+                Content = OverviewCardName(definition.Key),
+                FontWeight = FontWeights.SemiBold
+            };
+            _overviewCardToggles[definition.Key] = cardToggle;
+            cardToggle.Click += (_, _) =>
+            {
+                if (_syncing) return;
+                var card = _overviewDraft.Cards[definition.Key];
+                card.Enabled = cardToggle.IsChecked == true;
+                if (card.Enabled && card.Items.Count > 0 &&
+                    card.Items.Values.All(value => !value))
+                {
+                    foreach (var item in card.Items.Keys.ToArray())
+                        card.Items[item] = true;
+                }
+                SyncOverviewEditor();
+            };
+            foreach (var itemId in definition.Value)
+            {
+                var itemToggle = new CheckBox
+                {
+                    Content = OverviewItemName(definition.Key, itemId),
+                    Margin = new Thickness(0, 4, 0, 4)
+                };
+                _overviewItemToggles[(definition.Key, itemId)] = itemToggle;
+                itemToggle.Click += (_, _) =>
+                {
+                    if (_syncing) return;
+                    var card = _overviewDraft.Cards[definition.Key];
+                    card.Items[itemId] = itemToggle.IsChecked == true;
+                    card.Enabled = card.Items.Values.Any(value => value);
+                    SyncOverviewEditor();
+                };
+                items.Children.Add(itemToggle);
+            }
+            var section = new StackPanel();
+            section.Children.Add(cardToggle);
+            section.Children.Add(items);
+            content.Children.Add(new Border
+            {
+                Background = Brush(Palette.SurfaceRaised),
+                BorderBrush = Brush(Palette.Border),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(13),
+                Margin = new Thickness(0, 0, 0, 8),
+                Child = section
+            });
+        }
+        var apply = ActionButton(L("应用", "Apply"), primary: true);
+        var cancel = ActionButton(L("取消", "Cancel"));
+        apply.Click += (_, _) =>
+        {
+            _viewModel.Status = Runtime.TrySetOverviewLayout(_overviewDraft, out var error)
+                ? string.Empty
+                : L("概览页设置保存失败：", "Could not save overview settings: ") + error;
+            _overviewEditorHost.Visibility = Visibility.Collapsed;
+            _editOverview.Content = L("编辑概览页", "Edit overview");
+            _status.Text = _viewModel.Status;
+        };
+        cancel.Click += (_, _) =>
+        {
+            _overviewEditorHost.Visibility = Visibility.Collapsed;
+            _editOverview.Content = L("编辑概览页", "Edit overview");
+        };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        buttons.Children.Add(apply);
+        buttons.Children.Add(cancel);
+        content.Children.Add(buttons);
+        return Card(
+            L("编辑概览页", "Edit overview"),
+            content,
+            L("关闭单项后，同一行剩余的数据会自动占满整行。", "When one item in a pair is hidden, the remaining item fills the row."),
+            "\uE70F");
+    }
+
+    private void SyncOverviewEditor()
+    {
+        var wasSyncing = _syncing;
+        _syncing = true;
+        foreach (var pair in _overviewCardToggles)
+            pair.Value.IsChecked = _overviewDraft.Cards[pair.Key].Enabled;
+        foreach (var pair in _overviewItemToggles)
+        {
+            var card = _overviewDraft.Cards[pair.Key.Card];
+            pair.Value.IsChecked = card.Items[pair.Key.Item];
+            pair.Value.IsEnabled = card.Enabled;
+        }
+        _syncing = wasSyncing;
+    }
+
+    private string OverviewCardName(string id) => id switch
+    {
+        OverviewCardIds.Cpu => "CPU",
+        OverviewCardIds.Gpu => "GPU",
+        OverviewCardIds.Battery => L("电池", "Battery"),
+        OverviewCardIds.MemoryStorage => L("内存与硬盘", "Memory and storage"),
+        OverviewCardIds.Fans => L("风扇", "Fans"),
+        OverviewCardIds.Power => L("功耗限制", "Power limits"),
+        OverviewCardIds.Warranty => L("保修信息", "Warranty"),
+        _ => id
+    };
+
+    private string OverviewItemName(string card, string item) =>
+        (card, item) switch
+        {
+            (OverviewCardIds.Cpu, "utilization") => L("利用率", "Utilization"),
+            (OverviewCardIds.Cpu, "average-frequency") => L("平均频率", "Average frequency"),
+            (OverviewCardIds.Cpu, "maximum-frequency") => L("最高频率", "Maximum frequency"),
+            (OverviewCardIds.Cpu, "temperature") => L("温度", "Temperature"),
+            (OverviewCardIds.Cpu, "power") => L("功耗", "Power"),
+            (OverviewCardIds.Gpu, "utilization") => L("利用率", "Utilization"),
+            (OverviewCardIds.Gpu, "vram-utilization") => L("显存利用率", "VRAM utilization"),
+            (OverviewCardIds.Gpu, "core-frequency") => L("核心频率", "Core frequency"),
+            (OverviewCardIds.Gpu, "vram-frequency") => L("显存频率", "VRAM frequency"),
+            (OverviewCardIds.Gpu, "core-temperature") => L("核心温度", "Core temperature"),
+            (OverviewCardIds.Gpu, "hotspot-temperature") => L("热点温度", "Hot spot temperature"),
+            (OverviewCardIds.Gpu, "vram-temperature") => L("显存温度", "VRAM temperature"),
+            (OverviewCardIds.Gpu, "power") => L("功耗", "Power"),
+            (OverviewCardIds.Battery, "status") => L("当前状态", "Status"),
+            (OverviewCardIds.Battery, "charge") => L("电量", "Charge"),
+            (OverviewCardIds.Battery, "health") => L("健康度", "Health"),
+            (OverviewCardIds.Battery, "power") => L("功率", "Power"),
+            (OverviewCardIds.MemoryStorage, "physical-memory") => L("物理内存", "Physical memory"),
+            (OverviewCardIds.MemoryStorage, "virtual-memory") => L("虚拟内存", "Virtual memory"),
+            (OverviewCardIds.MemoryStorage, "slot1-temperature") => L("内存插槽1温度", "Memory slot 1 temperature"),
+            (OverviewCardIds.MemoryStorage, "slot2-temperature") => L("内存插槽2温度", "Memory slot 2 temperature"),
+            (OverviewCardIds.MemoryStorage, "disk-temperatures") => L("所有硬盘温度", "All disk temperatures"),
+            (OverviewCardIds.MemoryStorage, "disk-health") => L("所有硬盘健康度", "All disk health"),
+            (OverviewCardIds.Fans, "fan1-speed") => L("风扇1转速", "Fan 1 speed"),
+            (OverviewCardIds.Fans, "fan2-speed") => L("风扇2转速", "Fan 2 speed"),
+            (OverviewCardIds.Fans, "fan1-target") => L("风扇1目标", "Fan 1 target"),
+            (OverviewCardIds.Fans, "fan2-target") => L("风扇2目标", "Fan 2 target"),
+            (OverviewCardIds.Power, "cpu-pl1") => "CPU PL1",
+            (OverviewCardIds.Power, "cpu-pl2") => "CPU PL2",
+            (OverviewCardIds.Power, "cpu-temperature") => L("CPU 温度上限", "CPU temperature limit"),
+            (OverviewCardIds.Power, "turbo-time") => "CPU Turbo Time Limit",
+            (OverviewCardIds.Power, "gpu-boost") => "GPU Power Boost",
+            (OverviewCardIds.Power, "gpu-tgp") => "GPU TGP",
+            (OverviewCardIds.Power, "gpu-temperature") => L("GPU 温度上限", "GPU temperature limit"),
+            (OverviewCardIds.Power, "gpu-to-cpu") => "GPU to CPU Dynamic Boost",
+            (OverviewCardIds.Power, "atpp") => "ATPP",
+            _ => item
+        };
 
     private UIElement BuildFanIoIntervalEditor()
     {
@@ -582,7 +827,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.FanControl => L("部分风扇功能暂时不可用。", "Some fan functions are unavailable."),
             FeatureIds.SleepFanControl => L("睡眠期间的风扇控制仅部分可用。", "Fan handling during sleep is only partially available."),
             FeatureIds.PowerSettings when feature.PartiallyAvailable =>
-                L("可以查看当前功耗参数，但此设备不支持修改。", "Current power values are available, but this device does not support changing them."),
+                PowerSettingsController.CurrentProfile.Writable
+                    ? L("可读取并调整已检测到的功耗参数。", "Detected power values can be read and adjusted.")
+                    : L("可以查看当前功耗参数，但此设备不支持修改。", "Current power values are available, but this device does not support changing them."),
             _ => L("此功能仅部分可用。", "This feature is only partially available.")
         };
     }

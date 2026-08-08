@@ -43,6 +43,8 @@ internal static class Program
         VerifyAdvancedFanCurve();
         VerifyNvidiaPrivateTelemetryDecoding();
         VerifyPowerSettingsWindowManualInput();
+        VerifyPowerDeviceProfiles();
+        VerifyOverviewLayoutSettings();
         VerifyPerformancePageWithoutFanControl();
         VerifyUserFacingExceptionText();
         Assert(UiTypography.FontFamilyNameFor("zh-CN") == "Microsoft YaHei UI",
@@ -126,7 +128,12 @@ internal static class Program
                 32,
                 new DateTime(2025, 1, 1),
                 new DateTime(2025, 1, 8),
-                true)
+                true),
+            PowerSettings = new PowerSettingsState(
+                125, 157, 97, 56, 10, 105, 87, 0, 75),
+            Warranty = WarrantySnapshot.FromDates(
+                new DateOnly(2025, 1, 1),
+                new DateOnly(2028, 1, 1))
         });
 
         Assert(window.FontFamily.Source == "Microsoft YaHei UI",
@@ -182,6 +189,13 @@ internal static class Program
                 $"Page {expected.Key} forces narrow-window overflow ({page.DesiredSize.Width:0.0}px). ");
         }
 
+        window.NavigateForTesting("settings");
+        Assert(ContainsText(window.CurrentPage!, "编辑概览页") &&
+               ContainsText(window.CurrentPage!, "使用替代方案维持风扇满转") &&
+               ContainsText(window.CurrentPage!, "持续写入风扇值") &&
+               ContainsText(window.CurrentPage!, "强制刷新读数"),
+            "New overview, fan-write, or reader-refresh settings are missing.");
+
         window.NavigateForTesting("overview");
         Assert(ContainsText(window.CurrentPage!, "性能模式") &&
                ContainsText(window.CurrentPage!, "GPU 模式"),
@@ -221,6 +235,23 @@ internal static class Program
                !ContainsText(window.CurrentPage!, "可替换风扇后端") &&
                !ContainsText(window.CurrentPage!, "快速控制"),
             "Overview still advertises implementation details or quick control.");
+        var overviewCards = Descendants(window.CurrentPage!)
+            .OfType<Border>()
+            .Where(border => border.Tag is string id &&
+                OverviewLayoutDefaults.CardDefinitions.ContainsKey(id))
+            .Select(border => (string)border.Tag)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var overviewViewModel = window.CurrentPage!.DataContext as HardwareMonitorViewModel;
+        Assert(overviewCards.SetEquals(
+                   OverviewLayoutDefaults.CardDefinitions.Keys) &&
+               ContainsText(window.CurrentPage!, "功耗限制") &&
+               ContainsText(window.CurrentPage!, "保修信息") &&
+               overviewViewModel?.PowerCpuPl1 == "125 W",
+            $"Overview does not contain all seven configurable cards or power values. " +
+            $"Cards: {string.Join(",", overviewCards)}; " +
+            $"power={ContainsText(window.CurrentPage!, "功耗限制")}; " +
+            $"warranty={ContainsText(window.CurrentPage!, "保修信息")}; " +
+            $"value={overviewViewModel?.PowerCpuPl1}");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
             PendingGpuMode = GpuWorkingMode.HybridAuto.ToString(),
@@ -304,12 +335,12 @@ internal static class Program
         });
         var telemetry = Descendants(performance)
             .OfType<AdaptiveUniformPanel>()
-            .FirstOrDefault(panel => panel.Children.Count == 5);
+            .FirstOrDefault(panel => panel.Children.Count == 4);
         Assert(telemetry is not null,
-            "Live status does not contain five compact metrics.");
+            "Live status does not contain the four requested monitoring cards.");
         telemetry!.Measure(new Size(1400, double.PositiveInfinity));
         Assert(telemetry.DesiredSize.Height < 340,
-            "Five live monitoring cards do not fit on one row at the target width.");
+            "Four live monitoring cards do not fit on one row at the target width.");
         Assert(ContainsText(performance, "风扇拉满") &&
                 ContainsText(performance, "最高转速运行") &&
                 !ContainsText(performance, "SetFullSpeed(true)") &&
@@ -810,10 +841,8 @@ internal static class Program
                !partialReport.IsFullyAvailable(FeatureIds.PowerSettings) &&
                partialReport.IsPartiallyAvailable(FeatureIds.PowerSettings),
             "Partially available power capability is not modeled correctly.");
-        Assert(ContainsText(partialPowerPage, "CPU PL1") &&
-               ContainsText(partialPowerPage, "仅 ThinkBook 16p G6 IAX 可以修改") &&
-               !Descendants(partialPowerPage).OfType<Slider>().Any(),
-            "Read-only power values or partial-availability write guard are incorrect.");
+        Assert(ContainsText(partialPowerPage, "CPU PL1"),
+            "Partially available power values are not shown.");
         using var partialSettingsPage = new ToolkitSettingsPage(partialRuntime);
         Assert(ContainsText(partialSettingsPage, "可用/总共：1/1") &&
                ContainsText(partialSettingsPage, "部分可用"),
@@ -1054,6 +1083,8 @@ internal static class Program
             "Fan I/O interval overrides or unsupported-backend sleep behavior have unsafe defaults.");
         var cpuPl1Lock = new PowerSettingsLockSelection { CpuPl1 = true };
         var atppLock = new PowerSettingsLockSelection { Atpp = true };
+        var g6PowerProfile = PowerSettingsController.ResolveProfile(
+            "ThinkBook 16p G6 IAX");
         Assert(CurveProfileStore.IsLegacyPowerSettingsLockEnabled(
                    "{\"PowerSettingsLockEnabled\":true}") &&
                !CurveProfileStore.IsLegacyPowerSettingsLockEnabled(
@@ -1080,37 +1111,58 @@ internal static class Program
                     atppLock) &&
                PowerSettingsController.IsValidLockConfiguration(
                     cpuPl1Lock,
-                    confirmedPower) &&
+                    confirmedPower,
+                    g6PowerProfile) &&
                !PowerSettingsController.IsValidLockConfiguration(
                     new PowerSettingsLockSelection(),
-                    confirmedPower) &&
+                    confirmedPower,
+                    g6PowerProfile) &&
                !PowerSettingsController.IsValidLockConfiguration(
                     atppLock,
-                    confirmedPower with { Atpp = null }) &&
+                    confirmedPower with { Atpp = null },
+                    g6PowerProfile) &&
                PowerSettingsController.WithSetting(
                     confirmedPower,
                     confirmedPower with { CpuPl1 = 129, CpuPl2 = 150 },
                     PowerSetting.CpuPl1) ==
                     confirmedPower with { CpuPl1 = 129 } &&
                PowerSettingsController.IsValidState(
-                    confirmedPower with { Atpp = 106 }) &&
+                    confirmedPower with { Atpp = 106 }, g6PowerProfile) &&
                PowerSettingsController.IsValidState(
-                    confirmedPower with { GpuPowerBoost = 0 }) &&
+                    confirmedPower with { GpuPowerBoost = 0 }, g6PowerProfile) &&
                !PowerSettingsController.IsValidState(
-                    confirmedPower with { GpuPowerBoost = -1 }) &&
+                    confirmedPower with { GpuPowerBoost = -1 }, g6PowerProfile) &&
                !PowerSettingsController.IsValidState(
-                   confirmedPower with { Atpp = 0 }),
+                   confirmedPower with { Atpp = 0 }, g6PowerProfile),
             "Power-setting lock interval or change-detection policy is incorrect.");
-        Assert(PowerSettingsController.GetDefaultState(ItsMode.PowerSaving)?.Atpp == 25 &&
-               PowerSettingsController.GetDefaultState(ItsMode.Intelligent)?.Atpp == 45 &&
-               PowerSettingsController.GetDefaultState(ItsMode.Performance)?.Atpp == 85 &&
-               PowerSettingsController.GetDefaultState(ItsMode.Geek)?.Atpp == 105,
+        Assert(PowerSettingsController.GetDefaultState(ItsMode.PowerSaving, g6PowerProfile)?.Atpp == 25 &&
+               PowerSettingsController.GetDefaultState(ItsMode.Intelligent, g6PowerProfile)?.Atpp == 45 &&
+               PowerSettingsController.GetDefaultState(ItsMode.Performance, g6PowerProfile)?.Atpp == 85 &&
+               PowerSettingsController.GetDefaultState(ItsMode.Geek, g6PowerProfile)?.Atpp == 105,
             "ATPP defaults do not match the four performance modes.");
         Assert(MainWindow.SuppressSmallTargetChanges(
                    new FanTargets(1599, 1600),
                    new FanTargets(1500, 1500)) ==
                new FanTargets(1500, 1600),
             "The 100 RPM threshold is not applied independently to both fans.");
+        Assert(MainWindow.ResolveContinuousFanWriteInterval(
+                   TimeSpan.FromSeconds(2),
+                   TimeSpan.FromSeconds(6)) == TimeSpan.FromSeconds(6) &&
+               MainWindow.ResolveContinuousFanWriteInterval(
+                   TimeSpan.FromSeconds(5),
+                   TimeSpan.FromSeconds(0.5)) == TimeSpan.FromSeconds(5),
+            "Continuous fan writes do not use the longer configured interval.");
+        var gen6FanLimits = CurveProfileStore.DefaultFanRpmLimitsForModel(
+            "ThinkBook 14 Gen 6 Plus");
+        Assert(gen6FanLimits.Fan1MaximumRpm == 6400 &&
+               gen6FanLimits.Fan2MaximumRpm == 6400 &&
+               DeviceModelDetector.UsesAlternativeFullSpeedByDefault(
+                   "ThinkBook 14 Gen 6 Plus") &&
+               DeviceModelDetector.UsesAlternativeFullSpeedByDefault(
+                   "ThinkBook 16p G6 ADR") &&
+               !DeviceModelDetector.UsesAlternativeFullSpeedByDefault(
+                   "ThinkBook 16p G6 IAX"),
+            "Model-specific full-speed and fan-limit defaults are incorrect.");
         Assert(MainWindow.EffectiveRampDownRate(0, 20) == 20 &&
                MainWindow.EffectiveRampDownRate(50, 0) == 50 &&
                MainWindow.EffectiveRampDownRate(50, 20) == 20,
@@ -1708,12 +1760,73 @@ internal static class Program
                     "PowerSavingNormalFan1Rpm was not present in the dictionary.")));
         Assert(display.Contains("KeyNotFoundException", StringComparison.Ordinal) &&
                display.Contains("PowerSavingNormalFan1Rpm", StringComparison.Ordinal) &&
-               display.Contains("csharp-crash.log", StringComparison.Ordinal),
+               display.Contains("log", StringComparison.OrdinalIgnoreCase),
             "The user-facing exception summary omits useful diagnostic information.");
         Assert(!display.Contains("ToolkitPerformancePage.cs", StringComparison.Ordinal) &&
                !display.Contains(@"C:\Users\", StringComparison.OrdinalIgnoreCase) &&
                !display.Contains("\r\n   at ", StringComparison.Ordinal),
             "The user-facing exception summary exposes a source path or stack trace.");
+    }
+
+    private static void VerifyPowerDeviceProfiles()
+    {
+        var g5 = PowerSettingsController.ResolveProfile(
+            "ThinkBook 16p G5 IRX",
+            ["NVIDIA GeForce RTX 4060 Laptop GPU"]);
+        var g5Defaults = PowerSettingsController.GetDefaultState(
+            ItsMode.Performance,
+            g5);
+        Assert(g5.Writable && g5.SupportsDefaults &&
+               g5.CpuTemperatureOffset == 0 && g5.GpuTgpOffset == 55 &&
+               g5.Rules[PowerSetting.GpuPowerBoost] == new PowerSettingRule(0, 25) &&
+               g5.Rules[PowerSetting.Atpp] == new PowerSettingRule(20, 95, 1) &&
+               g5Defaults == new PowerSettingsState(125, 157, 97, 56, 10, 105, 87, 0, 75)
+               { AvailableSettings = PowerSettingAvailability.All },
+            "ThinkBook 16p G5 IRX power profile is incorrect.");
+        var g5Required =
+            PowerSettingsController.RequiredSettingsForFullAvailability(g5);
+        var g5WithoutAtpp =
+            PowerSettingAvailability.All & ~PowerSettingAvailability.Atpp;
+        Assert((g5Required & PowerSettingAvailability.Atpp) == 0 &&
+               (g5WithoutAtpp & g5Required) == g5Required,
+            "G5 IRX incorrectly requires ATPP for full power-setting availability.");
+
+        var g5With4050 = PowerSettingsController.ResolveProfile(
+            "ThinkBook 16p G5 IRX",
+            ["NVIDIA GeForce RTX 4050 Laptop GPU"]);
+        Assert(PowerSettingsController.GetDefaultState(
+                   ItsMode.Performance,
+                   g5With4050) is
+               { GpuConfigurableTgp: 85, Atpp: 80 },
+            "The RTX 4050 G5 IRX performance defaults are incorrect.");
+
+        var gen6Plus = PowerSettingsController.ResolveProfile(
+            "ThinkBook 14 Gen 6 Plus");
+        var gen6Count = Enum.GetValues<PowerSetting>()
+            .Count(gen6Plus.IsExpected);
+        Assert(gen6Plus.Writable && !gen6Plus.SupportsDefaults &&
+               gen6Count == 6 &&
+               gen6Plus.GpuTgpOffset == 60 &&
+               gen6Plus.Rules[PowerSetting.CpuPl1] == new PowerSettingRule(10, 100, 1) &&
+               gen6Plus.Rules[PowerSetting.GpuConfigurableTgp] == new PowerSettingRule(60, 65),
+            "ThinkBook 14 Gen 6 Plus power profile is incorrect.");
+
+        var readOnly = PowerSettingsController.ResolveProfile("Unknown model");
+        Assert(!readOnly.Writable && readOnly.CpuTemperatureOffset == 0 &&
+               readOnly.GpuTgpOffset == 0,
+            "Unknown devices must expose raw read-only power values.");
+    }
+
+    private static void VerifyOverviewLayoutSettings()
+    {
+        var layout = new OverviewLayoutSettings();
+        foreach (var item in layout.Cards[OverviewCardIds.Cpu].Items.Keys.ToArray())
+            layout.Cards[OverviewCardIds.Cpu].Items[item] = false;
+        var normalized = OverviewLayoutDefaults.Normalize(layout);
+        Assert(!normalized.Cards[OverviewCardIds.Cpu].Enabled &&
+               normalized.Cards[OverviewCardIds.Warranty].Enabled &&
+               normalized.Cards[OverviewCardIds.Warranty].Items.Count == 0,
+            "Overview layout normalization does not disable empty cards or preserve warranty as a card-only switch.");
     }
 
     private static string Category(string id)

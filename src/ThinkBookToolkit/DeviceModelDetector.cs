@@ -5,7 +5,10 @@ namespace ThinkBookToolkit;
 
 internal static class DeviceModelDetector
 {
-    private const string SupportedPowerModel = "ThinkBook 16p G6 IAX";
+    public const string ThinkBook16pG6Iax = "ThinkBook 16p G6 IAX";
+    public const string ThinkBook16pG5Irx = "ThinkBook 16p G5 IRX";
+    public const string ThinkBook16pG6Adr = "ThinkBook 16p G6 ADR";
+    public const string ThinkBook14Gen6Plus = "ThinkBook 14 Gen 6 Plus";
     private static readonly Lazy<DeviceIdentity> Identity = new(
         DeviceInformationService.ReadIdentity);
 
@@ -13,15 +16,30 @@ internal static class DeviceModelDetector
 
     public static bool IsThinkBook16pG6Iax()
     {
-        var model = Normalize(Identity.Value.Model);
-        return string.Equals(
-                   model,
-                   Normalize(SupportedPowerModel),
-                   StringComparison.OrdinalIgnoreCase) ||
-               model.Contains(
-                   Normalize(SupportedPowerModel),
-                   StringComparison.OrdinalIgnoreCase);
+        return IsModel(ThinkBook16pG6Iax);
     }
+
+    public static bool IsThinkBook16pG5Irx() => IsModel(ThinkBook16pG5Irx);
+
+    public static bool IsThinkBook14Gen6Plus() => IsModel(ThinkBook14Gen6Plus);
+
+    public static bool UsesAlternativeFullSpeedByDefault() =>
+        UsesAlternativeFullSpeedByDefault(Identity.Value.Model);
+
+    internal static bool UsesAlternativeFullSpeedByDefault(string model) =>
+        ModelMatches(model, ThinkBook16pG6Adr) ||
+        ModelMatches(model, ThinkBook14Gen6Plus);
+
+    internal static bool ModelMatches(string actual, string expected)
+    {
+        var model = Normalize(actual);
+        var target = Normalize(expected);
+        return string.Equals(model, target, StringComparison.OrdinalIgnoreCase) ||
+               model.Contains(target, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsModel(string expected) =>
+        ModelMatches(Identity.Value.Model, expected);
 
     private static string Normalize(string value) =>
         string.Join(

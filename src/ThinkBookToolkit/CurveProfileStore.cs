@@ -18,6 +18,20 @@ public static class CurveProfileStore
     public const int AbsoluteMinimumFanRpm = 0;
     public const int AbsoluteMaximumFanRpm = 10000;
 
+    public static FanRpmLimits DefaultFanRpmLimitsForCurrentDevice() =>
+        DefaultFanRpmLimitsForModel(DeviceModelDetector.CurrentIdentity.Model);
+
+    internal static FanRpmLimits DefaultFanRpmLimitsForModel(string model) =>
+        DeviceModelDetector.ModelMatches(model, DeviceModelDetector.ThinkBook14Gen6Plus)
+            ? new FanRpmLimits
+            {
+                Fan1MinimumRpm = DefaultMinimumFanRpm,
+                Fan1MaximumRpm = 6400,
+                Fan2MinimumRpm = DefaultMinimumFanRpm,
+                Fan2MaximumRpm = 6400
+            }
+            : new FanRpmLimits();
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -100,6 +114,7 @@ public static class CurveProfileStore
     public static AppSettings LoadSettings()
     {
         var defaults = LoadDefaultSettings();
+        ApplyDeviceDefaults(defaults, settingsJson: null);
         if (!File.Exists(SettingsPath))
             return defaults;
 
@@ -139,7 +154,9 @@ public static class CurveProfileStore
                     nameof(AppSettings.FanRpmLimitsCustomized),
                     StringComparison.OrdinalIgnoreCase) &&
                 loaded.FanRpmLimitsCustomized;
-            defaults.FanRpmLimits = NormalizeFanRpmLimits(loaded.FanRpmLimits);
+            defaults.FanRpmLimits = defaults.FanRpmLimitsCustomized
+                ? NormalizeFanRpmLimits(loaded.FanRpmLimits)
+                : DefaultFanRpmLimitsForCurrentDevice();
             defaults.FixedRpm = NormalizeFixedRpmSettings(
                 MigrateLegacyFixedRpm(settingsJson, loaded.FixedRpm ?? defaults.FixedRpm),
                 defaults.FanRpmLimits);
@@ -168,6 +185,15 @@ public static class CurveProfileStore
                 defaults.FanWriteMinimumIntervalSeconds =
                     loaded.FanWriteMinimumIntervalSeconds;
             }
+            defaults.UseAlternativeFullSpeedMethod = settingsJson.Contains(
+                    nameof(AppSettings.UseAlternativeFullSpeedMethod),
+                    StringComparison.OrdinalIgnoreCase)
+                ? loaded.UseAlternativeFullSpeedMethod
+                : DeviceModelDetector.UsesAlternativeFullSpeedByDefault();
+            defaults.ContinuouslyWriteFanTargets =
+                loaded.ContinuouslyWriteFanTargets;
+            defaults.OverviewLayout = OverviewLayoutDefaults.Normalize(
+                loaded.OverviewLayout);
             defaults.PowerSettingsLockIntervalSeconds =
                 PowerSettingsController.IsSupportedLockInterval(
                     loaded.PowerSettingsLockIntervalSeconds)
@@ -259,9 +285,29 @@ public static class CurveProfileStore
         settings.AdvancedFanCurve = AdvancedFanCurve.Normalize(
             settings.AdvancedFanCurve,
             NormalizeFanRpmLimits(settings.FanRpmLimits));
+        settings.OverviewLayout = OverviewLayoutDefaults.Normalize(
+            settings.OverviewLayout);
         WriteTextAtomically(
             SettingsPath,
             JsonSerializer.Serialize(settings, JsonOptions));
+    }
+
+    private static void ApplyDeviceDefaults(
+        AppSettings settings,
+        string? settingsJson)
+    {
+        if (!settings.FanRpmLimitsCustomized)
+            settings.FanRpmLimits = DefaultFanRpmLimitsForCurrentDevice();
+        if (settingsJson is null ||
+            !settingsJson.Contains(
+                nameof(AppSettings.UseAlternativeFullSpeedMethod),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            settings.UseAlternativeFullSpeedMethod =
+                DeviceModelDetector.UsesAlternativeFullSpeedByDefault();
+        }
+        settings.OverviewLayout = OverviewLayoutDefaults.Normalize(
+            settings.OverviewLayout);
     }
 
     internal static PowerSettingsLockSelection NormalizePowerSettingsLocks(

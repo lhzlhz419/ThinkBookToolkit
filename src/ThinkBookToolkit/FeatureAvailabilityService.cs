@@ -151,21 +151,24 @@ internal static class FeatureAvailabilityService
         try
         {
             var power = PowerSettingsController.ReadState();
-            var writable = DeviceModelDetector.IsThinkBook16pG6Iax();
-            var atppAvailable = power.Atpp.HasValue;
-            var readableCount = atppAvailable ? 9 : 8;
+            var profile = PowerSettingsController.CurrentProfile;
+            var readableCount = Enum.GetValues<PowerSetting>()
+                .Count(power.IsAvailable);
+            var required =
+                PowerSettingsController.RequiredSettingsForFullAvailability(profile);
+            var fullyWritable = profile.Writable &&
+                (power.AvailableSettings & required) == required;
+            var atppAvailable = power.IsAvailable(PowerSetting.Atpp);
             result.Add(new(
                 FeatureIds.PowerSettings,
                 "性能与散热",
                 "功耗设置",
-                writable,
-                writable
-                    ? atppAvailable
-                        ? "ATPP 可调整。"
-                        : "8 项功耗参数可读取和写入"
-                    : $"{readableCount} 项功耗参数可读取；写入仅支持 ThinkBook 16p G6 IAX，当前为 {DeviceModelDetector.CurrentIdentity.Model}",
-                PartiallyAvailable: !writable,
-                EnglishDetail: writable && atppAvailable
+                fullyWritable,
+                fullyWritable
+                    ? atppAvailable ? "功耗设置可用，ATPP 可调整。" : "功耗设置可用。"
+                    : $"{readableCount} 项功耗参数可读取。",
+                PartiallyAvailable: readableCount > 0 && !fullyWritable,
+                EnglishDetail: fullyWritable && atppAvailable
                     ? "ATPP is adjustable."
                     : null));
         }

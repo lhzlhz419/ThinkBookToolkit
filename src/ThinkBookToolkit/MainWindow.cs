@@ -175,6 +175,7 @@ public sealed class MainWindow : Window
     private bool _fixedControlSampling;
     private bool _fanWriteInProgress;
     private bool _fullSpeedEnabled;
+    private bool _fullSpeedUsesAlternativeMethod;
     private bool _fullSpeedSwitching;
     private bool _resumeFanControlAfterFullSpeed;
     private bool _sleepTransitionPending;
@@ -265,7 +266,8 @@ public sealed class MainWindow : Window
         _gpuModeCombo.VerticalAlignment = VerticalAlignment.Center;
         _settings = sharedSettings ?? CurveProfileStore.LoadSettings();
         if (!_settings.FanRpmLimitsCustomized)
-            _settings.FanRpmLimits = new FanRpmLimits();
+            _settings.FanRpmLimits =
+                CurveProfileStore.DefaultFanRpmLimitsForCurrentDevice();
         _defaultFanRangeResolved = _settings.FanRpmLimitsCustomized;
         FontFamily = UiTypography.FontFamilyFor(_settings.Language);
         _pendingGpuMode = ParsePendingGpuMode(_settings.PendingGpuMode);
@@ -442,6 +444,21 @@ public sealed class MainWindow : Window
     }
 
     internal Task RuntimeRefreshAsync() => SampleAsync(force: true);
+
+    internal async Task RuntimeRestartDataReadersAsync()
+    {
+        _timer.Stop();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(2);
+        while (_temperatureSampling && DateTimeOffset.UtcNow < deadline)
+            await Task.Delay(25);
+        _temperatureReader?.Dispose();
+        _temperatureReader = new TemperatureReader();
+        _latestTemperatureSnapshot = null;
+        _smoothedCpuTempC = null;
+        _smoothedGpuTempC = null;
+        _timer.Start();
+        await SampleAsync(force: true);
+    }
 
     internal void RuntimeSelectProfile(int index)
     {
@@ -1300,6 +1317,11 @@ public sealed class MainWindow : Window
 
             if (_fullSpeedEnabled)
             {
+                if (_fullSpeedUsesAlternativeMethod &&
+                    ShouldContinuouslyRewriteFanTarget())
+                {
+                    await WriteAlternativeFullSpeedWithLockAsync();
+                }
                 UpdateTemperatureUi(temps);
                 _targetText.Text = T("FullSpeed");
                 _cpuChart.SetCurrentTemp(temps.CpuTempC);
@@ -1367,7 +1389,8 @@ public sealed class MainWindow : Window
                     _lastTarget = target;
 
                 var targetToApply = SuppressSmallTargetChanges(target);
-                if (targetToApply != _lastAppliedTarget)
+                if (targetToApply != _lastAppliedTarget ||
+                    ShouldContinuouslyRewriteFanTarget())
                     QueueTargetApply(targetToApply);
             }
             if (!_running)
@@ -1525,7 +1548,8 @@ public sealed class MainWindow : Window
 
                 if (_lastTarget is FanTargets latestTarget)
                     target = SuppressSmallTargetChanges(latestTarget);
-                if (target == _lastAppliedTarget)
+                if (target == _lastAppliedTarget &&
+                    !ShouldContinuouslyRewriteFanTarget())
                     continue;
 
                 await _fanIoLock.WaitAsync();
@@ -2427,7 +2451,10 @@ public sealed class MainWindow : Window
             {
                 try
                 {
-                    _fanController.SetFullSpeed(false);
+                    if (_fullSpeedUsesAlternativeMethod)
+                        _fanController.RestoreAuto();
+                    else
+                        _fanController.SetFullSpeed(false);
                 }
                 catch (Exception ex)
                 {
@@ -2680,7 +2707,8 @@ public sealed class MainWindow : Window
             target.Fan2Rpm == 0;
         if (!restoreAutomatic)
             target = SuppressSmallTargetChanges(target);
-        if (target == _lastAppliedTarget)
+        if (target == _lastAppliedTarget &&
+            !ShouldContinuouslyRewriteFanTarget())
             return;
 
         if (!restoreAutomatic &&
@@ -3390,14 +3418,69 @@ public sealed class MainWindow : Window
         await _fanIoLock.WaitAsync();
         try
         {
-            await Task.Run(() => ExecuteFanHardwareOperation(
-                () => _fanController.SetFullSpeed(enabled)));
+            if (enabled)
+            {
+                _fullSpeedUsesAlternativeMethod =
+                    _settings.UseAlternativeFullSpeedMethod;
+                if (_fullSpeedUsesAlternativeMethod)
+                    await WriteAlternativeFullSpeedAsync();
+                else
+                    await Task.Run(() => ExecuteFanHardwareOperation(
+                        () => _fanController.SetFullSpeed(true)));
+            }
+            else if (_fullSpeedUsesAlternativeMethod)
+            {
+                await Task.Run(() => ExecuteFanHardwareOperation(
+                    _fanController.RestoreAuto));
+                _fullSpeedUsesAlternativeMethod = false;
+            }
+            else
+            {
+                await Task.Run(() => ExecuteFanHardwareOperation(
+                    () => _fanController.SetFullSpeed(false)));
+            }
         }
         finally
         {
             _fanIoLock.Release();
         }
     }
+
+    private async Task WriteAlternativeFullSpeedWithLockAsync()
+    {
+        await _fanIoLock.WaitAsync();
+        try { await WriteAlternativeFullSpeedAsync(); }
+        finally { _fanIoLock.Release(); }
+    }
+
+    private async Task WriteAlternativeFullSpeedAsync()
+    {
+        var limits = _settings.FanRpmLimits;
+        await Task.Run(() => ExecuteFanHardwareOperation(() =>
+            _fanController.Apply(
+                limits.Fan1MaximumRpm,
+                limits.Fan2MaximumRpm)));
+        _lastFanWriteTime = DateTimeOffset.Now;
+    }
+
+    private bool ShouldContinuouslyRewriteFanTarget()
+    {
+        if (!_settings.ContinuouslyWriteFanTargets &&
+            !_fullSpeedUsesAlternativeMethod)
+            return false;
+        var interval = ResolveContinuousFanWriteInterval(
+            GetSettingsRefreshInterval(),
+            EffectiveFanWriteMinimumInterval);
+        return _lastFanWriteTime is not DateTimeOffset last ||
+               DateTimeOffset.Now - last >= interval;
+    }
+
+    internal static TimeSpan ResolveContinuousFanWriteInterval(
+        TimeSpan statusRefreshInterval,
+        TimeSpan fanWriteInterval) =>
+        statusRefreshInterval >= fanWriteInterval
+            ? statusRefreshInterval
+            : fanWriteInterval;
 
     private async Task RefreshItsModeAsync()
     {

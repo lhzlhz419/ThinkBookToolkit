@@ -253,6 +253,10 @@ public sealed class AppSettings
     public bool AttemptDisableControlOnSleepWhenUnsupported { get; set; }
     public double? FanReadMinimumIntervalSeconds { get; set; }
     public double? FanWriteMinimumIntervalSeconds { get; set; }
+    public bool UseAlternativeFullSpeedMethod { get; set; }
+    public bool ContinuouslyWriteFanTargets { get; set; }
+    public OverviewLayoutSettings OverviewLayout { get; set; } =
+        new();
     public PowerSettingsLockSelection PowerSettingsLocks { get; set; } = new();
     public int PowerSettingsLockIntervalSeconds { get; set; } = 2;
     public PowerSettingsState? PowerSettingsLockTarget { get; set; }

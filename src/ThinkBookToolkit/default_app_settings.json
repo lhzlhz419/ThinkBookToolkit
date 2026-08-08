@@ -68,6 +68,8 @@
   "AttemptDisableControlOnSleepWhenUnsupported": false,
   "FanReadMinimumIntervalSeconds": null,
   "FanWriteMinimumIntervalSeconds": null,
+  "UseAlternativeFullSpeedMethod": false,
+  "ContinuouslyWriteFanTargets": false,
   "PowerSettingsLocks": {
     "CpuPl1": false,
     "CpuPl2": false,

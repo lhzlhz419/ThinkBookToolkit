@@ -12,6 +12,7 @@ public sealed class TemperatureReader : IDisposable
     private readonly Computer _computer;
     private readonly NvidiaPrivateTelemetryReader? _nvidiaTelemetry;
     private readonly StorageTemperatureReader? _storageTelemetry;
+    private TemperatureSnapshot? _lastSnapshot;
 
     public TemperatureReader()
     {
@@ -28,6 +29,39 @@ public sealed class TemperatureReader : IDisposable
     }
 
     public TemperatureSnapshot Read()
+    {
+        try
+        {
+            var snapshot = ReadCore();
+            _lastSnapshot = snapshot;
+            return snapshot;
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning("Hardware monitoring refresh failed: " + ex.Message);
+            return _lastSnapshot is { } previous
+                ? previous with
+                {
+                    GpuTempC = null,
+                    VramTempC = null,
+                    GpuPowerW = null,
+                    GpuSensor = "not found",
+                    VramSensor = "not found",
+                    GpuName = string.Empty,
+                    GpuLoadPercent = null,
+                    GpuMemoryLoadPercent = null,
+                    GpuCoreClockMhz = null,
+                    GpuMemoryClockMhz = null,
+                    GpuHotSpotTempC = null,
+                    VramChipTemperaturesC = []
+                }
+                : new TemperatureSnapshot(
+                    null, null, null, null, null,
+                    "not found", "not found", "not found");
+        }
+    }
+
+    private TemperatureSnapshot ReadCore()
     {
         var sensors = new List<SensorReading>();
         var hardware = new List<HardwareReading>();
@@ -220,7 +254,18 @@ public sealed class TemperatureReader : IDisposable
         var hardwarePath = string.IsNullOrWhiteSpace(path)
             ? hardware.Name
             : path + "/" + hardware.Name;
-        foreach (var sensor in hardware.Sensors)
+        ISensor[] hardwareSensors;
+        IHardware[] subHardwareItems;
+        try
+        {
+            hardwareSensors = hardware.Sensors;
+            subHardwareItems = hardware.SubHardware;
+        }
+        catch
+        {
+            return;
+        }
+        foreach (var sensor in hardwareSensors)
         {
             if (sensor.Value is null)
                 continue;
@@ -236,7 +281,7 @@ public sealed class TemperatureReader : IDisposable
                 sensor.Value.Value));
         }
 
-        foreach (var subHardware in hardware.SubHardware)
+        foreach (var subHardware in subHardwareItems)
         {
             CollectHardware(
                 subHardware,

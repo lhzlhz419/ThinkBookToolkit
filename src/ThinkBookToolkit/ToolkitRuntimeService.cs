@@ -46,6 +46,8 @@ internal sealed record ToolkitRuntimeSnapshot(
     string? Error)
 {
     public string PendingGpuModeSource { get; init; } = string.Empty;
+    public PowerSettingsState? PowerSettings { get; init; }
+    public WarrantySnapshot? Warranty { get; init; }
 
     public static ToolkitRuntimeSnapshot Empty { get; } = new(
         null,
@@ -74,6 +76,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private Forms.NotifyIcon? _trayIcon;
     private Forms.ContextMenuStrip? _trayMenu;
     private BatteryInformationSnapshot? _cachedBattery;
+    private PowerSettingsState? _cachedPowerSettings;
+    private WarrantySnapshot? _cachedWarranty;
     private GpuModeState? _cachedGpuMode;
     private DateTimeOffset _lastBatteryRefresh;
     private DateTimeOffset _lastGpuRefresh;
@@ -176,6 +180,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public event EventHandler? AppearanceChanged;
 
+    public event EventHandler? OverviewLayoutChanged;
+
     public event EventHandler<string>? StatusChanged;
 
     internal void SetReportForTesting(FeatureAvailabilityReport report)
@@ -233,6 +239,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public async Task InitializeAsync()
     {
         Report = await FeatureAvailabilityService.DetectAsync();
+        ToolkitLog.Info(
+            $"Feature detection completed: {Report.Items.Count(item => item.Usable)}/{Report.Items.Count} usable.");
         FeatureAvailabilityCache.Current = Report;
 
         if (Report.IsAvailable(FeatureIds.FanControl))
@@ -259,6 +267,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
         await ApplyPendingGpuModeAsync();
         await RefreshAsync(force: true);
+        _ = RefreshWarrantyAsync();
         _pollTimer.Start();
         SyncPowerSettingsLockTimer();
     }
@@ -461,6 +470,18 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 }
                 battery = _cachedBattery;
             }
+            if (Report?.IsAvailable(FeatureIds.PowerSettings) == true)
+            {
+                try
+                {
+                    _cachedPowerSettings = await Task.Run(
+                        PowerSettingsController.ReadState);
+                }
+                catch (Exception ex)
+                {
+                    ToolkitLog.Warning("Power values could not be refreshed: " + ex.Message);
+                }
+            }
 
             var itsMode = performance?.ItsMode ?? ItsMode.Unknown;
             if (Report?.IsAvailable(FeatureIds.PerformanceMode) == true &&
@@ -501,13 +522,16 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 DateTimeOffset.Now,
                 null)
             {
-                PendingGpuModeSource = Settings.PendingGpuModeSource
+                PendingGpuModeSource = Settings.PendingGpuModeSource,
+                PowerSettings = _cachedPowerSettings,
+                Warranty = _cachedWarranty
             };
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             UpdateTrayText();
         }
         catch (Exception ex)
         {
+            ToolkitLog.Error("Runtime status refresh failed.", ex);
             Snapshot = Snapshot with
             {
                 UpdatedAt = DateTimeOffset.Now,
@@ -519,6 +543,24 @@ internal sealed class ToolkitRuntimeService : IDisposable
         finally
         {
             _polling = false;
+        }
+    }
+
+    private async Task RefreshWarrantyAsync()
+    {
+        if (_disposed ||
+            Report?.IsAvailable(FeatureIds.WarrantyInformation) != true)
+            return;
+        try
+        {
+            _cachedWarranty = await WarrantyService.GetWarrantyAsync(
+                CancellationToken.None);
+            Snapshot = Snapshot with { Warranty = _cachedWarranty };
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning("Warranty information could not be refreshed: " + ex.Message);
         }
     }
 
@@ -840,6 +882,77 @@ internal sealed class ToolkitRuntimeService : IDisposable
             value,
             out error);
 
+    public bool TrySetAlternativeFullSpeedMethod(bool value, out string? error) =>
+        TrySaveSetting(
+            () => Settings.UseAlternativeFullSpeedMethod,
+            current => Settings.UseAlternativeFullSpeedMethod = current,
+            value,
+            out error);
+
+    public bool TrySetContinuouslyWriteFanTargets(bool value, out string? error) =>
+        TrySaveSetting(
+            () => Settings.ContinuouslyWriteFanTargets,
+            current => Settings.ContinuouslyWriteFanTargets = current,
+            value,
+            out error);
+
+    public bool TrySetOverviewLayout(
+        OverviewLayoutSettings layout,
+        out string? error)
+    {
+        var previous = Settings.OverviewLayout;
+        Settings.OverviewLayout = OverviewLayoutDefaults.Normalize(layout);
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            OverviewLayoutChanged?.Invoke(this, EventArgs.Empty);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.OverviewLayout = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    public async Task<string?> RestartDataReadersAsync()
+    {
+        try
+        {
+            _pollTimer.Stop();
+            if (_fanRuntime is not null)
+                await _fanRuntime.RuntimeRestartDataReadersAsync();
+            else
+            {
+                _temperatureReader?.Dispose();
+                _temperatureReader = Report?.IsAvailable(
+                    FeatureIds.TemperatureMonitoring) == true
+                    ? new TemperatureReader()
+                    : null;
+            }
+            _cachedBattery = null;
+            _cachedGpuMode = null;
+            _cachedPowerSettings = null;
+            _lastBatteryRefresh = DateTimeOffset.MinValue;
+            _lastGpuRefresh = DateTimeOffset.MinValue;
+            await RefreshAsync(force: true);
+            ToolkitLog.Info("Data readers were restarted by the user.");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error("Data readers could not be restarted.", ex);
+            return ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+                _pollTimer.Start();
+        }
+    }
+
     public bool TrySetDisableControlOnSleep(bool value, out string? error)
     {
         if (FanBackendSupportsDisableControlOnSleep)
@@ -970,8 +1083,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
-    public void SetStatus(string message) =>
+    public void SetStatus(string message)
+    {
+        if (!string.IsNullOrWhiteSpace(message))
+            ToolkitLog.Info(message);
         StatusChanged?.Invoke(this, message);
+    }
 
     private void PublishGpuTransitionState()
     {
@@ -1053,7 +1170,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         if (_disposed ||
             _powerSettingsLockBusy ||
             Settings.PowerSettingsLocks is not { Any: true } ||
-            Report?.IsFullyAvailable(FeatureIds.PowerSettings) != true)
+            !PowerSettingsController.CurrentProfile.Writable ||
+            Report?.IsAvailable(FeatureIds.PowerSettings) != true)
         {
             return;
         }
@@ -1123,7 +1241,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
             PowerSettingsController.IsValidLockConfiguration(
                 Settings.PowerSettingsLocks,
                 Settings.PowerSettingsLockTarget) &&
-            Report?.IsFullyAvailable(FeatureIds.PowerSettings) == true)
+            PowerSettingsController.CurrentProfile.Writable &&
+            Report?.IsAvailable(FeatureIds.PowerSettings) == true)
         {
             _powerSettingsLockTimer.Start();
         }

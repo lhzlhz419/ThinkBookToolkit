@@ -12,6 +12,7 @@ public static class Program
     {
         try
         {
+            ToolkitLog.Initialize();
             AppDomain.CurrentDomain.UnhandledException += (_, args) => LogException(args.ExceptionObject as Exception);
 
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
@@ -27,20 +28,27 @@ public static class Program
             };
             if (TryApplyInstallerConfiguration(args))
                 return;
-            ConfigurationMigrationService.EnsureInitialized();
-            var settings = CurveProfileStore.LoadSettings();
-            CurveProfileStore.ApplyPendingInstallerSettings(settings);
-            ModernTheme.Apply(app, ToolkitRuntimeService.ResolveDarkTheme(settings.Theme));
-            var startToTrayRequested = args.Any(argument =>
-                string.Equals(argument, "--startup-tray", StringComparison.OrdinalIgnoreCase));
-            using var runtime = new ToolkitRuntimeService(settings);
-            var window = new ToolkitMainWindow(
-                runtime,
-                enableHardwareDetection: true,
-                startToTrayRequested);
-            runtime.AttachWindow(window, startToTrayRequested);
-            app.MainWindow = window;
-            app.Run(window);
+            if (!SingleInstanceCoordinator.TryAcquire(out var singleInstance))
+                return;
+            using (singleInstance)
+            {
+                ConfigurationMigrationService.EnsureInitialized();
+                var settings = CurveProfileStore.LoadSettings();
+                CurveProfileStore.ApplyPendingInstallerSettings(settings);
+                ModernTheme.Apply(app, ToolkitRuntimeService.ResolveDarkTheme(settings.Theme));
+                var startToTrayRequested = args.Any(argument =>
+                    string.Equals(argument, "--startup-tray", StringComparison.OrdinalIgnoreCase));
+                using var runtime = new ToolkitRuntimeService(settings);
+                var window = new ToolkitMainWindow(
+                    runtime,
+                    enableHardwareDetection: true,
+                    startToTrayRequested);
+                runtime.AttachWindow(window, startToTrayRequested);
+                singleInstance!.Listen(() => app.Dispatcher.BeginInvoke(
+                    new Action(() => runtime.ShowMainWindow())));
+                app.MainWindow = window;
+                app.Run(window);
+            }
         }
         catch (Exception ex)
         {
@@ -58,8 +66,8 @@ public static class Program
         var error = exception.GetBaseException();
         return
             $"{error.GetType().Name}: {error.Message}\r\n\r\n" +
-            "详细诊断信息已写入 ~/.thinkbook_toolkit/csharp-crash.log。\r\n" +
-            "Diagnostic details were written to ~/.thinkbook_toolkit/csharp-crash.log.";
+            "详细诊断信息已写入配置文件夹下的 log 文件夹。\r\n" +
+            "Diagnostic details were written to the log folder beside the configuration file.";
     }
 
     private static bool TryApplyInstallerConfiguration(
@@ -85,15 +93,6 @@ public static class Program
         if (exception is null)
             return;
 
-        try
-        {
-            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".thinkbook_toolkit");
-            Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, "csharp-crash.log");
-            File.AppendAllText(path, $"[{DateTimeOffset.Now:O}]\r\n{exception}\r\n\r\n");
-        }
-        catch
-        {
-        }
+        ToolkitLog.Error("Unhandled exception.", exception);
     }
 }

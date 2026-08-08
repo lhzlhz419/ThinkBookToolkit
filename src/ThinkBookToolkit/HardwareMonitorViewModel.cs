@@ -65,11 +65,42 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     public string MemorySlot2Temperature => MemorySlotTemperature(1);
     public IReadOnlyList<HardwareMonitorMetric> StorageMetrics =>
         BuildStorageMetrics(_snapshot.Temperatures);
+    public IReadOnlyList<HardwareMonitorMetric> StorageTemperatureMetrics =>
+        BuildStorageMetrics(_snapshot.Temperatures, includeHealth: false);
+    public IReadOnlyList<HardwareMonitorMetric> StorageHealthMetrics =>
+        BuildStorageMetrics(_snapshot.Temperatures, includeTemperatures: false);
 
     public string Fan1Speed => FanSpeed(_snapshot.Fans?.Fan1Rpm);
     public string Fan2Speed => FanSpeed(_snapshot.Fans?.Fan2Rpm);
     public string Fan1Target => FanTarget(1);
     public string Fan2Target => FanTarget(2);
+
+    public string PowerCpuPl1 => PowerValue(PowerSetting.CpuPl1, value => value.CpuPl1);
+    public string PowerCpuPl2 => PowerValue(PowerSetting.CpuPl2, value => value.CpuPl2);
+    public string PowerCpuTemperature => PowerValue(PowerSetting.CpuTemperatureLimit, value => value.CpuTemperatureLimit, "°C");
+    public string PowerTurboTime => PowerValue(PowerSetting.CpuTurboTimeLimit, value => value.CpuTurboTimeLimit, "s");
+    public string PowerGpuBoost => PowerValue(PowerSetting.GpuPowerBoost, value => value.GpuPowerBoost);
+    public string PowerGpuTgp => PowerValue(PowerSetting.GpuConfigurableTgp, value => value.GpuConfigurableTgp);
+    public string PowerGpuTemperature => PowerValue(PowerSetting.GpuTemperatureLimit, value => value.GpuTemperatureLimit, "°C");
+    public string PowerGpuToCpu => PowerValue(PowerSetting.GpuToCpuDynamicBoost, value => value.GpuToCpuDynamicBoost);
+    public string PowerAtpp => _snapshot.PowerSettings is { } power &&
+                               power.IsAvailable(PowerSetting.Atpp) &&
+                               power.Atpp.HasValue
+        ? $"{power.Atpp.Value} W"
+        : "--";
+
+    public string WarrantyStatus => _snapshot.Warranty?.State switch
+    {
+        WarrantyState.InWarranty => Runtime.L("在保", "Covered"),
+        WarrantyState.Expired => Runtime.L("已过保", "Expired"),
+        WarrantyState.NotStarted => Runtime.L("尚未开始", "Not started"),
+        _ => Runtime.L("暂无信息", "Unavailable")
+    };
+    public string WarrantyStart => WarrantyDate(_snapshot.Warranty?.StartDate);
+    public string WarrantyEnd => WarrantyDate(_snapshot.Warranty?.EndDate);
+    public string WarrantyProgress => _snapshot.Warranty is { State: not WarrantyState.Unavailable } warranty
+        ? $"{warranty.ProgressPercentage}%"
+        : "--";
 
     public virtual void Update(ToolkitRuntimeSnapshot snapshot)
     {
@@ -95,6 +126,17 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         return $"{rpm} RPM";
     }
 
+    private string PowerValue(
+        PowerSetting setting,
+        Func<PowerSettingsState, int> value,
+        string unit = "W") =>
+        _snapshot.PowerSettings is { } power && power.IsAvailable(setting)
+            ? $"{value(power)} {unit}"
+            : "--";
+
+    private static string WarrantyDate(DateOnly? value) =>
+        value?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "--";
+
     private string MemorySlotTemperature(int index)
     {
         var values = _snapshot.Temperatures?.MemorySlotTemperaturesC;
@@ -104,7 +146,9 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     }
 
     private IReadOnlyList<HardwareMonitorMetric> BuildStorageMetrics(
-        TemperatureSnapshot? temperatures)
+        TemperatureSnapshot? temperatures,
+        bool includeTemperatures = true,
+        bool includeHealth = true)
     {
         if (temperatures?.StorageDevices is not { Count: > 0 } storage)
             return [];
@@ -128,16 +172,18 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
                 ? $"{device.LifePercent.Value:0.0}%"
                 : "--";
 
-            result.Add(new HardwareMonitorMetric(
-                Runtime.IsChinese
-                    ? $"硬盘{number} {device.Name}"
-                    : $"Disk {number} {device.Name}",
-                temperature));
-            result.Add(new HardwareMonitorMetric(
-                Runtime.IsChinese
-                    ? $"硬盘{number}健康度"
-                    : $"Disk {number} health",
-                life));
+            if (includeTemperatures)
+                result.Add(new HardwareMonitorMetric(
+                    Runtime.IsChinese
+                        ? $"硬盘{number} {device.Name}"
+                        : $"Disk {number} {device.Name}",
+                    temperature));
+            if (includeHealth)
+                result.Add(new HardwareMonitorMetric(
+                    Runtime.IsChinese
+                        ? $"硬盘{number}健康度"
+                        : $"Disk {number} health",
+                    life));
         }
         return result;
     }

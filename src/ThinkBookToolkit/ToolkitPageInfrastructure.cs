@@ -290,81 +290,127 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         };
     }
 
-    protected AdaptiveUniformPanel HardwareMonitorCards()
+    protected AdaptiveUniformPanel HardwareMonitorCards(
+        bool includeBattery = true,
+        OverviewLayoutSettings? layout = null)
     {
         var panel = new AdaptiveUniformPanel
         {
             MinimumItemWidth = 230,
             Spacing = 8
         };
-        panel.Children.Add(HardwareMonitorCard(
+        Add(OverviewCardIds.Cpu, HardwareMonitorCard(
             "CPU",
             nameof(HardwareMonitorViewModel.CpuModel),
             new MonitorSection(null,
             [
-                new(L("利用率", "Utilization"), nameof(HardwareMonitorViewModel.CpuUtilization)),
-                new(L("平均频率", "Average frequency"), nameof(HardwareMonitorViewModel.CpuAverageFrequency)),
-                new(L("最高频率", "Maximum frequency"), nameof(HardwareMonitorViewModel.CpuMaximumFrequency)),
-                new(L("温度", "Temperature"), nameof(HardwareMonitorViewModel.CpuTemperature)),
-                new(L("功耗", "Power"), nameof(HardwareMonitorViewModel.CpuPower))
-            ])));
-        panel.Children.Add(HardwareMonitorCard(
+                new(L("利用率", "Utilization"), nameof(HardwareMonitorViewModel.CpuUtilization), ItemId: "utilization"),
+                new(L("平均频率", "Average frequency"), nameof(HardwareMonitorViewModel.CpuAverageFrequency), ItemId: "average-frequency"),
+                new(L("最高频率", "Maximum frequency"), nameof(HardwareMonitorViewModel.CpuMaximumFrequency), ItemId: "maximum-frequency"),
+                new(L("温度", "Temperature"), nameof(HardwareMonitorViewModel.CpuTemperature), ItemId: "temperature"),
+                new(L("功耗", "Power"), nameof(HardwareMonitorViewModel.CpuPower), ItemId: "power")
+            ])), layout);
+        Add(OverviewCardIds.Gpu, HardwareMonitorCard(
             "GPU",
             nameof(HardwareMonitorViewModel.GpuModel),
             new MonitorSection(null,
             [
-                new(L("利用率", "Utilization"), nameof(HardwareMonitorViewModel.GpuUtilization)),
-                new(L("显存利用率", "VRAM utilization"), nameof(HardwareMonitorViewModel.GpuMemoryUtilization)),
+                new(L("利用率", "Utilization"), nameof(HardwareMonitorViewModel.GpuUtilization), ItemId: "utilization"),
+                new(L("显存利用率", "VRAM utilization"), nameof(HardwareMonitorViewModel.GpuMemoryUtilization), ItemId: "vram-utilization"),
                 new(
                     L("核心频率", "Core frequency"),
                     nameof(HardwareMonitorViewModel.GpuCoreFrequency),
                     false,
                     L("显存频率", "VRAM frequency"),
-                    nameof(HardwareMonitorViewModel.GpuMemoryFrequency)),
+                    nameof(HardwareMonitorViewModel.GpuMemoryFrequency),
+                    "core-frequency", "vram-frequency"),
                 new(
                     L("核心温度", "Core temperature"),
                     nameof(HardwareMonitorViewModel.GpuCoreTemperature),
                     false,
                     L("热点温度", "Hot spot temperature"),
-                    nameof(HardwareMonitorViewModel.GpuHotSpotTemperature)),
-                new(L("显存温度", "VRAM temperature"), nameof(HardwareMonitorViewModel.GpuMemoryTemperature)),
-                new(L("功耗", "Power"), nameof(HardwareMonitorViewModel.GpuPower))
-            ])));
-        panel.Children.Add(HardwareMonitorCard(
+                    nameof(HardwareMonitorViewModel.GpuHotSpotTemperature),
+                    "core-temperature", "hotspot-temperature"),
+                new(L("显存温度", "VRAM temperature"), nameof(HardwareMonitorViewModel.GpuMemoryTemperature), ItemId: "vram-temperature"),
+                new(L("功耗", "Power"), nameof(HardwareMonitorViewModel.GpuPower), ItemId: "power")
+            ])), layout);
+        if (includeBattery)
+        Add(OverviewCardIds.Battery, HardwareMonitorCard(
             L("电池", "Battery"),
             null,
             new MonitorSection(null,
             [
-                new(L("当前状态", "Status"), nameof(HardwareMonitorViewModel.BatteryState)),
-                new(L("电量", "Charge"), nameof(HardwareMonitorViewModel.BatteryCharge)),
-                new(L("健康度", "Health"), nameof(HardwareMonitorViewModel.BatteryHealth)),
-                new(L("功率", "Power"), nameof(HardwareMonitorViewModel.BatteryPower))
-            ])));
-        panel.Children.Add(HardwareMonitorCard(
+                new(L("当前状态", "Status"), nameof(HardwareMonitorViewModel.BatteryState), ItemId: "status"),
+                new(L("电量", "Charge"), nameof(HardwareMonitorViewModel.BatteryCharge), ItemId: "charge"),
+                new(L("健康度", "Health"), nameof(HardwareMonitorViewModel.BatteryHealth), ItemId: "health"),
+                new(L("功率", "Power"), nameof(HardwareMonitorViewModel.BatteryPower), ItemId: "power")
+            ])), layout);
+        Add(OverviewCardIds.MemoryStorage, HardwareMonitorCard(
             L("内存与硬盘", "Memory and storage"),
             null,
             new MonitorSection(null,
             [
-                new(L("物理内存", "Physical memory"), nameof(HardwareMonitorViewModel.PhysicalMemory)),
-                new(L("虚拟内存", "Virtual memory"), nameof(HardwareMonitorViewModel.VirtualMemory)),
-                new(L("内存插槽1温度", "Memory slot 1 temperature"), nameof(HardwareMonitorViewModel.MemorySlot1Temperature)),
-                new(L("内存插槽2温度", "Memory slot 2 temperature"), nameof(HardwareMonitorViewModel.MemorySlot2Temperature))
+                new(L("物理内存", "Physical memory"), nameof(HardwareMonitorViewModel.PhysicalMemory), ItemId: "physical-memory"),
+                new(L("虚拟内存", "Virtual memory"), nameof(HardwareMonitorViewModel.VirtualMemory), ItemId: "virtual-memory"),
+                new(L("内存插槽1温度", "Memory slot 1 temperature"), nameof(HardwareMonitorViewModel.MemorySlot1Temperature), ItemId: "slot1-temperature"),
+                new(L("内存插槽2温度", "Memory slot 2 temperature"), nameof(HardwareMonitorViewModel.MemorySlot2Temperature), ItemId: "slot2-temperature")
             ],
-            nameof(HardwareMonitorViewModel.StorageMetrics))));
-        panel.Children.Add(HardwareMonitorCard(
+            nameof(HardwareMonitorViewModel.StorageTemperatureMetrics),
+            "disk-temperatures",
+            nameof(HardwareMonitorViewModel.StorageHealthMetrics),
+            "disk-health")), layout);
+        Add(OverviewCardIds.Fans, HardwareMonitorCard(
             L("风扇", "Fans"),
             null,
             new MonitorSection(L("风扇转速", "Fan speed"),
             [
-                new(L("风扇1转速", "Fan 1 speed"), nameof(HardwareMonitorViewModel.Fan1Speed)),
-                new(L("风扇2转速", "Fan 2 speed"), nameof(HardwareMonitorViewModel.Fan2Speed))
+                new(L("风扇1转速", "Fan 1 speed"), nameof(HardwareMonitorViewModel.Fan1Speed), ItemId: "fan1-speed"),
+                new(L("风扇2转速", "Fan 2 speed"), nameof(HardwareMonitorViewModel.Fan2Speed), ItemId: "fan2-speed")
             ]),
             new MonitorSection(L("转速目标", "Speed target"),
             [
-                new(L("风扇1目标", "Fan 1 target"), nameof(HardwareMonitorViewModel.Fan1Target)),
-                new(L("风扇2目标", "Fan 2 target"), nameof(HardwareMonitorViewModel.Fan2Target))
-            ])));
+                new(L("风扇1目标", "Fan 1 target"), nameof(HardwareMonitorViewModel.Fan1Target), ItemId: "fan1-target"),
+                new(L("风扇2目标", "Fan 2 target"), nameof(HardwareMonitorViewModel.Fan2Target), ItemId: "fan2-target")
+            ])), layout);
+        if (layout is not null)
+        {
+            Add(OverviewCardIds.Power, HardwareMonitorCard(
+                L("功耗限制", "Power limits"),
+                null,
+                new MonitorSection(null,
+                [
+                    new("CPU PL1", nameof(HardwareMonitorViewModel.PowerCpuPl1), false, "CPU PL2", nameof(HardwareMonitorViewModel.PowerCpuPl2), "cpu-pl1", "cpu-pl2"),
+                    new(L("CPU 温度", "CPU temperature"), nameof(HardwareMonitorViewModel.PowerCpuTemperature), false, "Turbo Time", nameof(HardwareMonitorViewModel.PowerTurboTime), "cpu-temperature", "turbo-time"),
+                    new("GPU Power Boost", nameof(HardwareMonitorViewModel.PowerGpuBoost), false,
+                        PowerSettingsController.CurrentProfile.Writable
+                            ? "GPU TGP"
+                            : "GPU Configurable TGP",
+                        nameof(HardwareMonitorViewModel.PowerGpuTgp), "gpu-boost", "gpu-tgp"),
+                    new(L("GPU 温度", "GPU temperature"), nameof(HardwareMonitorViewModel.PowerGpuTemperature), false, "GPU to CPU DB", nameof(HardwareMonitorViewModel.PowerGpuToCpu), "gpu-temperature", "gpu-to-cpu"),
+                    new("ATPP", nameof(HardwareMonitorViewModel.PowerAtpp), ItemId: "atpp")
+                ])), layout);
+            Add(OverviewCardIds.Warranty, HardwareMonitorCard(
+                L("保修信息", "Warranty"),
+                null,
+                new MonitorSection(null,
+                [
+                    new(L("状态", "Status"), nameof(HardwareMonitorViewModel.WarrantyStatus)),
+                    new(L("开始日期", "Start date"), nameof(HardwareMonitorViewModel.WarrantyStart)),
+                    new(L("结束日期", "End date"), nameof(HardwareMonitorViewModel.WarrantyEnd)),
+                    new(L("已用保修期", "Warranty elapsed"), nameof(HardwareMonitorViewModel.WarrantyProgress))
+                ])), layout);
+        }
         return panel;
+
+        void Add(string cardId, Border card, OverviewLayoutSettings? settings)
+        {
+            if (settings is null || OverviewLayoutDefaults.IsCardEnabled(settings, cardId))
+            {
+                card.Tag = cardId;
+                ApplyMonitorLayout(card, cardId, settings);
+                panel.Children.Add(card);
+            }
+        }
     }
 
     private Border HardwareMonitorCard(
@@ -463,7 +509,13 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             foreach (var row in section.Rows)
                 content.Children.Add(HardwareMonitorRow(row));
             if (!string.IsNullOrWhiteSpace(section.DynamicRowsProperty))
-                content.Children.Add(HardwareMonitorRows(section.DynamicRowsProperty));
+                content.Children.Add(HardwareMonitorRows(
+                    section.DynamicRowsProperty,
+                    section.DynamicItemId));
+            if (!string.IsNullOrWhiteSpace(section.SecondaryDynamicRowsProperty))
+                content.Children.Add(HardwareMonitorRows(
+                    section.SecondaryDynamicRowsProperty,
+                    section.SecondaryDynamicItemId));
         }
 
         return new Border
@@ -476,6 +528,50 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             Padding = new Thickness(12, 11, 12, 11),
             Child = content
         };
+    }
+
+    private static void ApplyMonitorLayout(
+        Border card,
+        string cardId,
+        OverviewLayoutSettings? layout)
+    {
+        if (layout is null || card.Child is not StackPanel content)
+            return;
+        foreach (FrameworkElement element in content.Children)
+        {
+            if (element.Tag is string dynamicItem)
+            {
+                element.Visibility = OverviewLayoutDefaults.IsItemEnabled(
+                    layout, cardId, dynamicItem)
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+                continue;
+            }
+            if (element.Tag is not MonitorRow row ||
+                string.IsNullOrWhiteSpace(row.ItemId))
+                continue;
+            var primary = OverviewLayoutDefaults.IsItemEnabled(
+                layout, cardId, row.ItemId);
+            if (string.IsNullOrWhiteSpace(row.SecondaryItemId) ||
+                element is not Grid pair || pair.Children.Count < 2)
+            {
+                element.Visibility = primary ? Visibility.Visible : Visibility.Collapsed;
+                continue;
+            }
+            var secondary = OverviewLayoutDefaults.IsItemEnabled(
+                layout, cardId, row.SecondaryItemId);
+            element.Visibility = primary || secondary
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            pair.Children[0].Visibility = primary ? Visibility.Visible : Visibility.Collapsed;
+            pair.Children[1].Visibility = secondary ? Visibility.Visible : Visibility.Collapsed;
+            if (primary != secondary)
+            {
+                if (secondary)
+                    Grid.SetColumn(pair.Children[1], 0);
+                Grid.SetColumnSpan(pair.Children[primary ? 0 : 1], 2);
+            }
+        }
     }
 
     private FrameworkElement HardwareMonitorRow(MonitorRow row)
@@ -498,6 +594,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         if (row.WideValue)
         {
             value.Margin = new Thickness(0, 2, 0, 0);
+            value.Tag = row;
             return value;
         }
 
@@ -516,6 +613,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         });
         Grid.SetColumn(value, 1);
         grid.Children.Add(value);
+        grid.Tag = row;
         return grid;
     }
 
@@ -540,6 +638,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             row.SecondaryProperty!);
         Grid.SetColumn(right, 1);
         grid.Children.Add(right);
+        grid.Tag = row;
         return grid;
     }
 
@@ -576,13 +675,16 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         return grid;
     }
 
-    private FrameworkElement HardwareMonitorRows(string property)
+    private FrameworkElement HardwareMonitorRows(
+        string property,
+        string? itemId)
     {
         var items = new ItemsControl
         {
             Focusable = false
         };
         items.SetBinding(ItemsControl.ItemsSourceProperty, new Binding(property));
+        items.Tag = itemId;
 
         var template = new DataTemplate(typeof(HardwareMonitorMetric));
         var row = new FrameworkElementFactory(typeof(DockPanel));
@@ -676,14 +778,19 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
     private sealed record MonitorSection(
         string? Title,
         IReadOnlyList<MonitorRow> Rows,
-        string? DynamicRowsProperty = null);
+        string? DynamicRowsProperty = null,
+        string? DynamicItemId = null,
+        string? SecondaryDynamicRowsProperty = null,
+        string? SecondaryDynamicItemId = null);
 
     private sealed record MonitorRow(
         string Label,
         string Property,
         bool WideValue = false,
         string? SecondaryLabel = null,
-        string? SecondaryProperty = null);
+        string? SecondaryProperty = null,
+        string? ItemId = null,
+        string? SecondaryItemId = null);
 
     protected Button ActionButton(
         string text,

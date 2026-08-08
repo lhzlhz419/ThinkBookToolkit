@@ -32,7 +32,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
     {
         var root = new StackPanel();
         root.Children.Add(BuildHero());
-        var metrics = HardwareMonitorCards();
+        var metrics = HardwareMonitorCards(layout: Runtime.Settings.OverviewLayout);
         metrics.Margin = new Thickness(0, 0, 0, 12);
         root.Children.Add(metrics);
         return root;
