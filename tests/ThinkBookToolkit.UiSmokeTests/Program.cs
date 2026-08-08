@@ -577,6 +577,19 @@ internal static class Program
                } &&
                gpuBoostSlider.Value == 0,
             "GPU Power Boost does not accept zero while preserving the 0–15 slider range.");
+        gpuBoostTextBox.Text = "20";
+        collectGpuBoostArguments = [null, null];
+        Assert((bool)performance.GetType()
+                   .GetMethod(
+                       "TryCollectPower",
+                       BindingFlags.Instance | BindingFlags.NonPublic)!
+                   .Invoke(performance, collectGpuBoostArguments)! &&
+               collectGpuBoostArguments[0] is PowerSettingsState
+               {
+                   GpuPowerBoost: 20
+               } &&
+               gpuBoostSlider.Value == 15,
+            "GPU Power Boost manual input is incorrectly capped by the 0–15 slider range.");
         gpuBoostTextBox.Text = "-1";
         collectGpuBoostArguments = [null, null];
         Assert(!(bool)performance.GetType()
@@ -1916,6 +1929,11 @@ internal static class Program
                g5Defaults == new PowerSettingsState(125, 157, 97, 56, 10, 105, 87, 0, 75)
                { AvailableSettings = PowerSettingAvailability.All },
             "ThinkBook 16p G5 IRX power profile is incorrect.");
+        var g6 = PowerSettingsController.ResolveProfile(
+            "ThinkBook 16p G6 IAX");
+        Assert(g6.Rules[PowerSetting.GpuPowerBoost] ==
+               new PowerSettingRule(0, 15, 0),
+            "ThinkBook 16p G6 IAX GPU Power Boost must use a 0–15 slider while allowing any non-negative manual value.");
         var g5Required =
             PowerSettingsController.RequiredSettingsForFullAvailability(g5);
         var g5WithoutAtpp =

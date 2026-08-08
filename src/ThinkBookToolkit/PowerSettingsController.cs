@@ -172,7 +172,7 @@ internal static class PowerSettingsController
             [PowerSetting.CpuPl2] = new(30, 200, 1),
             [PowerSetting.CpuTemperatureLimit] = new(75, 105),
             [PowerSetting.CpuTurboTimeLimit] = new(20, 160),
-            [PowerSetting.GpuPowerBoost] = new(0, 15),
+            [PowerSetting.GpuPowerBoost] = new(0, 15, 0),
             [PowerSetting.GpuConfigurableTgp] = new(50, 100),
             [PowerSetting.GpuTemperatureLimit] = new(75, 87),
             [PowerSetting.GpuToCpuDynamicBoost] = new(0, 50),

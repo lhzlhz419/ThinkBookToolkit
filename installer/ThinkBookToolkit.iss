@@ -1,11 +1,11 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "0.2.4"
+  #define AppVersion "0.2.5"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\dist\v0.2.4\ThinkBookToolkit-0.2.4-win-x64-framework-dependent"
+  #define SourceDir "..\dist\v0.2.5\ThinkBookToolkit-0.2.5-win-x64-framework-dependent"
 #endif
 #ifndef OutputDir
-  #define OutputDir "..\dist\v0.2.4"
+  #define OutputDir "..\dist\v0.2.5"
 #endif
 #ifndef ChineseMessagesFile
   #define ChineseMessagesFile "compiler:Languages\ChineseSimplified.isl"

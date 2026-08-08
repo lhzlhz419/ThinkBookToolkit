@@ -7,6 +7,36 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-08
+
+### Added
+
+- Added configurable Overview cards and readings, including power-limit and
+  warranty cards. The Performance live-status cards follow the same choices.
+- Expanded CPU, GPU, memory, storage, battery, and fan telemetry, including
+  per-chip VRAM temperatures when supported.
+- Added writable power profiles for ThinkBook 16p G5 IRX and ThinkBook 14 Gen
+  6 Plus, partial-read support on other WMI-capable devices, and power locks
+  stored independently for each performance mode.
+- Added per-session logging, force-refreshing of hardware readers, and
+  single-instance startup handling.
+
+### Changed
+
+- Split Performance and Cooling into separate navigation pages and moved fan
+  controls to Cooling.
+- Refined responsive layouts, Overview power-value visibility, compact setting
+  rows, dark native title bars, and the startup/application behavior section.
+- On ThinkBook 16p G6 IAX, GPU Power Boost retains a 0–15 slider while manual
+  input accepts any non-negative integer.
+
+### Fixed
+
+- Added display-adapter presence checks and NVIDIA telemetry-handle refreshes
+  to avoid stale discrete-GPU access after the adapter is removed or disabled.
+- Improved logging for hardware refreshes, fan sampling, GPU-mode changes, and
+  unhandled task exceptions.
+
 ## [0.2.4] - 2026-08-02
 
 ### Changed
@@ -121,7 +151,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.1...v0.2.2
