@@ -103,6 +103,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public AppSettings Settings { get; }
 
+    internal PowerSettingsLockSelection CurrentPowerSettingsLocks =>
+        CurrentPowerModeLock(create: false)?.Locks ??
+        new PowerSettingsLockSelection();
+
     public FeatureAvailabilityReport? Report { get; private set; }
 
     public ToolkitRuntimeSnapshot Snapshot { get; private set; }
@@ -338,8 +342,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             var confirmed = await Task.Run(
                 () => PowerSettingsController.WriteAndReadState(state));
-            if (Settings.PowerSettingsLocks is { Any: true })
+            var modeLock = CurrentPowerModeLock(create: false);
+            if (modeLock?.Locks is { Any: true })
             {
+                modeLock.Target = confirmed;
+                Settings.PowerSettingsLocks = modeLock.Locks;
                 Settings.PowerSettingsLockTarget = confirmed;
                 try
                 {
@@ -376,14 +383,21 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return false;
         }
 
-        var previousSelection = Settings.PowerSettingsLocks ??
-            new PowerSettingsLockSelection();
-        var previousTarget = Settings.PowerSettingsLockTarget;
+        var modeLock = CurrentPowerModeLock(create: enabled);
+        if (modeLock is null)
+        {
+            error = L(
+                "无法确定当前性能模式。",
+                "The current performance mode could not be determined.");
+            return false;
+        }
+        var previousSelection = modeLock.Locks with { };
+        var previousTarget = modeLock.Target;
         var selection = previousSelection.With(setting, enabled);
-        Settings.PowerSettingsLocks = selection;
+        modeLock.Locks = selection;
         if (enabled)
         {
-            Settings.PowerSettingsLockTarget =
+            modeLock.Target =
                 PowerSettingsController.IsValidState(previousTarget)
                     ? PowerSettingsController.WithSetting(
                         previousTarget!,
@@ -393,8 +407,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         else if (!selection.Any)
         {
-            Settings.PowerSettingsLockTarget = null;
+            modeLock.Target = null;
         }
+        Settings.PowerSettingsLocks = modeLock.Locks;
+        Settings.PowerSettingsLockTarget = modeLock.Target;
         try
         {
             CurveProfileStore.SaveSettings(Settings);
@@ -404,6 +420,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         catch (Exception ex)
         {
+            modeLock.Locks = previousSelection;
+            modeLock.Target = previousTarget;
             Settings.PowerSettingsLocks = previousSelection;
             Settings.PowerSettingsLockTarget = previousTarget;
             SyncPowerSettingsLockTimer();
@@ -528,6 +546,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             };
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             UpdateTrayText();
+            SyncPowerSettingsLockTimer();
         }
         catch (Exception ex)
         {
@@ -574,7 +593,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
             {
                 if (await Task.Run(() => new ItsModeDetector().ReadMode()) == mode)
                 {
+                    Snapshot = Snapshot with { ItsMode = mode };
+                    SnapshotChanged?.Invoke(this, EventArgs.Empty);
                     await RefreshAsync(force: true);
+                    SyncPowerSettingsLockTimer();
+                    await EnforcePowerSettingsLockAsync();
                     return null;
                 }
                 await Task.Delay(200);
@@ -583,6 +606,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         catch (Exception ex)
         {
+            ToolkitLog.Error("Performance-mode switch failed.", ex);
             return ex.Message;
         }
     }
@@ -644,6 +668,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         catch (Exception ex)
         {
+            ToolkitLog.Error("GPU working-mode switch failed.", ex);
             return ex.Message;
         }
     }
@@ -1169,7 +1194,6 @@ internal sealed class ToolkitRuntimeService : IDisposable
     {
         if (_disposed ||
             _powerSettingsLockBusy ||
-            Settings.PowerSettingsLocks is not { Any: true } ||
             !PowerSettingsController.CurrentProfile.Writable ||
             Report?.IsAvailable(FeatureIds.PowerSettings) != true)
         {
@@ -1180,8 +1204,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
         await _powerSettingsGate.WaitAsync();
         try
         {
-            var target = Settings.PowerSettingsLockTarget;
-            var selection = Settings.PowerSettingsLocks with { };
+            var modeLock = CurrentPowerModeLock(create: false);
+            var target = modeLock?.Target;
+            var selection = modeLock is null
+                ? new PowerSettingsLockSelection()
+                : modeLock.Locks with { };
             if (!PowerSettingsController.IsValidLockConfiguration(
                     selection,
                     target))
@@ -1190,8 +1217,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
             }
 
             var current = await Task.Run(PowerSettingsController.ReadState);
-            if (Settings.PowerSettingsLocks != selection ||
-                Settings.PowerSettingsLockTarget != target)
+            var active = CurrentPowerModeLock(create: false);
+            if (active?.Locks != selection || active?.Target != target)
             {
                 return;
             }
@@ -1237,15 +1264,44 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 Settings.PowerSettingsLockIntervalSeconds)
                 ? Settings.PowerSettingsLockIntervalSeconds
                 : 2);
-        if (!_disposed &&
+        var modeLock = CurrentPowerModeLock(create: false);
+        if (!_disposed && modeLock is not null &&
             PowerSettingsController.IsValidLockConfiguration(
-                Settings.PowerSettingsLocks,
-                Settings.PowerSettingsLockTarget) &&
+                modeLock.Locks,
+                modeLock.Target) &&
             PowerSettingsController.CurrentProfile.Writable &&
             Report?.IsAvailable(FeatureIds.PowerSettings) == true)
         {
             _powerSettingsLockTimer.Start();
         }
+    }
+
+    private PowerModeLockSettings? CurrentPowerModeLock(bool create)
+    {
+        var mode = Snapshot.ItsMode;
+        if (mode == ItsMode.Unknown)
+            return null;
+        Settings.PowerSettingsLocksByMode ??=
+            new Dictionary<string, PowerModeLockSettings>(
+                StringComparer.OrdinalIgnoreCase);
+        var key = mode.ToString();
+        if (Settings.PowerSettingsLocksByMode.TryGetValue(key, out var profile))
+            return profile;
+        var migrateLegacy = Settings.PowerSettingsLocksByMode.Count == 0 &&
+                            Settings.PowerSettingsLocks is { Any: true };
+        if (!create && !migrateLegacy)
+            return null;
+        profile = new PowerModeLockSettings
+        {
+            Locks = migrateLegacy
+                ? Settings.PowerSettingsLocks with { }
+                : new PowerSettingsLockSelection(),
+            Target = migrateLegacy
+                ? Settings.PowerSettingsLockTarget
+                : null
+        };
+        Settings.PowerSettingsLocksByMode[key] = profile;
+        return profile;
     }
 
     private void SyncPollingInterval()

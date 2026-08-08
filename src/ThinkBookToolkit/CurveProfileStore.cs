@@ -223,6 +223,8 @@ public static class CurveProfileStore
                 defaults.PowerSettingsLocks = new PowerSettingsLockSelection();
                 defaults.PowerSettingsLockTarget = null;
             }
+            defaults.PowerSettingsLocksByMode = NormalizePowerModeLocks(
+                loaded.PowerSettingsLocksByMode);
             defaults.LastFanBackendIdentity =
                 loaded.LastFanBackendIdentity ?? string.Empty;
             defaults.SuppressedFanBackendStartupNoticeIdentity =
@@ -282,6 +284,8 @@ public static class CurveProfileStore
             settings.PowerSettingsLocks = new PowerSettingsLockSelection();
             settings.PowerSettingsLockTarget = null;
         }
+        settings.PowerSettingsLocksByMode = NormalizePowerModeLocks(
+            settings.PowerSettingsLocksByMode);
         settings.AdvancedFanCurve = AdvancedFanCurve.Normalize(
             settings.AdvancedFanCurve,
             NormalizeFanRpmLimits(settings.FanRpmLimits));
@@ -319,6 +323,39 @@ public static class CurveProfileStore
             : selection with { };
         if (target?.Atpp is null)
             normalized.Atpp = false;
+        return normalized;
+    }
+
+    internal static Dictionary<string, PowerModeLockSettings>
+        NormalizePowerModeLocks(
+            IReadOnlyDictionary<string, PowerModeLockSettings>? profiles)
+    {
+        var normalized = new Dictionary<string, PowerModeLockSettings>(
+            StringComparer.OrdinalIgnoreCase);
+        if (profiles is null)
+            return normalized;
+        foreach (var pair in profiles)
+        {
+            if (!Enum.TryParse<ItsMode>(pair.Key, ignoreCase: true, out var mode) ||
+                mode == ItsMode.Unknown || pair.Value is null)
+            {
+                continue;
+            }
+            var locks = NormalizePowerSettingsLocks(
+                pair.Value.Locks,
+                pair.Value.Target);
+            if (!PowerSettingsController.IsValidLockConfiguration(
+                    locks,
+                    pair.Value.Target))
+            {
+                continue;
+            }
+            normalized[mode.ToString()] = new PowerModeLockSettings
+            {
+                Locks = locks,
+                Target = pair.Value.Target
+            };
+        }
         return normalized;
     }
 

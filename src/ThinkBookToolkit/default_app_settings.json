@@ -83,6 +83,7 @@
   },
   "PowerSettingsLockIntervalSeconds": 2,
   "PowerSettingsLockTarget": null,
+  "PowerSettingsLocksByMode": {},
   "LastFanBackendIdentity": "",
   "SuppressedFanBackendStartupNoticeIdentity": "",
   "PendingGpuMode": "",

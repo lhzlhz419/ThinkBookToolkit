@@ -1407,6 +1407,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
+            ToolkitLog.Error("Fan runtime temperature sample failed.", ex);
             if (_running)
             {
                 _running = false;
@@ -1470,6 +1471,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
+            ToolkitLog.Error("Fan snapshot refresh failed.", ex);
             _statusText.Text = T("FanReadError") + ": " + ex.GetType().Name + ": " + ex.Message;
         }
         finally
@@ -1790,6 +1792,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
+            ToolkitLog.Error("Firmware automatic restore during close failed.", ex);
             _running = wasRunning;
             _exitRequested = false;
             _exitRestoreInProgress = false;
@@ -3661,6 +3664,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
+            ToolkitLog.Error("GPU working-mode refresh failed.", ex);
             if (_pendingGpuMode is { } pending &&
                 _gpuModes.Contains(pending))
             {
@@ -3736,6 +3740,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
+            ToolkitLog.Error("Pending GPU working mode could not be applied.", ex);
             MessageBox.Show(
                 this,
                 string.Format(

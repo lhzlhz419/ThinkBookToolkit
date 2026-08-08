@@ -97,7 +97,8 @@ internal sealed class NvidiaPrivateTelemetryReader
 
     public NvidiaPrivateTelemetrySnapshot Read(string gpuName)
     {
-        if (!SupportsPerChipMemoryTemperature(gpuName))
+        if (!SupportsPerChipMemoryTemperature(gpuName) ||
+            !GpuDevicePresenceDetector.IsActive(gpuName))
             return NvidiaPrivateTelemetrySnapshot.Empty;
 
         lock (_sync)
@@ -113,8 +114,10 @@ internal sealed class NvidiaPrivateTelemetryReader
                     : null;
                 return new NvidiaPrivateTelemetrySnapshot(memory, hotSpot);
             }
-            catch
+            catch (Exception ex)
             {
+                ToolkitLog.Warning(
+                    "NVIDIA private telemetry read failed: " + ex.Message);
                 return NvidiaPrivateTelemetrySnapshot.Empty;
             }
         }

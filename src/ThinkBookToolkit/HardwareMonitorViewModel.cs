@@ -89,6 +89,17 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         ? $"{power.Atpp.Value} W"
         : "--";
 
+    public bool PowerCpuPl1Visible => PowerVisible(PowerSetting.CpuPl1, "cpu-pl1");
+    public bool PowerCpuPl2Visible => PowerVisible(PowerSetting.CpuPl2, "cpu-pl2");
+    public bool PowerCpuTemperatureVisible => PowerVisible(PowerSetting.CpuTemperatureLimit, "cpu-temperature");
+    public bool PowerTurboTimeVisible => PowerVisible(PowerSetting.CpuTurboTimeLimit, "turbo-time");
+    public bool PowerGpuBoostVisible => PowerVisible(PowerSetting.GpuPowerBoost, "gpu-boost");
+    public bool PowerGpuTgpVisible => PowerVisible(PowerSetting.GpuConfigurableTgp, "gpu-tgp");
+    public bool PowerGpuTemperatureVisible => PowerVisible(PowerSetting.GpuTemperatureLimit, "gpu-temperature");
+    public bool PowerGpuToCpuVisible => PowerVisible(PowerSetting.GpuToCpuDynamicBoost, "gpu-to-cpu");
+    public bool PowerAtppVisible => PowerVisible(PowerSetting.Atpp, "atpp") &&
+                                    _snapshot.PowerSettings?.Atpp.HasValue == true;
+
     public string WarrantyStatus => _snapshot.Warranty?.State switch
     {
         WarrantyState.InWarranty => Runtime.L("在保", "Covered"),
@@ -133,6 +144,13 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         _snapshot.PowerSettings is { } power && power.IsAvailable(setting)
             ? $"{value(power)} {unit}"
             : "--";
+
+    private bool PowerVisible(PowerSetting setting, string itemId) =>
+        OverviewLayoutDefaults.IsItemEnabled(
+            Runtime.Settings.OverviewLayout,
+            OverviewCardIds.Power,
+            itemId) &&
+        _snapshot.PowerSettings?.IsAvailable(setting) == true;
 
     private static string WarrantyDate(DateOnly? value) =>
         value?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "--";

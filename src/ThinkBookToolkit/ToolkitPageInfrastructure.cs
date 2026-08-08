@@ -292,7 +292,8 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
 
     protected AdaptiveUniformPanel HardwareMonitorCards(
         bool includeBattery = true,
-        OverviewLayoutSettings? layout = null)
+        OverviewLayoutSettings? layout = null,
+        bool includeOverviewExtras = true)
     {
         var panel = new AdaptiveUniformPanel
         {
@@ -372,22 +373,33 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                 new(L("风扇1目标", "Fan 1 target"), nameof(HardwareMonitorViewModel.Fan1Target), ItemId: "fan1-target"),
                 new(L("风扇2目标", "Fan 2 target"), nameof(HardwareMonitorViewModel.Fan2Target), ItemId: "fan2-target")
             ])), layout);
-        if (layout is not null)
+        if (layout is not null && includeOverviewExtras)
         {
             Add(OverviewCardIds.Power, HardwareMonitorCard(
                 L("功耗限制", "Power limits"),
                 null,
                 new MonitorSection(null,
                 [
-                    new("CPU PL1", nameof(HardwareMonitorViewModel.PowerCpuPl1), false, "CPU PL2", nameof(HardwareMonitorViewModel.PowerCpuPl2), "cpu-pl1", "cpu-pl2"),
-                    new(L("CPU 温度", "CPU temperature"), nameof(HardwareMonitorViewModel.PowerCpuTemperature), false, "Turbo Time", nameof(HardwareMonitorViewModel.PowerTurboTime), "cpu-temperature", "turbo-time"),
-                    new("GPU Power Boost", nameof(HardwareMonitorViewModel.PowerGpuBoost), false,
+                    new("CPU PL1", nameof(HardwareMonitorViewModel.PowerCpuPl1), false, "CPU PL2", nameof(HardwareMonitorViewModel.PowerCpuPl2),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerCpuPl1Visible),
+                        SecondaryVisibilityProperty: nameof(HardwareMonitorViewModel.PowerCpuPl2Visible)),
+                    new(L("CPU 温度墙", "CPU temperature limit"), nameof(HardwareMonitorViewModel.PowerCpuTemperature), false, "Turbo Time", nameof(HardwareMonitorViewModel.PowerTurboTime),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerCpuTemperatureVisible),
+                        SecondaryVisibilityProperty: nameof(HardwareMonitorViewModel.PowerTurboTimeVisible)),
+                    new("GPU Power Boost", nameof(HardwareMonitorViewModel.PowerGpuBoost),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerGpuBoostVisible)),
+                    new(
                         PowerSettingsController.CurrentProfile.Writable
                             ? "GPU TGP"
                             : "GPU Configurable TGP",
-                        nameof(HardwareMonitorViewModel.PowerGpuTgp), "gpu-boost", "gpu-tgp"),
-                    new(L("GPU 温度", "GPU temperature"), nameof(HardwareMonitorViewModel.PowerGpuTemperature), false, "GPU to CPU DB", nameof(HardwareMonitorViewModel.PowerGpuToCpu), "gpu-temperature", "gpu-to-cpu"),
-                    new("ATPP", nameof(HardwareMonitorViewModel.PowerAtpp), ItemId: "atpp")
+                        nameof(HardwareMonitorViewModel.PowerGpuTgp), false,
+                        L("GPU 温度墙", "GPU temperature limit"), nameof(HardwareMonitorViewModel.PowerGpuTemperature),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerGpuTgpVisible),
+                        SecondaryVisibilityProperty: nameof(HardwareMonitorViewModel.PowerGpuTemperatureVisible)),
+                    new("GPU to CPU Dynamic Boost", nameof(HardwareMonitorViewModel.PowerGpuToCpu),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerGpuToCpuVisible)),
+                    new("ATPP", nameof(HardwareMonitorViewModel.PowerAtpp),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerAtppVisible))
                 ])), layout);
             Add(OverviewCardIds.Warranty, HardwareMonitorCard(
                 L("保修信息", "Warranty"),
@@ -595,25 +607,32 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         {
             value.Margin = new Thickness(0, 2, 0, 0);
             value.Tag = row;
+            BindVisibility(value, row.VisibilityProperty);
             return value;
         }
 
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition
         {
             Width = new GridLength(1, GridUnitType.Star)
+        });
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = GridLength.Auto
         });
         grid.Children.Add(new TextBlock
         {
             Text = row.Label,
             FontSize = 12,
             Foreground = Brush(Palette.Muted),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextWrapping = TextWrapping.NoWrap,
             Margin = new Thickness(0, 0, 8, 0)
         });
         Grid.SetColumn(value, 1);
         grid.Children.Add(value);
         grid.Tag = row;
+        BindVisibility(grid, row.VisibilityProperty);
         return grid;
     }
 
@@ -629,28 +648,60 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             Width = new GridLength(1, GridUnitType.Star)
         });
 
-        var left = HardwareMonitorPairCell(row.Label, row.Property);
+        var left = HardwareMonitorPairCell(
+            row.Label, row.Property, row.VisibilityProperty);
         left.Margin = new Thickness(0, 0, 8, 0);
         grid.Children.Add(left);
 
         var right = HardwareMonitorPairCell(
             row.SecondaryLabel ?? string.Empty,
-            row.SecondaryProperty!);
+            row.SecondaryProperty!,
+            row.SecondaryVisibilityProperty);
         Grid.SetColumn(right, 1);
         grid.Children.Add(right);
         grid.Tag = row;
+        void UpdateColumns()
+        {
+            var leftVisible = left.Visibility == Visibility.Visible;
+            var rightVisible = right.Visibility == Visibility.Visible;
+            Grid.SetColumn(left, 0);
+            Grid.SetColumnSpan(left, leftVisible && !rightVisible ? 2 : 1);
+            Grid.SetColumn(right, leftVisible ? 1 : 0);
+            Grid.SetColumnSpan(right, rightVisible && !leftVisible ? 2 : 1);
+            left.Margin = leftVisible && rightVisible
+                ? new Thickness(0, 0, 8, 0)
+                : new Thickness(0);
+        }
+        left.IsVisibleChanged += (_, _) => UpdateColumns();
+        right.IsVisibleChanged += (_, _) => UpdateColumns();
+        if (!string.IsNullOrWhiteSpace(row.VisibilityProperty) &&
+            !string.IsNullOrWhiteSpace(row.SecondaryVisibilityProperty))
+        {
+            var visibility = new MultiBinding
+            {
+                Converter = AnyTrueToVisibilityConverter.Instance
+            };
+            visibility.Bindings.Add(new Binding(row.VisibilityProperty));
+            visibility.Bindings.Add(new Binding(row.SecondaryVisibilityProperty));
+            grid.SetBinding(UIElement.VisibilityProperty, visibility);
+        }
+        UpdateColumns();
         return grid;
     }
 
     private FrameworkElement HardwareMonitorPairCell(
         string label,
-        string property)
+        string property,
+        string? visibilityProperty = null)
     {
         var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition
         {
             Width = new GridLength(1, GridUnitType.Star)
+        });
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = GridLength.Auto
         });
         grid.Children.Add(new TextBlock
         {
@@ -658,6 +709,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             FontSize = 12,
             Foreground = Brush(Palette.Muted),
             TextTrimming = TextTrimming.CharacterEllipsis,
+            TextWrapping = TextWrapping.NoWrap,
             Margin = new Thickness(0, 0, 5, 0)
         });
         var value = new TextBlock
@@ -666,13 +718,27 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             Foreground = Brush(Palette.Text),
             TextAlignment = TextAlignment.Right,
             HorizontalAlignment = HorizontalAlignment.Right,
-            TextWrapping = TextWrapping.NoWrap,
-            TextTrimming = TextTrimming.CharacterEllipsis
+            TextWrapping = TextWrapping.NoWrap
         };
         value.SetBinding(TextBlock.TextProperty, new Binding(property));
         Grid.SetColumn(value, 1);
         grid.Children.Add(value);
+        BindVisibility(grid, visibilityProperty);
         return grid;
+    }
+
+    private static void BindVisibility(
+        FrameworkElement element,
+        string? property)
+    {
+        if (string.IsNullOrWhiteSpace(property))
+            return;
+        element.SetBinding(
+            UIElement.VisibilityProperty,
+            new Binding(property)
+            {
+                Converter = BooleanToVisibilityConverter.Instance
+            });
     }
 
     private FrameworkElement HardwareMonitorRows(
@@ -790,7 +856,36 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         string? SecondaryLabel = null,
         string? SecondaryProperty = null,
         string? ItemId = null,
-        string? SecondaryItemId = null);
+        string? SecondaryItemId = null,
+        string? VisibilityProperty = null,
+        string? SecondaryVisibilityProperty = null);
+
+    private sealed class BooleanToVisibilityConverter : IValueConverter
+    {
+        public static BooleanToVisibilityConverter Instance { get; } = new();
+
+        public object Convert(object value, Type targetType, object parameter,
+            CultureInfo culture) => value is true
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+
+        public object ConvertBack(object value, Type targetType, object parameter,
+            CultureInfo culture) => throw new NotSupportedException();
+    }
+
+    private sealed class AnyTrueToVisibilityConverter : IMultiValueConverter
+    {
+        public static AnyTrueToVisibilityConverter Instance { get; } = new();
+
+        public object Convert(object[] values, Type targetType, object parameter,
+            CultureInfo culture) => values.Any(value => value is true)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+
+        public object[] ConvertBack(object value, Type[] targetTypes,
+            object parameter, CultureInfo culture) =>
+            throw new NotSupportedException();
+    }
 
     protected Button ActionButton(
         string text,

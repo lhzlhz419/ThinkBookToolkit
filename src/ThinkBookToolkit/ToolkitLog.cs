@@ -35,6 +35,8 @@ internal static class ToolkitLog
                     AutoFlush = true
                 };
                 Info("ThinkBook Toolkit started.");
+                Info($"Process: {Environment.ProcessId}; OS: {Environment.OSVersion}; " +
+                     $"64-bit process: {Environment.Is64BitProcess}");
             }
         }
         catch
@@ -47,6 +49,25 @@ internal static class ToolkitLog
     public static void Warning(string message) => Write("WARN", message);
     public static void Error(string message, Exception? exception = null) =>
         Write("ERROR", exception is null ? message : message + Environment.NewLine + exception);
+
+    public static void Shutdown()
+    {
+        lock (Sync)
+        {
+            if (_writer is null)
+                return;
+            try
+            {
+                _writer.WriteLine(
+                    $"[{DateTimeOffset.Now:O}] [INFO] ThinkBook Toolkit stopped.");
+                _writer.Dispose();
+            }
+            catch
+            {
+            }
+            _writer = null;
+        }
+    }
 
     private static void Write(string level, string message)
     {

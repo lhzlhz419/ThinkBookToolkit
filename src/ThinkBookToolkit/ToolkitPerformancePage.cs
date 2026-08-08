@@ -11,6 +11,7 @@ namespace ThinkBookToolkit;
 
 internal sealed class ToolkitPerformancePage : ToolkitPageBase
 {
+    private readonly bool _coolingOnly;
     private readonly ComboBox _itsMode = new() { MinWidth = 190 };
     private readonly ComboBox _gpuMode = new() { MinWidth = 210 };
     private readonly TextBlock _modeStatus;
@@ -73,8 +74,11 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private bool _disposed;
     private bool _syncing;
 
-    public ToolkitPerformancePage(ToolkitRuntimeService runtime) : base(runtime)
+    public ToolkitPerformancePage(
+        ToolkitRuntimeService runtime,
+        bool coolingOnly = false) : base(runtime)
     {
+        _coolingOnly = coolingOnly;
         _modeStatus = StatusText();
         _restartNow = ActionButton(L("立即重启", "Restart now"), primary: true);
         _fanStatus = StatusText();
@@ -116,19 +120,18 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private UIElement BuildLayout()
     {
         var root = new StackPanel();
-        if (Runtime.Report?.AnyAvailable(
-                FeatureIds.TemperatureMonitoring,
-                FeatureIds.FanControl,
-                FeatureIds.BatteryInformation) != false)
+        if (!_coolingOnly &&
+            Runtime.Report?.AnyAvailable(FeatureIds.TemperatureMonitoring) != false)
         {
             root.Children.Add(BuildTelemetry());
         }
 
-        if (Runtime.Report?.AnyAvailable(FeatureIds.PerformanceMode, FeatureIds.GpuMode) != false)
+        if (!_coolingOnly &&
+            Runtime.Report?.AnyAvailable(FeatureIds.PerformanceMode, FeatureIds.GpuMode) != false)
             root.Children.Add(BuildModeCard());
-        if (Runtime.Report?.IsAvailable(FeatureIds.FanControl) != false)
+        if (_coolingOnly && Runtime.Report?.IsAvailable(FeatureIds.FanControl) != false)
             root.Children.Add(BuildFanCard());
-        if (Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
+        if (!_coolingOnly && Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
             root.Children.Add(BuildPowerCard());
         if (root.Children.Count == 0)
             root.Children.Add(EmptyState(L("此设备没有可用的性能调节功能。", "No performance controls are available on this device.")));
@@ -137,7 +140,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
     private UIElement BuildTelemetry()
     {
-        var panel = HardwareMonitorCards(includeBattery: false);
+        var panel = HardwareMonitorCards(
+            includeBattery: false,
+            layout: Runtime.Settings.OverviewLayout,
+            includeOverviewExtras: false);
         return Card(
             L("实时状态", "Live status"),
             panel,
@@ -154,9 +160,14 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         foreach (GpuWorkingMode mode in Enum.GetValues<GpuWorkingMode>())
             AddChoice(_gpuMode, GpuModeName(mode), mode);
         var content = new StackPanel();
+        var choices = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 400,
+            Spacing = 8
+        };
         if (Runtime.Report?.IsAvailable(FeatureIds.PerformanceMode) != false)
         {
-            content.Children.Add(SettingRow(
+            choices.Children.Add(SettingRow(
                 L("性能模式", "Performance mode"),
                 L("切换 Lenovo ITS 固件性能状态。", "Switch the Lenovo ITS firmware performance state."),
                 _itsMode,
@@ -164,12 +175,13 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         }
         if (Runtime.Report?.IsAvailable(FeatureIds.GpuMode) != false)
         {
-            content.Children.Add(SettingRow(
+            choices.Children.Add(SettingRow(
                 L("GPU 工作模式", "GPU working mode"),
                 L("需要重启的切换会显示为等待重启，不会自动重启。", "Changes that require a restart remain pending; Toolkit never restarts automatically."),
                 _gpuMode,
                 "\uE7F4"));
         }
+        content.Children.Add(choices);
         var restartControl = new StackPanel { Orientation = Orientation.Horizontal };
         _pendingRestartText.Foreground = Brush(Palette.Warning);
         _pendingRestartText.VerticalAlignment = VerticalAlignment.Center;
@@ -419,7 +431,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         AddChoice(_editFan, "Fan 1", 1);
         AddChoice(_editFan, "Fan 2", 2);
-        var general = new AdaptiveUniformPanel { MinimumItemWidth = 290, Spacing = 8 };
+        var general = new AdaptiveUniformPanel { MinimumItemWidth = 250, Spacing = 8 };
         general.Children.Add(CompactSetting(L("方案", "Profile"), _profile));
         general.Children.Add(CompactSetting(L("名称", "Name"), _profileName));
         general.Children.Add(CompactSetting(L("编辑风扇", "Edit fan"), _editFan));
@@ -440,7 +452,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         var general = new AdaptiveUniformPanel
         {
-            MinimumItemWidth = 290,
+            MinimumItemWidth = 250,
             Spacing = 8
         };
         general.Children.Add(CompactSetting(
@@ -491,7 +503,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         var panel = new StackPanel();
         var current = new AdaptiveUniformPanel
         {
-            MinimumItemWidth = 210,
+            MinimumItemWidth = 180,
             Spacing = 8
         };
         AddPowerReadout(current, "CpuPl1", PowerSetting.CpuPl1, "CPU PL1", "W");
@@ -984,9 +996,11 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
     private async Task LoadAsync()
     {
-        ReloadFanDrafts();
+        if (_coolingOnly)
+            ReloadFanDrafts();
         SyncRuntimeControls();
-        if (Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
+        if (!_coolingOnly &&
+            Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
             await LoadPowerAsync();
     }
 
@@ -1704,8 +1718,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         var wasSyncing = _syncing;
         _syncing = true;
-        var selection = Runtime.Settings.PowerSettingsLocks ??
-            new PowerSettingsLockSelection();
+        var selection = Runtime.CurrentPowerSettingsLocks;
         foreach (var pair in _powerLockToggles)
             pair.Value.IsChecked = selection.IsLocked(pair.Key);
         Select(
@@ -1738,7 +1751,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         if (DataContext is PerformanceViewModel viewModel)
             viewModel.Update(Runtime.Snapshot);
         SyncRuntimeControls();
-        if (IsLoaded && IsVisible)
+        if (!_coolingOnly && IsLoaded && IsVisible)
             _ = RefreshPowerReadoutsAsync();
     }
 

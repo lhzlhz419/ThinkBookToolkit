@@ -105,7 +105,7 @@ internal static class FeatureAvailabilityService
             _ = fanController.ReadSnapshot();
             result.Add(new(
                 FeatureIds.FanControl,
-                "性能与散热",
+                "散热",
                 "风扇监控与控制",
                 true,
                 "风扇后端已连接",
@@ -115,7 +115,7 @@ internal static class FeatureAvailabilityService
         {
             result.Add(new(
                 FeatureIds.FanControl,
-                "性能与散热",
+                "散热",
                 "风扇监控与控制",
                 false,
                 ex.Message));
@@ -123,7 +123,7 @@ internal static class FeatureAvailabilityService
 
         result.Add(new(
             FeatureIds.SleepFanControl,
-            "性能与散热",
+            "散热",
             "睡眠时关闭风扇控制",
             fanController?.SupportsDisableControlOnSleep == true,
             fanController is null
@@ -132,7 +132,7 @@ internal static class FeatureAvailabilityService
                     ? "当前风扇控制方式支持"
                     : "当前风扇控制方式不支持"));
 
-        Probe(result, FeatureIds.PerformanceMode, "性能与散热", "性能模式切换", () =>
+        Probe(result, FeatureIds.PerformanceMode, "性能", "性能模式切换", () =>
         {
             var detector = new ItsModeDetector();
             if (!detector.IsModeSwitchSupported())
@@ -140,7 +140,7 @@ internal static class FeatureAvailabilityService
             return $"当前模式：{detector.ReadMode()}";
         });
 
-        Probe(result, FeatureIds.GpuMode, "性能与散热", "GPU 工作模式", () =>
+        Probe(result, FeatureIds.GpuMode, "性能", "GPU 工作模式", () =>
         {
             var state = GpuModeController.ReadState();
             if (state.SupportedModes.Count == 0)
@@ -161,7 +161,7 @@ internal static class FeatureAvailabilityService
             var atppAvailable = power.IsAvailable(PowerSetting.Atpp);
             result.Add(new(
                 FeatureIds.PowerSettings,
-                "性能与散热",
+                "性能",
                 "功耗设置",
                 fullyWritable,
                 fullyWritable
@@ -176,7 +176,7 @@ internal static class FeatureAvailabilityService
         {
             result.Add(new(
                 FeatureIds.PowerSettings,
-                "性能与散热",
+                "性能",
                 "功耗设置",
                 false,
                 ex.Message));

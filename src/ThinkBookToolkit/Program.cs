@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 
 namespace ThinkBookToolkit;
@@ -14,6 +15,12 @@ public static class Program
         {
             ToolkitLog.Initialize();
             AppDomain.CurrentDomain.UnhandledException += (_, args) => LogException(args.ExceptionObject as Exception);
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => ToolkitLog.Shutdown();
+            TaskScheduler.UnobservedTaskException += (_, args) =>
+            {
+                ToolkitLog.Error("Unobserved background task exception.", args.Exception);
+                args.SetObserved();
+            };
 
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
             app.DispatcherUnhandledException += (_, args) =>

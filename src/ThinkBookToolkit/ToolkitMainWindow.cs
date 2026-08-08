@@ -216,7 +216,8 @@ internal sealed class ToolkitMainWindow : Window
         panel.Children.Add(brand);
 
         AddNavigation(panel, "overview", "\uE80F", L("概览", "Overview"));
-        AddNavigationIf(panel, "performance", "\uE9D9", L("性能与散热", "Performance"));
+        AddNavigationIf(panel, "performance", "\uE945", L("性能", "Performance"));
+        AddNavigationIf(panel, "cooling", "\uE9D9", L("散热", "Cooling"));
         AddNavigationIf(panel, "battery", "\uE850", L("电池与电源", "Battery and power"));
         AddNavigationIf(panel, "display", "\uE7F4", L("显示", "Display"));
         AddNavigationIf(panel, "sound", "\uE767", L("声音", "Sound"));
@@ -429,6 +430,7 @@ internal sealed class ToolkitMainWindow : Window
     private ToolkitPageBase CreatePage(string page) => page switch
     {
         "performance" => new ToolkitPerformancePage(_runtime),
+        "cooling" => new ToolkitPerformancePage(_runtime, coolingOnly: true),
         "battery" => new ToolkitBatteryPage(_runtime),
         "display" => new ToolkitDisplayPage(_runtime),
         "sound" => new ToolkitSoundPage(_runtime),
@@ -443,7 +445,8 @@ internal sealed class ToolkitMainWindow : Window
 
     private (string Title, string Subtitle, string Glyph) PageDescriptor(string page) => page switch
     {
-        "performance" => (L("性能与散热", "Performance and cooling"), L("性能模式、GPU、风扇和功耗", "Performance modes, GPU, fans, and power"), "\uE9D9"),
+        "performance" => (L("性能", "Performance"), L("性能模式、GPU 和功耗", "Performance modes, GPU, and power limits"), "\uE945"),
+        "cooling" => (L("散热", "Cooling"), L("风扇策略、曲线和转速控制", "Fan strategies, curves, and RPM control"), "\uE9D9"),
         "battery" => (L("电池与电源", "Battery and power"), L("充电、供电与电池健康", "Charging, power delivery, and battery health"), "\uE850"),
         "display" => (L("显示", "Display"), L("护眼与色彩管理", "Eye care and color management"), "\uE7F4"),
         "sound" => (L("声音", "Sound"), L("Dolby 音效与智能降噪", "Dolby audio and intelligent noise cancellation"), "\uE767"),
@@ -460,7 +463,8 @@ internal sealed class ToolkitMainWindow : Window
         if (report is null) return true;
         return page switch
         {
-            "performance" => report.AnyAvailable(FeatureIds.TemperatureMonitoring, FeatureIds.FanControl, FeatureIds.PerformanceMode, FeatureIds.GpuMode, FeatureIds.PowerSettings),
+            "performance" => report.AnyAvailable(FeatureIds.TemperatureMonitoring, FeatureIds.PerformanceMode, FeatureIds.GpuMode, FeatureIds.PowerSettings),
+            "cooling" => report.AnyAvailable(FeatureIds.FanControl),
             "battery" => report.AnyAvailable(FeatureIds.BatteryChargeMode, FeatureIds.OvernightCharging, FeatureIds.AlwaysOnUsb, FeatureIds.FlipToStart, FeatureIds.BatteryInformation),
             "display" => report.AnyAvailable(FeatureIds.VantageEyeCare, FeatureIds.PcManagerEyeCare, FeatureIds.ColorManagement),
             "sound" => report.AnyAvailable(FeatureIds.DolbyAtmos, FeatureIds.SpeakerNoiseCancellation, FeatureIds.MicrophoneNoiseCancellation),
@@ -582,9 +586,12 @@ internal sealed class ToolkitMainWindow : Window
             Dispatcher.BeginInvoke(new Action(() => OnOverviewLayoutChanged(sender, args)));
             return;
         }
-        if (_pages.Remove("overview", out var overview))
-            overview.Dispose();
-        if (_selectedPage == "overview")
+        foreach (var pageId in new[] { "overview", "performance" })
+        {
+            if (_pages.Remove(pageId, out var page))
+                page.Dispose();
+        }
+        if (_selectedPage is "overview" or "performance")
             RenderPage();
     }
 

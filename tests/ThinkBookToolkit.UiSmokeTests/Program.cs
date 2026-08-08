@@ -157,6 +157,7 @@ internal static class Program
         {
             ["overview"] = typeof(ToolkitOverviewPage),
             ["performance"] = typeof(ToolkitPerformancePage),
+            ["cooling"] = typeof(ToolkitPerformancePage),
             ["battery"] = typeof(ToolkitBatteryPage),
             ["display"] = typeof(ToolkitDisplayPage),
             ["sound"] = typeof(ToolkitSoundPage),
@@ -176,7 +177,7 @@ internal static class Program
             Assert(page.DataContext is INotifyPropertyChanged,
                 $"Page {expected.Key} has no ViewModel implementing INotifyPropertyChanged.");
             var innerScrollers = Descendants(page).OfType<ScrollViewer>().ToArray();
-            Assert(expected.Key == "performance"
+            Assert(expected.Key == "cooling"
                     ? innerScrollers.Length == 1 &&
                       IsAdvancedCurveHorizontalScroller(innerScrollers[0])
                     : innerScrollers.Length == 0,
@@ -254,6 +255,26 @@ internal static class Program
             $"value={overviewViewModel?.PowerCpuPl1}");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
+            PowerSettings = runtime.Snapshot.PowerSettings! with
+            {
+                Atpp = null,
+                AvailableSettings = PowerSettingAvailability.All &
+                                    ~PowerSettingAvailability.Atpp
+            }
+        });
+        Assert(overviewViewModel?.PowerAtppVisible == false &&
+               overviewViewModel?.PowerGpuBoostVisible == true &&
+               overviewViewModel?.PowerGpuToCpuVisible == true &&
+               ContainsText(window.CurrentPage!, "CPU 温度墙") &&
+               ContainsText(window.CurrentPage!, "GPU 温度墙"),
+            "Unreadable overview power values are not hidden independently.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            PowerSettings = new PowerSettingsState(
+                125, 157, 97, 56, 10, 105, 87, 0, 75)
+        });
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
             PendingGpuMode = GpuWorkingMode.HybridAuto.ToString(),
             PendingGpuModeSource = GpuWorkingMode.Discrete.ToString()
         });
@@ -277,10 +298,15 @@ internal static class Program
         var performance = window.CurrentPage!;
         Assert(ContainsText(performance, "性能与 GPU 模式"),
             "Performance and GPU modes are not an independent region.");
+        var modeChoices = Descendants(performance)
+            .OfType<AdaptiveUniformPanel>()
+            .First(panel => panel.Children.Count == 2);
+        ArrangePanel(modeChoices, 850);
+        Assert(SameRow(modeChoices.Children[0], modeChoices.Children[1]),
+            "Performance and GPU mode choices use an unnecessarily wide breakpoint.");
         Assert(!ContainsText(performance, "当前控制归属") &&
-               Descendants(performance).OfType<ComboBoxItem>()
-                   .Any(item => item.Content?.ToString() == "固件自动"),
-            "Fan ownership was not replaced by the unified firmware-automatic strategy.");
+               !ContainsText(performance, "控制策略"),
+            "Fan controls were not removed from the performance page.");
         Assert(ContainsText(performance, "风扇转速"),
             "Live fan readings were not combined in the fan card.");
         var fan1Target = performance.DataContext?.GetType()
@@ -341,26 +367,50 @@ internal static class Program
         telemetry!.Measure(new Size(1400, double.PositiveInfinity));
         Assert(telemetry.DesiredSize.Height < 340,
             "Four live monitoring cards do not fit on one row at the target width.");
-        Assert(ContainsText(performance, "风扇拉满") &&
-                ContainsText(performance, "最高转速运行") &&
-                !ContainsText(performance, "SetFullSpeed(true)") &&
-                !ContainsText(performance, "SetFullSpeed(false)") &&
-                !ContainsText(performance, "紧急散热"),
+        var originalOverviewLayout = settings.OverviewLayout;
+        var filteredLayout = OverviewLayoutDefaults.Clone(originalOverviewLayout);
+        filteredLayout.Cards[OverviewCardIds.Cpu].Enabled = false;
+        settings.OverviewLayout = filteredLayout;
+        using (var filteredPerformance = new ToolkitPerformancePage(runtime))
+        {
+            var filteredCards = Descendants(filteredPerformance)
+                .OfType<Border>()
+                .Where(border => border.Tag is string id &&
+                    OverviewLayoutDefaults.CardDefinitions.ContainsKey(id))
+                .Select(border => border.Tag?.ToString())
+                .ToArray();
+            Assert(!filteredCards.Contains(OverviewCardIds.Cpu) &&
+                   filteredCards.Contains(OverviewCardIds.Gpu) &&
+                   filteredCards.Length == 3,
+                "Live status does not follow overview card visibility settings.");
+        }
+        settings.OverviewLayout = originalOverviewLayout;
+
+        window.NavigateForTesting("cooling");
+        var cooling = window.CurrentPage!;
+        Assert(Descendants(cooling).OfType<ComboBoxItem>()
+                   .Any(item => item.Content?.ToString() == "固件自动"),
+            "Cooling does not expose the firmware-automatic strategy.");
+        Assert(ContainsText(cooling, "风扇拉满") &&
+                ContainsText(cooling, "最高转速运行") &&
+                !ContainsText(cooling, "SetFullSpeed(true)") &&
+                !ContainsText(cooling, "SetFullSpeed(false)") &&
+                !ContainsText(cooling, "紧急散热"),
             "Full fan speed still exposes backend implementation details.");
-        Assert(ContainsText(performance, "当前固定转速状态") &&
-                ContainsText(performance, "写入 0 会将对应风扇交还固件控制"),
+        Assert(ContainsText(cooling, "当前固定转速状态") &&
+                ContainsText(cooling, "写入 0 会将对应风扇交还固件控制"),
             "Fixed-RPM manual state or backend-specific zero-RPM semantics are missing.");
         var fixedPanel = GetPrivateField<StackPanel>(
-            performance,
+            cooling,
             "_fixedPanel");
         var curvePanel = GetPrivateField<StackPanel>(
-            performance,
+            cooling,
             "_curvePanel");
         var advancedCurvePanel = GetPrivateField<StackPanel>(
-            performance,
+            cooling,
             "_advancedCurvePanel");
         var strategySelector = GetPrivateField<ComboBox>(
-            performance,
+            cooling,
             "_strategy");
         Assert(fixedPanel.Visibility == Visibility.Collapsed &&
                curvePanel.Visibility == Visibility.Visible &&
@@ -396,8 +446,8 @@ internal static class Program
                advancedLabels.RowDefinitions.Select(row => row.Height.Value)
                    .SequenceEqual(advancedPoints.RowDefinitions.Select(row => row.Height.Value)),
             "Advanced-curve labels and scrollable cells do not share aligned rows.");
-        performance.Measure(new Size(620, double.PositiveInfinity));
-        Assert(performance.DesiredSize.Width <= 621,
+        cooling.Measure(new Size(620, double.PositiveInfinity));
+        Assert(cooling.DesiredSize.Width <= 621,
             "Advanced-curve editing forces horizontal page overflow.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
@@ -418,19 +468,19 @@ internal static class Program
                MainWindow.RuntimeIsValidHotkey(string.Empty) &&
                !MainWindow.RuntimeIsValidHotkey("Ctrl+NotAKey"),
             "Fixed-mode hotkey validation is incomplete.");
-        var draftStatus = GetPrivateField<TextBlock>(performance, "_draftStatus");
+        var draftStatus = GetPrivateField<TextBlock>(cooling, "_draftStatus");
         Assert(string.IsNullOrWhiteSpace(draftStatus.Text) &&
                draftStatus.Visibility == Visibility.Collapsed,
             "The clean fan draft still shows a log-like status.");
-        Assert(!ContainsText(performance, "开机自启") &&
-               !ContainsText(performance, "启动到托盘"),
+        Assert(!ContainsText(cooling, "开机自启") &&
+               !ContainsText(cooling, "启动到托盘"),
             "Global preferences still appear on the performance page.");
-        var performanceScrollers = Descendants(performance)
+        var performanceScrollers = Descendants(cooling)
             .OfType<ScrollViewer>()
             .ToArray();
         Assert(performanceScrollers.Length == 1 &&
                IsAdvancedCurveHorizontalScroller(performanceScrollers[0]),
-            "Performance page contains an unexpected nested scrollbar.");
+            "Cooling page contains an unexpected nested scrollbar.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
             PendingGpuMode = GpuWorkingMode.HybridAuto.ToString(),
@@ -559,11 +609,11 @@ internal static class Program
                ContainsText(powerEditorHost, "锁定检查间隔") &&
                !ContainsText(powerEditorHost, "锁定功耗设置"),
             "Power-setting lock controls or interval defaults are incorrect.");
-        Assert(Labels(GetPrivateField<ComboBox>(performance, "_smoothing"))
+        Assert(Labels(GetPrivateField<ComboBox>(cooling, "_smoothing"))
                    .SequenceEqual(["1", "2", "3", "5", "10"]) &&
-               Labels(GetPrivateField<ComboBox>(performance, "_rampDown"))
+               Labels(GetPrivateField<ComboBox>(cooling, "_rampDown"))
                    .SequenceEqual(["10", "20", "50", "100", "无限制"]) &&
-               Labels(GetPrivateField<ComboBox>(performance, "_gameHold"))
+               Labels(GetPrivateField<ComboBox>(cooling, "_gameHold"))
                    .SequenceEqual(["0", "10", "20", "30", "60"]),
             "Fan timing selector text or order differs from Fan Control.");
 
@@ -691,6 +741,28 @@ internal static class Program
 
         window.NavigateForTesting("settings");
         var settingsPage = window.CurrentPage!;
+        var settingsPanels = Descendants(settingsPage)
+            .OfType<AdaptiveUniformPanel>()
+            .ToArray();
+        var globalSettings = settingsPanels.Single(panel => panel.Children.Count == 5);
+        var startupSettings = settingsPanels.Single(panel => panel.Children.Count >= 8);
+        ArrangePanel(globalSettings, 1000);
+        ArrangePanel(startupSettings, 900);
+        Assert(SameRow(globalSettings.Children[0], globalSettings.Children[1]) &&
+               SameRow(globalSettings.Children[1], globalSettings.Children[2]) &&
+               SameRow(globalSettings.Children[3], globalSettings.Children[4]) &&
+               !SameRow(globalSettings.Children[2], globalSettings.Children[3]),
+            "Global settings require too much width for the requested 3+2 layout.");
+        Assert(SameRow(startupSettings.Children[0], startupSettings.Children[1]) &&
+               SameRow(startupSettings.Children[2], startupSettings.Children[3]) &&
+               SameRow(startupSettings.Children[^2], startupSettings.Children[^1]),
+            "Startup and fan behavior settings require too much width for two-column rows.");
+        Assert(!ContainsText(settingsPage, "关闭单项后，同一行剩余的数据会自动占满整行。") &&
+               settingsPage.GetType().GetField(
+                       "_overviewEditorWindow",
+                       BindingFlags.Instance | BindingFlags.NonPublic)
+                   ?.GetValue(settingsPage) is null,
+            "The overview editor is still embedded in the settings page.");
         Assert(ContainsText(settingsPage, "全局设置") &&
                ContainsText(settingsPage, "完整功能监测结果"),
             "Settings is missing global preferences or inline availability.");
@@ -829,7 +901,7 @@ internal static class Program
         var partialReport = new FeatureAvailabilityReport([
             new FeatureAvailability(
                 FeatureIds.PowerSettings,
-                "性能与散热",
+                "性能",
                 "功耗设置",
                 false,
                 "8 项功耗参数可读取；写入仅支持 ThinkBook 16p G6 IAX",
@@ -856,7 +928,7 @@ internal static class Program
         atppRuntime.SetReportForTesting(new FeatureAvailabilityReport([
             new FeatureAvailability(
                 FeatureIds.PowerSettings,
-                "性能与散热",
+                "性能",
                 "功耗设置",
                 true,
                 "ATPP 可调整。",
@@ -899,7 +971,7 @@ internal static class Program
         englishRuntime.SetReportForTesting(new FeatureAvailabilityReport([
             new FeatureAvailability(
                 FeatureIds.FanControl,
-                "性能与散热",
+                "散热",
                 "风扇监控与控制",
                 true,
                 "不应显示的内部实现信息",
@@ -907,7 +979,7 @@ internal static class Program
                     "Private backend implementation detail"),
             new FeatureAvailability(
                 FeatureIds.PowerSettings,
-                "性能与散热",
+                "性能",
                 "功耗设置",
                 false,
                 "仅支持 ThinkBook 16p G6 IAX")
@@ -1078,7 +1150,8 @@ internal static class Program
                     AttemptDisableControlOnSleepWhenUnsupported: false,
                     PowerSettingsLocks: { Any: false },
                     PowerSettingsLockIntervalSeconds: 2,
-                    PowerSettingsLockTarget: null
+                    PowerSettingsLockTarget: null,
+                    PowerSettingsLocksByMode.Count: 0
                },
             "Fan I/O interval overrides or unsupported-backend sleep behavior have unsafe defaults.");
         var cpuPl1Lock = new PowerSettingsLockSelection { CpuPl1 = true };
@@ -1140,6 +1213,39 @@ internal static class Program
                PowerSettingsController.GetDefaultState(ItsMode.Performance, g6PowerProfile)?.Atpp == 85 &&
                PowerSettingsController.GetDefaultState(ItsMode.Geek, g6PowerProfile)?.Atpp == 105,
             "ATPP defaults do not match the four performance modes.");
+        var intelligentLocks = new PowerSettingsLockSelection { CpuPl1 = true };
+        var performanceLocks = new PowerSettingsLockSelection { CpuPl2 = true };
+        settings.PowerSettingsLocks = new PowerSettingsLockSelection();
+        settings.PowerSettingsLockTarget = null;
+        settings.PowerSettingsLocksByMode = new Dictionary<string, PowerModeLockSettings>
+        {
+            [ItsMode.Intelligent.ToString()] = new()
+            {
+                Locks = intelligentLocks,
+                Target = confirmedPower with { CpuPl1 = 95 }
+            },
+            [ItsMode.Performance.ToString()] = new()
+            {
+                Locks = performanceLocks,
+                Target = confirmedPower with { CpuPl2 = 157 }
+            }
+        };
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            ItsMode = ItsMode.Intelligent
+        });
+        Assert(runtime.CurrentPowerSettingsLocks.CpuPl1 &&
+               !runtime.CurrentPowerSettingsLocks.CpuPl2,
+            "Intelligent-mode power locks were not selected.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            ItsMode = ItsMode.Performance
+        });
+        Assert(runtime.CurrentPowerSettingsLocks.CpuPl2 &&
+               !runtime.CurrentPowerSettingsLocks.CpuPl1 &&
+               CurveProfileStore.NormalizePowerModeLocks(
+                   settings.PowerSettingsLocksByMode).Count == 2,
+            "Power locks are not isolated by performance mode.");
         Assert(MainWindow.SuppressSmallTargetChanges(
                    new FanTargets(1599, 1600),
                    new FanTargets(1500, 1500)) ==
@@ -1831,7 +1937,8 @@ internal static class Program
 
     private static string Category(string id)
     {
-        if (id.StartsWith("performance.", StringComparison.Ordinal)) return "性能与散热";
+        if (id is FeatureIds.FanControl or FeatureIds.SleepFanControl) return "散热";
+        if (id.StartsWith("performance.", StringComparison.Ordinal)) return "性能";
         if (id.StartsWith("battery.", StringComparison.Ordinal)) return "电池与电源";
         if (id.StartsWith("display.", StringComparison.Ordinal)) return "显示";
         if (id.StartsWith("sound.", StringComparison.Ordinal)) return "声音";
@@ -1852,6 +1959,17 @@ internal static class Program
     private static bool ContainsButtonText(DependencyObject root, string text) =>
         Descendants(root).OfType<Button>().Any(button =>
             button.Content?.ToString()?.Contains(text, StringComparison.Ordinal) == true);
+
+    private static void ArrangePanel(AdaptiveUniformPanel panel, double width)
+    {
+        panel.Measure(new Size(width, double.PositiveInfinity));
+        panel.Arrange(new Rect(0, 0, width, panel.DesiredSize.Height));
+        panel.UpdateLayout();
+    }
+
+    private static bool SameRow(UIElement first, UIElement second) =>
+        Math.Abs(first.TranslatePoint(new Point(), null).Y -
+                 second.TranslatePoint(new Point(), null).Y) < 1;
 
     private static bool IsAdvancedCurveHorizontalScroller(ScrollViewer scroll) =>
         Equals(scroll.Tag, "AdvancedFanCurveHorizontalScroll") &&

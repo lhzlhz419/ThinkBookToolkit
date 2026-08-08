@@ -10,7 +10,8 @@ public sealed class TemperatureReader : IDisposable
 {
     private const double BytesPerGiB = 1024d * 1024d * 1024d;
     private readonly Computer _computer;
-    private readonly NvidiaPrivateTelemetryReader? _nvidiaTelemetry;
+    private NvidiaPrivateTelemetryReader? _nvidiaTelemetry;
+    private int _gpuPresenceGeneration;
     private readonly StorageTemperatureReader? _storageTelemetry;
     private TemperatureSnapshot? _lastSnapshot;
 
@@ -25,6 +26,7 @@ public sealed class TemperatureReader : IDisposable
         _computer.Open();
 
         _nvidiaTelemetry = NvidiaPrivateTelemetryReader.TryCreate();
+        _gpuPresenceGeneration = GpuDevicePresenceDetector.Generation;
         _storageTelemetry = StorageTemperatureReader.TryCreate();
     }
 
@@ -38,7 +40,7 @@ public sealed class TemperatureReader : IDisposable
         }
         catch (Exception ex)
         {
-            ToolkitLog.Warning("Hardware monitoring refresh failed: " + ex.Message);
+            ToolkitLog.Error("Hardware monitoring refresh failed.", ex);
             return _lastSnapshot is { } previous
                 ? previous with
                 {
@@ -67,6 +69,11 @@ public sealed class TemperatureReader : IDisposable
         var hardware = new List<HardwareReading>();
         foreach (var item in _computer.Hardware)
         {
+            if (item.HardwareType == HardwareType.GpuNvidia &&
+                !GpuDevicePresenceDetector.IsActive(item.Name))
+            {
+                continue;
+            }
             hardware.Add(new HardwareReading(
                 item.Name,
                 item.HardwareType,
@@ -105,6 +112,14 @@ public sealed class TemperatureReader : IDisposable
             ["gpu hot spot", "hot spot", "hotspot"]);
 
         var gpuName = gpuHardware?.Name ?? string.Empty;
+        var generation = GpuDevicePresenceDetector.Generation;
+        if (generation != _gpuPresenceGeneration)
+        {
+            _nvidiaTelemetry = string.IsNullOrWhiteSpace(gpuName)
+                ? null
+                : NvidiaPrivateTelemetryReader.TryCreate();
+            _gpuPresenceGeneration = generation;
+        }
         var privateTelemetry = _nvidiaTelemetry?.Read(gpuName) ??
             NvidiaPrivateTelemetrySnapshot.Empty;
         var (physicalUsed, physicalTotal, virtualUsed, virtualTotal) =
@@ -246,8 +261,10 @@ public sealed class TemperatureReader : IDisposable
         {
             hardware.Update();
         }
-        catch
+        catch (Exception ex)
         {
+            ToolkitLog.Warning(
+                $"Hardware update failed for {rootName}: {ex.Message}");
             return;
         }
 

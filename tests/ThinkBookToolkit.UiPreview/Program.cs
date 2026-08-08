@@ -96,7 +96,8 @@ internal static class Program
     private static string CategoryFor(string id) => id.Split('.')[0] switch
     {
         "monitor" => "监控",
-        "performance" => "性能与散热",
+        "performance" when id is FeatureIds.FanControl or FeatureIds.SleepFanControl => "散热",
+        "performance" => "性能",
         "battery" => "电池与电源",
         "display" => "显示",
         "sound" => "声音",

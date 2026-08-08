@@ -220,6 +220,12 @@ public sealed record PowerSettingsLockSelection
     };
 }
 
+public sealed class PowerModeLockSettings
+{
+    public PowerSettingsLockSelection Locks { get; set; } = new();
+    public PowerSettingsState? Target { get; set; }
+}
+
 public sealed class AppSettings
 {
     public string ConfigurationVersion { get; set; } = CurveProfileStore.CurrentConfigurationVersion;
@@ -260,6 +266,8 @@ public sealed class AppSettings
     public PowerSettingsLockSelection PowerSettingsLocks { get; set; } = new();
     public int PowerSettingsLockIntervalSeconds { get; set; } = 2;
     public PowerSettingsState? PowerSettingsLockTarget { get; set; }
+    public Dictionary<string, PowerModeLockSettings> PowerSettingsLocksByMode
+        { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string LastFanBackendIdentity { get; set; } = "";
     public string SuppressedFanBackendStartupNoticeIdentity { get; set; } = "";
     public string PendingGpuMode { get; set; } = "";

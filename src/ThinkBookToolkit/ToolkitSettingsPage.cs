@@ -23,7 +23,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly CheckBox _continuousFanWrites = new();
     private readonly Button _editOverview;
     private readonly Button _restartReaders;
-    private readonly Border _overviewEditorHost = new();
+    private Window? _overviewEditorWindow;
     private readonly Dictionary<string, CheckBox> _overviewCardToggles =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<(string Card, string Item), CheckBox>
@@ -73,7 +73,11 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         WireEvents();
 
         var root = new StackPanel();
-        var global = new StackPanel();
+        var global = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 300,
+            Spacing = 8
+        };
         global.Children.Add(SettingRow(
             L("状态刷新间隔", "Status refresh interval"),
             L("设置设备状态和概览信息多久更新一次。", "Choose how often device status and overview information update."),
@@ -104,12 +108,12 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             global,
             L("管理界面语言、外观和信息更新频率。", "Manage language, appearance, and information updates."),
             "\uE713"));
-        _overviewEditorHost.Child = BuildOverviewEditor();
-        _overviewEditorHost.Visibility = Visibility.Collapsed;
-        _overviewEditorHost.Margin = new Thickness(0, -4, 0, 12);
-        root.Children.Add(_overviewEditorHost);
 
-        var startup = new StackPanel();
+        var startup = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 400,
+            Spacing = 8
+        };
         startup.Children.Add(SettingRow(
             L("开机自启", "Start with Windows"),
             L("登录 Windows 后自动打开 Toolkit。", "Open Toolkit automatically after signing in to Windows."),
@@ -402,19 +406,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         };
         _editOverview.Click += (_, _) =>
         {
-            var show = _overviewEditorHost.Visibility != Visibility.Visible;
-            if (show)
-            {
-                _overviewDraft = OverviewLayoutDefaults.Clone(
-                    Runtime.Settings.OverviewLayout);
-                SyncOverviewEditor();
-            }
-            _overviewEditorHost.Visibility = show
-                ? Visibility.Visible
-                : Visibility.Collapsed;
-            _editOverview.Content = show
-                ? L("收起编辑", "Close editor")
-                : L("编辑概览页", "Edit overview");
+            ShowOverviewEditor();
         };
         _restartReaders.Click += async (_, _) =>
         {
@@ -531,14 +523,12 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             _viewModel.Status = Runtime.TrySetOverviewLayout(_overviewDraft, out var error)
                 ? string.Empty
                 : L("概览页设置保存失败：", "Could not save overview settings: ") + error;
-            _overviewEditorHost.Visibility = Visibility.Collapsed;
-            _editOverview.Content = L("编辑概览页", "Edit overview");
             _status.Text = _viewModel.Status;
+            _overviewEditorWindow?.Close();
         };
         cancel.Click += (_, _) =>
         {
-            _overviewEditorHost.Visibility = Visibility.Collapsed;
-            _editOverview.Content = L("编辑概览页", "Edit overview");
+            _overviewEditorWindow?.Close();
         };
         var buttons = new StackPanel
         {
@@ -554,6 +544,47 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             content,
             L("关闭单项后，同一行剩余的数据会自动占满整行。", "When one item in a pair is hidden, the remaining item fills the row."),
             "\uE70F");
+    }
+
+    private void ShowOverviewEditor()
+    {
+        if (_overviewEditorWindow is not null)
+        {
+            _overviewEditorWindow.Activate();
+            return;
+        }
+
+        _overviewDraft = OverviewLayoutDefaults.Clone(
+            Runtime.Settings.OverviewLayout);
+        _overviewCardToggles.Clear();
+        _overviewItemToggles.Clear();
+        var editor = BuildOverviewEditor();
+        var window = new Window
+        {
+            Owner = Window.GetWindow(this),
+            Title = L("概览页内容", "Overview contents"),
+            Width = 720,
+            Height = 760,
+            MinWidth = 520,
+            MinHeight = 520,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ShowInTaskbar = false,
+            Background = Brush(Palette.Canvas),
+            Foreground = Brush(Palette.Text),
+            FontFamily = FontFamily,
+            FontSize = FontSize,
+            Content = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Padding = new Thickness(16),
+                Content = editor
+            }
+        };
+        _overviewEditorWindow = window;
+        window.Closed += (_, _) => _overviewEditorWindow = null;
+        SyncOverviewEditor();
+        window.ShowDialog();
     }
 
     private void SyncOverviewEditor()
@@ -752,7 +783,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private string CategoryName(string category) => category switch
     {
         "监控" => L("监控", "Monitoring"),
-        "性能与散热" => L("性能与散热", "Performance and cooling"),
+        "性能" => L("性能", "Performance"),
+        "散热" => L("散热", "Cooling"),
         "电池与电源" => L("电池与电源", "Battery and power"),
         "显示" => L("显示", "Display"),
         "声音" => L("声音", "Sound"),
