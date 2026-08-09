@@ -5,6 +5,28 @@ using System.Management;
 
 namespace ThinkBookToolkit;
 
+internal sealed record GpuDevicePresenceSnapshot(
+    int Generation,
+    IReadOnlyList<string> ActiveNames,
+    bool Reliable)
+{
+    public bool IsActive(string gpuName)
+    {
+        if (string.IsNullOrWhiteSpace(gpuName))
+            return false;
+        if (!Reliable)
+            return true;
+        var normalized = GpuDevicePresenceDetector.Normalize(gpuName);
+        return ActiveNames.Any(name =>
+            GpuDevicePresenceDetector.Normalize(name).Contains(
+                normalized,
+                StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains(
+                GpuDevicePresenceDetector.Normalize(name),
+                StringComparison.OrdinalIgnoreCase));
+    }
+}
+
 internal static class GpuDevicePresenceDetector
 {
     private static readonly object Sync = new();
@@ -17,17 +39,18 @@ internal static class GpuDevicePresenceDetector
 
     public static bool IsActive(string gpuName)
     {
-        if (string.IsNullOrWhiteSpace(gpuName))
-            return false;
+        return Capture().IsActive(gpuName);
+    }
+
+    public static GpuDevicePresenceSnapshot Capture()
+    {
         RefreshIfNeeded();
         lock (Sync)
         {
-            if (!_hasSuccessfulSnapshot)
-                return true;
-            var normalized = Normalize(gpuName);
-            return _activeNames.Any(name =>
-                Normalize(name).Contains(normalized, StringComparison.OrdinalIgnoreCase) ||
-                normalized.Contains(Normalize(name), StringComparison.OrdinalIgnoreCase));
+            return new GpuDevicePresenceSnapshot(
+                Generation,
+                _hasSuccessfulSnapshot ? _activeNames.ToArray() : [],
+                _hasSuccessfulSnapshot);
         }
     }
 
@@ -74,7 +97,7 @@ internal static class GpuDevicePresenceDetector
         }
     }
 
-    private static string Normalize(string value) => value
+    internal static string Normalize(string value) => value
         .Replace("NVIDIA", string.Empty, StringComparison.OrdinalIgnoreCase)
         .Replace("GeForce", string.Empty, StringComparison.OrdinalIgnoreCase)
         .Replace("Laptop GPU", string.Empty, StringComparison.OrdinalIgnoreCase)

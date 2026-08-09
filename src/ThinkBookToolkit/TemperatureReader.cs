@@ -10,8 +10,7 @@ public sealed class TemperatureReader : IDisposable
 {
     private const double BytesPerGiB = 1024d * 1024d * 1024d;
     private readonly Computer _computer;
-    private NvidiaPrivateTelemetryReader? _nvidiaTelemetry;
-    private int _gpuPresenceGeneration;
+    private readonly GpuMonitorWorkerClient _gpuMonitor = new();
     private readonly StorageTemperatureReader? _storageTelemetry;
     private TemperatureSnapshot? _lastSnapshot;
 
@@ -20,13 +19,14 @@ public sealed class TemperatureReader : IDisposable
         _computer = new Computer
         {
             IsCpuEnabled = true,
-            IsGpuEnabled = true,
+            // GPU vendors expose native telemetry APIs that can terminate the
+            // CLR while a discrete adapter is being removed or reconnected.
+            // GPU monitoring therefore runs in ThinkBookToolkit.Guardian.
+            IsGpuEnabled = false,
             IsMemoryEnabled = true
         };
         _computer.Open();
 
-        _nvidiaTelemetry = NvidiaPrivateTelemetryReader.TryCreate();
-        _gpuPresenceGeneration = GpuDevicePresenceDetector.Generation;
         _storageTelemetry = StorageTemperatureReader.TryCreate();
     }
 
@@ -65,15 +65,11 @@ public sealed class TemperatureReader : IDisposable
 
     private TemperatureSnapshot ReadCore()
     {
+        var isolatedGpu = _gpuMonitor.Read();
         var sensors = new List<SensorReading>();
         var hardware = new List<HardwareReading>();
         foreach (var item in _computer.Hardware)
         {
-            if (item.HardwareType == HardwareType.GpuNvidia &&
-                !GpuDevicePresenceDetector.IsActive(item.Name))
-            {
-                continue;
-            }
             hardware.Add(new HardwareReading(
                 item.Name,
                 item.HardwareType,
@@ -89,39 +85,12 @@ public sealed class TemperatureReader : IDisposable
 
         var cpuHardware = hardware.FirstOrDefault(item =>
             item.HardwareType == HardwareType.Cpu);
-        var gpuHardware = hardware
-            .Where(item => IsGpu(item.HardwareType))
-            .OrderBy(item => GpuPreference(item.HardwareType))
-            .FirstOrDefault();
         var cpuSensors = SensorsFor(sensors, cpuHardware);
-        var gpuSensors = SensorsFor(sensors, gpuHardware);
 
         var cpuTemperature = PickTemperature(
             cpuSensors,
             ["cpu package", "package", "core max", "cpu core", "tctl", "tdie"],
             fallbackToAny: true);
-        var gpuTemperature = PickTemperature(
-            gpuSensors,
-            ["gpu core", "core"],
-            fallbackToAny: true);
-        var vramTemperature = PickTemperature(
-            gpuSensors,
-            ["gpu memory junction", "memory junction", "gpu memory", "vram"]);
-        var lhmHotSpot = PickTemperature(
-            gpuSensors,
-            ["gpu hot spot", "hot spot", "hotspot"]);
-
-        var gpuName = gpuHardware?.Name ?? string.Empty;
-        var generation = GpuDevicePresenceDetector.Generation;
-        if (generation != _gpuPresenceGeneration)
-        {
-            _nvidiaTelemetry = string.IsNullOrWhiteSpace(gpuName)
-                ? null
-                : NvidiaPrivateTelemetryReader.TryCreate();
-            _gpuPresenceGeneration = generation;
-        }
-        var privateTelemetry = _nvidiaTelemetry?.Read(gpuName) ??
-            NvidiaPrivateTelemetrySnapshot.Empty;
         var (physicalUsed, physicalTotal, virtualUsed, virtualTotal) =
             ReadMemoryUsage();
 
@@ -158,14 +127,6 @@ public sealed class TemperatureReader : IDisposable
         var storage = ReadStorageSafely();
 
         var cpuPower = PickPower(cpuSensors, ["cpu package", "package"]);
-        var gpuPower = PickPower(
-            gpuSensors,
-            ["gpu power", "gpu package", "package", "total board", "board power"]);
-        var gpuMemoryLoad = PickValue(
-            gpuSensors,
-            SensorType.Load,
-            ["gpu memory", "memory"]);
-        gpuMemoryLoad ??= CalculateGpuMemoryLoad(gpuSensors);
         var cpuLoad = PickValue(
             cpuSensors,
             SensorType.Load,
@@ -174,25 +135,15 @@ public sealed class TemperatureReader : IDisposable
                 cpuSensors,
                 SensorType.Load,
                 ["cpu core", "core"]);
-        var gpuLoad = PickValue(
-            gpuSensors,
-            SensorType.Load,
-            ["gpu core", "core"]) ??
-            gpuSensors
-                .Where(sensor => sensor.SensorType == SensorType.Load)
-                .Where(sensor => !ContainsAny(sensor, ["memory", "video engine", "bus"]))
-                .Select(sensor => (double?)sensor.Value)
-                .FirstOrDefault();
-
         return new TemperatureSnapshot(
             cpuTemperature.Sensor?.Value,
-            gpuTemperature.Sensor?.Value,
-            vramTemperature.Sensor?.Value,
+            isolatedGpu?.CoreTemperatureC,
+            isolatedGpu?.MemoryTemperatureC,
             cpuPower,
-            gpuPower,
+            isolatedGpu?.PowerW,
             cpuTemperature.Name,
-            gpuTemperature.Name,
-            vramTemperature.Name)
+            isolatedGpu?.CoreTemperatureSensor ?? "not found",
+            isolatedGpu?.MemoryTemperatureSensor ?? "not found")
         {
             CpuName = cpuHardware?.Name ?? string.Empty,
             CpuLoadPercent = cpuLoad,
@@ -202,20 +153,13 @@ public sealed class TemperatureReader : IDisposable
             CpuMaximumClockMhz = cpuClocks.Length > 0
                 ? cpuClocks.Max()
                 : null,
-            GpuName = gpuName,
-            GpuLoadPercent = gpuLoad,
-            GpuMemoryLoadPercent = gpuMemoryLoad,
-            GpuCoreClockMhz = PickValue(
-                gpuSensors,
-                SensorType.Clock,
-                ["gpu core", "core"]),
-            GpuMemoryClockMhz = PickValue(
-                gpuSensors,
-                SensorType.Clock,
-                ["gpu memory", "memory"]),
-            GpuHotSpotTempC = privateTelemetry.HotSpotTemperatureC ??
-                lhmHotSpot.Sensor?.Value,
-            VramChipTemperaturesC = privateTelemetry.MemoryChipTemperaturesC,
+            GpuName = isolatedGpu?.Name ?? string.Empty,
+            GpuLoadPercent = isolatedGpu?.LoadPercent,
+            GpuMemoryLoadPercent = isolatedGpu?.MemoryLoadPercent,
+            GpuCoreClockMhz = isolatedGpu?.CoreClockMhz,
+            GpuMemoryClockMhz = isolatedGpu?.MemoryClockMhz,
+            GpuHotSpotTempC = isolatedGpu?.HotSpotTemperatureC,
+            VramChipTemperaturesC = isolatedGpu?.MemoryChipTemperaturesC ?? [],
             PhysicalMemoryUsedGb = physicalUsed,
             PhysicalMemoryTotalGb = physicalTotal,
             VirtualMemoryUsedGb = virtualUsed,
@@ -227,6 +171,7 @@ public sealed class TemperatureReader : IDisposable
 
     public void Dispose()
     {
+        _gpuMonitor.Dispose();
         try
         {
             _computer.Close();
@@ -384,20 +329,6 @@ public sealed class TemperatureReader : IDisposable
         return values.Length > 0 ? values.Average() : null;
     }
 
-    private static double? CalculateGpuMemoryLoad(
-        IReadOnlyList<SensorReading> sensors)
-    {
-        var used = sensors.FirstOrDefault(sensor =>
-            sensor.SensorType is SensorType.Data or SensorType.SmallData &&
-            ContainsAny(sensor, ["memory used", "dedicated memory used"]));
-        var total = sensors.FirstOrDefault(sensor =>
-            sensor.SensorType is SensorType.Data or SensorType.SmallData &&
-            ContainsAny(sensor, ["memory total", "dedicated memory total"]));
-        if (used is null || total is null || total.Value <= 0)
-            return null;
-        return Math.Clamp(used.Value * 100 / total.Value, 0, 100);
-    }
-
     private static int PatternIndex(SensorReading sensor, string[] patterns)
     {
         for (var index = 0; index < patterns.Length; index++)
@@ -417,13 +348,6 @@ public sealed class TemperatureReader : IDisposable
 
     private static bool IsGpu(HardwareType type) =>
         type is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel;
-
-    private static int GpuPreference(HardwareType type) => type switch
-    {
-        HardwareType.GpuNvidia => 0,
-        HardwareType.GpuAmd => 1,
-        _ => 2
-    };
 
     private static bool IsPlausibleClock(double value) =>
         value is > 0 and < 20000;

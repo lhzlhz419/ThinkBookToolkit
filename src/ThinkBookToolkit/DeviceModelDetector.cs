@@ -8,7 +8,7 @@ internal static class DeviceModelDetector
     public const string ThinkBook16pG6Iax = "ThinkBook 16p G6 IAX";
     public const string ThinkBook16pG5Irx = "ThinkBook 16p G5 IRX";
     public const string ThinkBook16pG6Adr = "ThinkBook 16p G6 ADR";
-    public const string ThinkBook14Gen6Plus = "ThinkBook 14 Gen 6 Plus";
+    public const string ThinkBook14G6PlusImh = "ThinkBook 14 G6+ IMH";
     private static readonly Lazy<DeviceIdentity> Identity = new(
         DeviceInformationService.ReadIdentity);
 
@@ -21,14 +21,14 @@ internal static class DeviceModelDetector
 
     public static bool IsThinkBook16pG5Irx() => IsModel(ThinkBook16pG5Irx);
 
-    public static bool IsThinkBook14Gen6Plus() => IsModel(ThinkBook14Gen6Plus);
+    public static bool IsThinkBook14G6PlusImh() => IsModel(ThinkBook14G6PlusImh);
 
     public static bool UsesAlternativeFullSpeedByDefault() =>
         UsesAlternativeFullSpeedByDefault(Identity.Value.Model);
 
     internal static bool UsesAlternativeFullSpeedByDefault(string model) =>
         ModelMatches(model, ThinkBook16pG6Adr) ||
-        ModelMatches(model, ThinkBook14Gen6Plus);
+        ModelMatches(model, ThinkBook14G6PlusImh);
 
     internal static bool ModelMatches(string actual, string expected)
     {

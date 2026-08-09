@@ -36,10 +36,10 @@ internal static class OverviewLayoutDefaults
             [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "maximum-frequency", "temperature", "power"],
             [OverviewCardIds.Gpu] = ["utilization", "vram-utilization", "core-frequency", "vram-frequency", "core-temperature", "hotspot-temperature", "vram-temperature", "power"],
             [OverviewCardIds.Battery] = ["status", "charge", "health", "power"],
-            [OverviewCardIds.MemoryStorage] = ["physical-memory", "virtual-memory", "slot1-temperature", "slot2-temperature", "disk-temperatures", "disk-health"],
+            [OverviewCardIds.MemoryStorage] = ["physical-memory", "virtual-memory", "slot1-temperature", "slot2-temperature", "disk-temperatures", "disk-health", "utilization", "average-temperature"],
             [OverviewCardIds.Fans] = ["fan1-speed", "fan2-speed", "fan1-target", "fan2-target"],
             [OverviewCardIds.Power] = ["cpu-pl1", "cpu-pl2", "cpu-temperature", "turbo-time", "gpu-boost", "gpu-tgp", "gpu-temperature", "gpu-to-cpu", "atpp"],
-            [OverviewCardIds.Warranty] = []
+            [OverviewCardIds.Warranty] = ["status", "start-date", "end-date", "remaining-days", "progress"]
         };
 
     public static Dictionary<string, OverviewCardSettings> CreateCards() =>
@@ -112,4 +112,36 @@ internal static class OverviewLayoutDefaults
 
     public static IReadOnlyDictionary<string, string[]> CardDefinitions =>
         Definitions;
+
+    public static IReadOnlyDictionary<string, string[]>
+        DetailedCardDefinitions { get; } =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "maximum-frequency", "temperature", "power"],
+            [OverviewCardIds.Gpu] = ["utilization", "vram-utilization", "core-frequency", "vram-frequency", "core-temperature", "hotspot-temperature", "vram-temperature", "power"],
+            [OverviewCardIds.Battery] = ["status", "charge", "health", "power"],
+            [OverviewCardIds.MemoryStorage] = ["physical-memory", "virtual-memory", "slot1-temperature", "slot2-temperature", "disk-temperatures", "disk-health"],
+            [OverviewCardIds.Fans] = ["fan1-speed", "fan2-speed", "fan1-target", "fan2-target"],
+            [OverviewCardIds.Power] = ["cpu-pl1", "cpu-pl2", "cpu-temperature", "turbo-time", "gpu-boost", "gpu-tgp", "gpu-temperature", "gpu-to-cpu", "atpp"],
+            [OverviewCardIds.Warranty] = ["status", "start-date", "end-date", "remaining-days", "progress"]
+        };
+
+    public static IReadOnlyDictionary<string, string[]>
+        CompactCardDefinitions { get; } =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            [OverviewCardIds.Cpu] = ["temperature", "power"],
+            [OverviewCardIds.Gpu] = ["core-temperature", "power"],
+            [OverviewCardIds.Battery] = ["charge", "health", "power"],
+            [OverviewCardIds.MemoryStorage] = ["utilization", "average-temperature"],
+            [OverviewCardIds.Fans] = ["fan1-speed", "fan2-speed"],
+            [OverviewCardIds.Warranty] = ["status", "remaining-days"]
+        };
+
+    public static bool AnyItemEnabled(
+        OverviewLayoutSettings? value,
+        string cardId,
+        params string[] itemIds) =>
+        IsCardEnabled(value, cardId) &&
+        itemIds.Any(itemId => IsItemEnabled(value, cardId, itemId));
 }

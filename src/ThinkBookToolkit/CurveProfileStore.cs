@@ -22,7 +22,7 @@ public static class CurveProfileStore
         DefaultFanRpmLimitsForModel(DeviceModelDetector.CurrentIdentity.Model);
 
     internal static FanRpmLimits DefaultFanRpmLimitsForModel(string model) =>
-        DeviceModelDetector.ModelMatches(model, DeviceModelDetector.ThinkBook14Gen6Plus)
+        DeviceModelDetector.ModelMatches(model, DeviceModelDetector.ThinkBook14G6PlusImh)
             ? new FanRpmLimits
             {
                 Fan1MinimumRpm = DefaultMinimumFanRpm,
@@ -192,8 +192,15 @@ public static class CurveProfileStore
                 : DeviceModelDetector.UsesAlternativeFullSpeedByDefault();
             defaults.ContinuouslyWriteFanTargets =
                 loaded.ContinuouslyWriteFanTargets;
+            defaults.OverviewPageMode = Enum.IsDefined(
+                    loaded.OverviewPageMode)
+                ? loaded.OverviewPageMode
+                : OverviewPageMode.Detailed;
             defaults.OverviewLayout = OverviewLayoutDefaults.Normalize(
                 loaded.OverviewLayout);
+            defaults.PerformanceFanLink =
+                PerformanceFanLinkDefaults.Normalize(
+                    loaded.PerformanceFanLink);
             defaults.PowerSettingsLockIntervalSeconds =
                 PowerSettingsController.IsSupportedLockInterval(
                     loaded.PowerSettingsLockIntervalSeconds)
@@ -291,6 +298,9 @@ public static class CurveProfileStore
             NormalizeFanRpmLimits(settings.FanRpmLimits));
         settings.OverviewLayout = OverviewLayoutDefaults.Normalize(
             settings.OverviewLayout);
+        settings.PerformanceFanLink =
+            PerformanceFanLinkDefaults.Normalize(
+                settings.PerformanceFanLink);
         WriteTextAtomically(
             SettingsPath,
             JsonSerializer.Serialize(settings, JsonOptions));
@@ -312,6 +322,9 @@ public static class CurveProfileStore
         }
         settings.OverviewLayout = OverviewLayoutDefaults.Normalize(
             settings.OverviewLayout);
+        settings.PerformanceFanLink =
+            PerformanceFanLinkDefaults.Normalize(
+                settings.PerformanceFanLink);
     }
 
     internal static PowerSettingsLockSelection NormalizePowerSettingsLocks(

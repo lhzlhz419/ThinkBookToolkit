@@ -70,6 +70,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly DispatcherTimer _pollTimer = new();
     private readonly DispatcherTimer _powerSettingsLockTimer = new();
     private readonly SemaphoreSlim _powerSettingsGate = new(1, 1);
+    private readonly FanWatchdogClient _fanWatchdog = new();
     private MainWindow? _fanRuntime;
     private TemperatureReader? _temperatureReader;
     private ToolkitMainWindow? _window;
@@ -84,6 +85,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly string _bootSessionId;
     private bool _polling;
     private bool _powerSettingsLockBusy;
+    private bool _fanPerformanceLinkBusy;
+    private int _systemSessionEnding;
+    private ItsMode _lastFanLinkedPerformanceMode = ItsMode.Unknown;
     private string _lastPowerSettingsLockError = string.Empty;
     private bool _disposed;
     private bool _systemThemeSubscribed;
@@ -178,6 +182,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public bool ExitRequested { get; private set; }
 
+    internal bool IsSystemSessionEnding =>
+        Volatile.Read(ref _systemSessionEnding) != 0;
+
     public event EventHandler? SnapshotChanged;
 
     public event EventHandler? AvailabilityChanged;
@@ -257,6 +264,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 ShowInTaskbar = false
             };
             _ = new WindowInteropHelper(_fanRuntime).EnsureHandle();
+            _fanWatchdog.TryArm(
+                _fanRuntime.RuntimeBackendIdentity,
+                out _);
             _fanRuntime.RaiseEvent(new RoutedEventArgs(
                 FrameworkElement.LoadedEvent,
                 _fanRuntime));
@@ -313,12 +323,49 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _window?.Close();
     }
 
+    internal void PrepareForSystemShutdown(ReasonSessionEnding reason)
+    {
+        if (Interlocked.Exchange(ref _systemSessionEnding, 1) != 0)
+            return;
+
+        ExitRequested = true;
+        _pollTimer.Stop();
+        _powerSettingsLockTimer.Stop();
+        ToolkitLog.Info(
+            $"Windows session is ending ({reason}); stopping background controls.");
+
+        var fansRestored = true;
+        if (_fanRuntime is not null &&
+            !_fanRuntime.RuntimePrepareForSystemShutdown(out var error))
+        {
+            fansRestored = false;
+            ToolkitLog.Error(
+                "Firmware automatic fan control could not be restored during Windows shutdown.",
+                new InvalidOperationException(error));
+        }
+        if (fansRestored)
+            _fanWatchdog.TryDisarm(out _);
+
+        Snapshot = Snapshot with
+        {
+            FanControlRunning = false,
+            FullSpeed = false,
+            FanTarget = null,
+            UpdatedAt = DateTimeOffset.Now
+        };
+        DisplaySettingsController.Shutdown();
+        SoundSettingsController.Shutdown();
+    }
+
     public async Task RestoreForExitAsync()
     {
+        if (IsSystemSessionEnding)
+            return;
         _pollTimer.Stop();
         _powerSettingsLockTimer.Stop();
         if (_fanRuntime is not null)
             await _fanRuntime.RuntimeRestoreFirmwareAutoAsync();
+        _fanWatchdog.TryDisarm(out _);
     }
 
     public async Task<PowerSettingsState> ReadPowerSettingsAsync()
@@ -464,6 +511,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     {
         if (_polling || _disposed)
             return;
+        ItsMode? modeToLink = null;
         _polling = true;
         try
         {
@@ -547,6 +595,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             UpdateTrayText();
             SyncPowerSettingsLockTimer();
+            if (itsMode != ItsMode.Unknown &&
+                itsMode != _lastFanLinkedPerformanceMode)
+            {
+                _lastFanLinkedPerformanceMode = itsMode;
+                modeToLink = itsMode;
+            }
         }
         catch (Exception ex)
         {
@@ -563,6 +617,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             _polling = false;
         }
+        if (modeToLink.HasValue)
+            await ApplyFanStrategyForPerformanceModeAsync(modeToLink.Value);
     }
 
     private async Task RefreshWarrantyAsync()
@@ -681,7 +737,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             await _fanRuntime.RuntimeSetControlEnabledAsync(enabled);
             await RefreshAsync(force: true);
-            return null;
+            return enabled
+                ? await ApplyPerformanceModeForFanControlAsync()
+                : null;
         }
         catch (Exception ex)
         {
@@ -721,7 +779,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             CurveProfileStore.SaveSettings(Settings);
             await _fanRuntime.RuntimeSetControlEnabledAsync(true);
             await RefreshAsync(force: true);
-            return null;
+            return await ApplyPerformanceModeForFanControlAsync();
         }
         catch (Exception ex)
         {
@@ -827,7 +885,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             await _fanRuntime.RuntimeSetFullSpeedAsync(enabled);
             await RefreshAsync(force: true);
-            return null;
+            return enabled
+                ? await ApplyPerformanceModeForFanControlAsync()
+                : null;
         }
         catch (Exception ex)
         {
@@ -940,6 +1000,149 @@ internal sealed class ToolkitRuntimeService : IDisposable
             error = ex.Message;
             return false;
         }
+    }
+
+    public bool TrySetOverviewPageMode(
+        OverviewPageMode mode,
+        out string? error)
+    {
+        if (!Enum.IsDefined(mode))
+        {
+            error = L("概览页模式无效。", "The overview mode is invalid.");
+            return false;
+        }
+        var previous = Settings.OverviewPageMode;
+        Settings.OverviewPageMode = mode;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            OverviewLayoutChanged?.Invoke(this, EventArgs.Empty);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.OverviewPageMode = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    public bool TrySetPerformanceFanLink(
+        PerformanceFanLinkSettings value,
+        out string? error)
+    {
+        var previous = Settings.PerformanceFanLink;
+        Settings.PerformanceFanLink =
+            PerformanceFanLinkDefaults.Normalize(value);
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.PerformanceFanLink = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private async Task ApplyFanStrategyForPerformanceModeAsync(ItsMode mode)
+    {
+        var link = PerformanceFanLinkDefaults.Normalize(
+            Settings.PerformanceFanLink);
+        if (_fanPerformanceLinkBusy ||
+            !link.SwitchFanStrategyWithPerformanceMode ||
+            Array.IndexOf(
+                PerformanceFanLinkDefaults.SupportedModes,
+                mode) < 0 ||
+            _fanRuntime is null)
+        {
+            return;
+        }
+
+        var selection = PerformanceFanLinkDefaults.SelectionFor(link, mode);
+        _fanPerformanceLinkBusy = true;
+        try
+        {
+            if (selection.Mode == FanControlMode.FanCurve)
+            {
+                var profileError = await SelectFanProfileAsync(
+                    selection.ProfileIndex);
+                if (!string.IsNullOrWhiteSpace(profileError))
+                {
+                    ToolkitLog.Warning(
+                        "Linked fan profile could not be selected: " +
+                        profileError);
+                    return;
+                }
+            }
+            var error = await SetFanModeAsync(selection.Mode);
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                ToolkitLog.Warning(
+                    "Linked fan strategy could not be applied: " + error);
+                SetStatus(L(
+                    "性能模式已切换，但关联的风扇策略未能应用：",
+                    "The performance mode changed, but its linked fan strategy could not be applied: ") + error);
+            }
+        }
+        finally
+        {
+            _fanPerformanceLinkBusy = false;
+        }
+    }
+
+    private async Task<string?> ApplyPerformanceModeForFanControlAsync()
+    {
+        var link = PerformanceFanLinkDefaults.Normalize(
+            Settings.PerformanceFanLink);
+        if (_fanPerformanceLinkBusy ||
+            link.FanControlTargetMode == ItsMode.Unknown ||
+            !IsUsingFanControl())
+        {
+            return null;
+        }
+
+        var current = Snapshot.ItsMode;
+        if (PerformanceFanLinkDefaults.IsNoSwitchMode(link, current))
+            return null;
+
+        _fanPerformanceLinkBusy = true;
+        try
+        {
+            var error = await SetItsModeAsync(link.FanControlTargetMode);
+            return string.IsNullOrWhiteSpace(error)
+                ? null
+                : L(
+                    "风扇策略已切换，但关联的性能模式未能应用：",
+                    "The fan strategy changed, but its linked performance mode could not be applied: ") + error;
+        }
+        finally
+        {
+            _fanPerformanceLinkBusy = false;
+        }
+    }
+
+    internal bool IsUsingFanControl() => IsUsingFanControl(
+        Snapshot,
+        FanControlSemantics);
+
+    internal static bool IsUsingFanControl(
+        ToolkitRuntimeSnapshot snapshot,
+        FanBackendControlSemantics semantics)
+    {
+        if (snapshot.FullSpeed)
+            return true;
+        if (!snapshot.FanControlRunning)
+            return false;
+        if (snapshot.FanStrategy != ControlStrategy.FixedRpm)
+            return true;
+        return snapshot.FanTarget is not { Fan1Rpm: 0, Fan2Rpm: 0 } ||
+               semantics.ZeroRpmBehavior !=
+               FanTargetZeroBehavior.ReleaseFanToFirmwareControl;
     }
 
     public async Task<string?> RestartDataReadersAsync()

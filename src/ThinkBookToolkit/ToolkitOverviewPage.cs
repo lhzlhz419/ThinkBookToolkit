@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -32,10 +33,160 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
     {
         var root = new StackPanel();
         root.Children.Add(BuildHero());
-        var metrics = HardwareMonitorCards(layout: Runtime.Settings.OverviewLayout);
-        metrics.Margin = new Thickness(0, 0, 0, 12);
-        root.Children.Add(metrics);
+        if (Runtime.Settings.OverviewPageMode == OverviewPageMode.Compact)
+        {
+            root.Children.Add(BuildCompactMetrics());
+        }
+        else
+        {
+            var metrics = HardwareMonitorCards(
+                layout: Runtime.Settings.OverviewLayout);
+            metrics.Margin = new Thickness(0, 0, 0, 12);
+            root.Children.Add(metrics);
+        }
         return root;
+    }
+
+    private UIElement BuildCompactMetrics()
+    {
+        var layout = Runtime.Settings.OverviewLayout;
+        var metrics = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 260,
+            Spacing = 10,
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        Add(
+            OverviewCardIds.Cpu,
+            ["temperature", "power"],
+            "CPU",
+            nameof(OverviewViewModel.CompactCpu),
+            Detail(
+                OverviewCardIds.Cpu,
+                ("temperature", L("温度", "Temperature")),
+                ("power", L("功耗", "Power"))),
+            "\uE950",
+            Palette.Accent);
+        Add(
+            OverviewCardIds.Gpu,
+            ["core-temperature", "power"],
+            "GPU",
+            nameof(OverviewViewModel.CompactGpu),
+            Detail(
+                OverviewCardIds.Gpu,
+                ("core-temperature", L("温度", "Temperature")),
+                ("power", L("功耗", "Power"))),
+            "\uE7F4",
+            "#A984FF");
+        Add(
+            OverviewCardIds.Battery,
+            ["charge", "health", "power"],
+            L("电池", "Battery"),
+            nameof(OverviewViewModel.CompactBattery),
+            Detail(
+                OverviewCardIds.Battery,
+                ("charge", L("电量", "Charge")),
+                ("health", L("健康度", "Health")),
+                ("power", L("功率", "Power"))),
+            "\uE850",
+            Palette.Success);
+        Add(
+            OverviewCardIds.MemoryStorage,
+            ["utilization", "average-temperature"],
+            L("内存", "Memory"),
+            nameof(OverviewViewModel.CompactMemory),
+            Detail(
+                OverviewCardIds.MemoryStorage,
+                ("utilization", L("利用率", "Utilization")),
+                ("average-temperature", L("温度", "Temperature"))),
+            "\uE950",
+            "#49BCE8");
+        Add(
+            OverviewCardIds.Fans,
+            ["fan1-speed", "fan2-speed"],
+            L("双风扇", "Dual fans"),
+            nameof(OverviewViewModel.CompactFans),
+            SlashDetail(
+                OverviewCardIds.Fans,
+                ("fan1-speed", "FAN1"),
+                ("fan2-speed", "FAN2")),
+            "\uE9CA",
+            "#56C2C9");
+        Add(
+            OverviewCardIds.Warranty,
+            ["status", "remaining-days"],
+            L("保修信息", "Warranty"),
+            nameof(OverviewViewModel.CompactWarranty),
+            Detail(
+                OverviewCardIds.Warranty,
+                ("status", L("保修状态", "Warranty status")),
+                ("remaining-days", L("剩余天数", "Days remaining"))),
+            "\uE73E",
+            Palette.Warning);
+        return metrics;
+
+        string Detail(
+            string cardId,
+            params (string ItemId, string Label)[] values) =>
+            BuildDetail(cardId, values, null);
+
+        string SlashDetail(
+            string cardId,
+            params (string ItemId, string Label)[] values) =>
+            BuildDetail(cardId, values, " / ");
+
+        string BuildDetail(
+            string cardId,
+            IEnumerable<(string ItemId, string Label)> values,
+            string? separator)
+        {
+            var labels = values
+                .Where(value => OverviewLayoutDefaults.IsItemEnabled(
+                    layout,
+                    cardId,
+                    value.ItemId))
+                .Select(value => value.Label)
+                .ToArray();
+            if (separator is not null)
+                return string.Join(separator, labels);
+            if (labels.Length < 2)
+                return labels.FirstOrDefault() ?? string.Empty;
+            if (Runtime.IsChinese)
+                return labels.Length == 2
+                    ? string.Join("与", labels)
+                    : string.Join("、", labels[..^1]) + "与" + labels[^1];
+            return labels.Length == 2
+                ? string.Join(" and ", labels)
+                : string.Join(", ", labels[..^1]) + " and " + labels[^1];
+        }
+
+        void Add(
+            string cardId,
+            string[] items,
+            string title,
+            string property,
+            string detail,
+            string glyph,
+            string accent)
+        {
+            if (!OverviewLayoutDefaults.AnyItemEnabled(
+                    layout,
+                    cardId,
+                    items))
+            {
+                return;
+            }
+            var value = new TextBlock();
+            value.SetBinding(TextBlock.TextProperty, new Binding(property));
+            metrics.Children.Add(MetricCard(
+                title,
+                value,
+                detail,
+                glyph,
+                accent,
+                20,
+                true));
+        }
     }
 
     private Border BuildHero()

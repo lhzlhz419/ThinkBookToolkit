@@ -70,6 +70,23 @@
   "FanWriteMinimumIntervalSeconds": null,
   "UseAlternativeFullSpeedMethod": false,
   "ContinuouslyWriteFanTargets": false,
+  "OverviewPageMode": 1,
+  "PerformanceFanLink": {
+    "SwitchFanStrategyWithPerformanceMode": false,
+    "FanStrategiesByMode": {
+      "Intelligent": { "Mode": 0, "ProfileIndex": 0 },
+      "PowerSaving": { "Mode": 0, "ProfileIndex": 0 },
+      "Performance": { "Mode": 0, "ProfileIndex": 0 },
+      "Geek": { "Mode": 0, "ProfileIndex": 0 }
+    },
+    "FanControlTargetMode": 0,
+    "NoSwitchModes": {
+      "Intelligent": false,
+      "PowerSaving": false,
+      "Performance": false,
+      "Geek": false
+    }
+  },
   "PowerSettingsLocks": {
     "CpuPl1": false,
     "CpuPl2": false,

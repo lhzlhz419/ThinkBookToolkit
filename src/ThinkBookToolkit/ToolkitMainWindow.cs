@@ -586,12 +586,12 @@ internal sealed class ToolkitMainWindow : Window
             Dispatcher.BeginInvoke(new Action(() => OnOverviewLayoutChanged(sender, args)));
             return;
         }
-        foreach (var pageId in new[] { "overview", "performance" })
+        foreach (var pageId in new[] { "overview", "performance", "cooling" })
         {
             if (_pages.Remove(pageId, out var page))
                 page.Dispose();
         }
-        if (_selectedPage is "overview" or "performance")
+        if (_selectedPage is "overview" or "performance" or "cooling")
             RenderPage();
     }
 
@@ -632,6 +632,11 @@ internal sealed class ToolkitMainWindow : Window
     private async void OnClosing(object? sender, CancelEventArgs args)
     {
         if (_forceClose) return;
+        if (_runtime.IsSystemSessionEnding)
+        {
+            _forceClose = true;
+            return;
+        }
         if (_runtime.Settings.CloseToTray && !_runtime.ExitRequested)
         {
             args.Cancel = true;

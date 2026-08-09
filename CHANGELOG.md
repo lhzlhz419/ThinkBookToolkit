@@ -7,6 +7,41 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-08-09
+
+### Added
+
+- Added Compact and Detailed Overview modes. Compact mode includes configurable
+  CPU, GPU, battery, memory, fan, and warranty cards; Detailed mode retains the
+  complete hardware, power-limit, and warranty presentation.
+- Added two-way, independently configurable linkage between performance modes
+  and fan strategies, including per-mode curve-profile selection and a
+  no-switch whitelist.
+- Added a demand-start Windows guardian service that monitors the Toolkit
+  process, restores firmware automatic fan control after forced termination,
+  and then stops itself.
+
+### Changed
+
+- Moved the compact live-status panel to the Cooling page, added combined VRAM
+  and hot-spot temperatures, and removed live status from the Performance page.
+- Isolated GPU telemetry in a child process so native display-driver failures do
+  not terminate the main application; non-NVIDIA telemetry is selected while
+  the discrete adapter is unavailable.
+- Renamed the supported 14-inch model to `ThinkBook 14 G6+ IMH` throughout the
+  application and tests.
+- Updated the application icon with transparent corners and aligned Overview
+  subtitles with the readings that remain enabled.
+
+### Fixed
+
+- Restored firmware automatic fan control during Windows session shutdown and
+  blocked late background writes once shutdown preparation begins.
+- Prevented disabled or removed discrete-GPU telemetry failures from crashing
+  the main process, and allowed integrated-GPU readings to take over afterward.
+- Removed empty slots when only part of the power-setting interface is readable.
+- Corrected compact fan-target formatting and warranty remaining-day visibility.
+
 ## [0.2.5] - 2026-08-08
 
 ### Added
@@ -15,8 +50,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
   warranty cards. The Performance live-status cards follow the same choices.
 - Expanded CPU, GPU, memory, storage, battery, and fan telemetry, including
   per-chip VRAM temperatures when supported.
-- Added writable power profiles for ThinkBook 16p G5 IRX and ThinkBook 14 Gen
-  6 Plus, partial-read support on other WMI-capable devices, and power locks
+- Added writable power profiles for ThinkBook 16p G5 IRX and ThinkBook 14 G6+
+  IMH, partial-read support on other WMI-capable devices, and power locks
   stored independently for each performance mode.
 - Added per-session logging, force-refreshing of hardware readers, and
   single-instance startup handling.
@@ -151,7 +186,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.2...v0.2.3

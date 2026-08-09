@@ -11,6 +11,9 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (Guardian.GuardianEntryPoint.TryRun(args))
+            return;
+
         try
         {
             ToolkitLog.Initialize();
@@ -46,15 +49,43 @@ public static class Program
                 var startToTrayRequested = args.Any(argument =>
                     string.Equals(argument, "--startup-tray", StringComparison.OrdinalIgnoreCase));
                 using var runtime = new ToolkitRuntimeService(settings);
-                var window = new ToolkitMainWindow(
-                    runtime,
-                    enableHardwareDetection: true,
-                    startToTrayRequested);
-                runtime.AttachWindow(window, startToTrayRequested);
-                singleInstance!.Listen(() => app.Dispatcher.BeginInvoke(
-                    new Action(() => runtime.ShowMainWindow())));
-                app.MainWindow = window;
-                app.Run(window);
+                SessionEndingCancelEventHandler sessionEnding = (_, eventArgs) =>
+                {
+                    try
+                    {
+                        runtime.PrepareForSystemShutdown(
+                            eventArgs.ReasonSessionEnding);
+                    }
+                    catch (Exception ex)
+                    {
+                        ToolkitLog.Error(
+                            "System-shutdown cleanup failed.",
+                            ex);
+                    }
+                    finally
+                    {
+                        // Cleanup runs synchronously, but Toolkit must never
+                        // cancel the Windows shutdown request.
+                        eventArgs.Cancel = false;
+                    }
+                };
+                app.SessionEnding += sessionEnding;
+                try
+                {
+                    var window = new ToolkitMainWindow(
+                        runtime,
+                        enableHardwareDetection: true,
+                        startToTrayRequested);
+                    runtime.AttachWindow(window, startToTrayRequested);
+                    singleInstance!.Listen(() => app.Dispatcher.BeginInvoke(
+                        new Action(() => runtime.ShowMainWindow())));
+                    app.MainWindow = window;
+                    app.Run(window);
+                }
+                finally
+                {
+                    app.SessionEnding -= sessionEnding;
+                }
             }
         }
         catch (Exception ex)

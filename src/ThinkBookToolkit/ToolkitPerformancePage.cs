@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using ThinkBookToolkit.FanBackend;
 
 namespace ThinkBookToolkit;
@@ -26,6 +27,15 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private readonly StackPanel _fixedPreferences = new();
     private readonly StackPanel _curvePanel = new();
     private readonly StackPanel _advancedCurvePanel = new();
+    private readonly CheckBox _linkFanStrategyToPerformanceMode = new();
+    private readonly ComboBox _fanControlTargetMode = new()
+        { MinWidth = 170 };
+    private readonly Dictionary<ItsMode, ComboBox>
+        _fanStrategyByPerformanceMode = [];
+    private readonly Dictionary<ItsMode, CheckBox>
+        _fanControlNoSwitchModes = [];
+    private readonly StackPanel _fanStrategyBindings = new();
+    private readonly StackPanel _fanControlWhitelist = new();
     private readonly Dictionary<string, TextBox> _fixedBoxes = [];
     private readonly ComboBox _profile = new() { MinWidth = 200 };
     private readonly TextBox _profileName = new() { MinWidth = 180 };
@@ -120,7 +130,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private UIElement BuildLayout()
     {
         var root = new StackPanel();
-        if (!_coolingOnly &&
+        if (_coolingOnly &&
             Runtime.Report?.AnyAvailable(FeatureIds.TemperatureMonitoring) != false)
         {
             root.Children.Add(BuildTelemetry());
@@ -131,6 +141,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             root.Children.Add(BuildModeCard());
         if (_coolingOnly && Runtime.Report?.IsAvailable(FeatureIds.FanControl) != false)
             root.Children.Add(BuildFanCard());
+        if (_coolingOnly &&
+            Runtime.Report?.IsAvailable(FeatureIds.FanControl) != false &&
+            Runtime.Report?.IsAvailable(FeatureIds.PerformanceMode) != false)
+        {
+            root.Children.Add(BuildFanPerformanceLinkCard());
+        }
         if (!_coolingOnly && Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
             root.Children.Add(BuildPowerCard());
         if (root.Children.Count == 0)
@@ -140,15 +156,85 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
     private UIElement BuildTelemetry()
     {
-        var panel = HardwareMonitorCards(
-            includeBattery: false,
-            layout: Runtime.Settings.OverviewLayout,
-            includeOverviewExtras: false);
+        var layout = Runtime.Settings.OverviewLayout;
+        var panel = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 155,
+            Spacing = 8
+        };
+        Add(
+            OverviewCardIds.Cpu,
+            ["temperature", "power"],
+            "CPU",
+            nameof(PerformanceViewModel.CompactCpu),
+            L("温度 / 功耗", "Temperature / power"),
+            "\uE950",
+            Palette.Accent);
+        Add(
+            OverviewCardIds.Gpu,
+            ["core-temperature", "power"],
+            "GPU",
+            nameof(PerformanceViewModel.CompactGpu),
+            L("温度 / 功耗", "Temperature / power"),
+            "\uE7F4",
+            "#A984FF");
+        Add(
+            OverviewCardIds.Gpu,
+            ["vram-temperature", "hotspot-temperature"],
+            L("显存与热点", "VRAM and hot spot"),
+            nameof(PerformanceViewModel.CompactVramAndHotSpot),
+            L("显存 / 热点", "VRAM / hot spot"),
+            "\uE7F4",
+            "#49BCE8");
+        Add(
+            OverviewCardIds.Fans,
+            ["fan1-speed", "fan2-speed"],
+            L("双风扇", "Dual fans"),
+            nameof(PerformanceViewModel.CompactFans),
+            "FAN1 / FAN2",
+            "\uE9CA",
+            "#56C2C9");
+        Add(
+            OverviewCardIds.Fans,
+            ["fan1-target", "fan2-target"],
+            L("转速目标", "Speed target"),
+            nameof(PerformanceViewModel.CompactFanTargets),
+            "FAN1 / FAN2",
+            "\uE768",
+            Palette.Warning);
         return Card(
             L("实时状态", "Live status"),
             panel,
             L("使用全局刷新间隔更新。", "Updated using the global refresh interval."),
             "\uE9D9");
+
+        void Add(
+            string cardId,
+            string[] items,
+            string title,
+            string property,
+            string detail,
+            string glyph,
+            string accent)
+        {
+            if (!OverviewLayoutDefaults.AnyItemEnabled(
+                    layout,
+                    cardId,
+                    items))
+            {
+                return;
+            }
+            var value = new TextBlock();
+            value.SetBinding(TextBlock.TextProperty, new Binding(property));
+            panel.Children.Add(MetricCard(
+                title,
+                value,
+                detail,
+                glyph,
+                accent,
+                18,
+                true));
+        }
     }
 
     private UIElement BuildModeCard()
@@ -261,6 +347,246 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             "\uE9CA",
             "#56C2C9");
     }
+
+    private UIElement BuildFanPerformanceLinkCard()
+    {
+        var content = new StackPanel();
+        content.Children.Add(SettingRow(
+            L(
+                "切换性能模式时，自动切换风扇策略",
+                "Switch fan strategy with performance mode"),
+            L(
+                "为四种性能模式分别指定风扇策略；单独切换风扇策略不会反向改变性能模式。",
+                "Assign a fan strategy to each performance mode. Changing only the fan strategy does not change the performance mode."),
+            _linkFanStrategyToPerformanceMode));
+
+        var bindingGrid = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 250,
+            Spacing = 8
+        };
+        var profiles = CurveProfileStore.Load();
+        foreach (var mode in PerformanceFanLinkDefaults.SupportedModes)
+        {
+            var selector = new ComboBox { MinWidth = 190 };
+            AddChoice(
+                selector,
+                L("固件自动", "Firmware automatic"),
+                new FanStrategyChoice(
+                    FanControlMode.FirmwareAutomatic,
+                    0));
+            AddChoice(
+                selector,
+                L("固定转速", "Fixed RPM"),
+                new FanStrategyChoice(FanControlMode.FixedRpm, 0));
+            for (var index = 0; index < profiles.Count; index++)
+            {
+                AddChoice(
+                    selector,
+                    L(
+                        $"风扇曲线 {index + 1}：{profiles[index].Name}",
+                        $"Fan curve {index + 1}: {profiles[index].Name}"),
+                    new FanStrategyChoice(
+                        FanControlMode.FanCurve,
+                        index));
+            }
+            AddChoice(
+                selector,
+                L("高级曲线", "Advanced curve"),
+                new FanStrategyChoice(FanControlMode.AdvancedCurve, 0));
+            selector.SelectionChanged += (_, _) =>
+            {
+                if (!_syncing)
+                    SaveFanPerformanceLink();
+            };
+            _fanStrategyByPerformanceMode[mode] = selector;
+            bindingGrid.Children.Add(SettingRow(
+                ItsModeDisplayName(mode),
+                string.Empty,
+                selector));
+        }
+        _fanStrategyBindings.Children.Add(bindingGrid);
+        content.Children.Add(_fanStrategyBindings);
+
+        AddChoice(
+            _fanControlTargetMode,
+            L("不切换", "Do not switch"),
+            ItsMode.Unknown);
+        foreach (var mode in PerformanceFanLinkDefaults.SupportedModes)
+        {
+            AddChoice(
+                _fanControlTargetMode,
+                ItsModeDisplayName(mode),
+                mode);
+        }
+        content.Children.Add(SettingRow(
+            L("当使用风扇控制时，切换到", "When fan control is used, switch to"),
+            L(
+                "固件自动不触发切换；固定转速中两个风扇均由固件自动控制时也不触发。",
+                "Firmware automatic does not trigger a switch. Fixed RPM also does not trigger it when both fans remain firmware-controlled."),
+            _fanControlTargetMode));
+
+        var whitelist = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 150,
+            Spacing = 8
+        };
+        foreach (var mode in PerformanceFanLinkDefaults.SupportedModes)
+        {
+            var toggle = new CheckBox
+            {
+                Content = ItsModeDisplayName(mode),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            toggle.Click += (_, _) =>
+            {
+                if (!_syncing)
+                    SaveFanPerformanceLink();
+            };
+            _fanControlNoSwitchModes[mode] = toggle;
+            whitelist.Children.Add(new Border
+            {
+                Background = Brush(Palette.SurfaceRaised),
+                BorderBrush = Brush(Palette.Border),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(12, 9, 12, 9),
+                Child = toggle
+            });
+        }
+        _fanControlWhitelist.Children.Add(new TextBlock
+        {
+            Text = L("无需切换的模式", "Modes that need no switch"),
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brush(Palette.Text),
+            Margin = new Thickness(2, 4, 2, 8)
+        });
+        _fanControlWhitelist.Children.Add(whitelist);
+        content.Children.Add(_fanControlWhitelist);
+
+        _linkFanStrategyToPerformanceMode.Click += (_, _) =>
+        {
+            if (!_syncing)
+                SaveFanPerformanceLink();
+        };
+        _fanControlTargetMode.SelectionChanged += (_, _) =>
+        {
+            if (!_syncing)
+                SaveFanPerformanceLink();
+        };
+        SyncFanPerformanceLinkControls();
+        return Card(
+            L("与性能模式联动", "Performance-mode linkage"),
+            content,
+            L(
+                "两种联动方向可独立启用，并会避免循环切换。",
+                "The two linkage directions can be configured independently without creating a switch loop."),
+            "\uE8D4",
+            "#8B7CF6");
+    }
+
+    private void SaveFanPerformanceLink()
+    {
+        if (_syncing)
+            return;
+        var draft = new PerformanceFanLinkSettings
+        {
+            SwitchFanStrategyWithPerformanceMode =
+                _linkFanStrategyToPerformanceMode.IsChecked == true,
+            FanControlTargetMode = Selected(
+                _fanControlTargetMode,
+                ItsMode.Unknown),
+            FanStrategiesByMode =
+                PerformanceFanLinkDefaults.CreateFanStrategies(),
+            NoSwitchModes =
+                PerformanceFanLinkDefaults.CreateNoSwitchModes()
+        };
+        foreach (var mode in PerformanceFanLinkDefaults.SupportedModes)
+        {
+            if (SelectedFanStrategy(
+                    _fanStrategyByPerformanceMode[mode]) is { } selection)
+            {
+                draft.FanStrategiesByMode[mode.ToString()] = new()
+                {
+                    Mode = selection.Mode,
+                    ProfileIndex = selection.ProfileIndex
+                };
+            }
+            draft.NoSwitchModes[mode.ToString()] =
+                _fanControlNoSwitchModes[mode].IsChecked == true;
+        }
+        if (!Runtime.TrySetPerformanceFanLink(draft, out var error))
+        {
+            _fanStatus.Text = L(
+                "性能模式联动设置保存失败：",
+                "Could not save performance-mode linkage: ") + error;
+        }
+        SyncFanPerformanceLinkControls();
+    }
+
+    private void SyncFanPerformanceLinkControls()
+    {
+        if (!_coolingOnly || _fanStrategyByPerformanceMode.Count == 0)
+            return;
+        var wasSyncing = _syncing;
+        _syncing = true;
+        var settings = PerformanceFanLinkDefaults.Normalize(
+            Runtime.Settings.PerformanceFanLink);
+        _linkFanStrategyToPerformanceMode.IsChecked =
+            settings.SwitchFanStrategyWithPerformanceMode;
+        _fanStrategyBindings.Visibility =
+            settings.SwitchFanStrategyWithPerformanceMode
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        foreach (var mode in PerformanceFanLinkDefaults.SupportedModes)
+        {
+            var selection = PerformanceFanLinkDefaults.SelectionFor(
+                settings,
+                mode);
+            SelectFanStrategy(
+                _fanStrategyByPerformanceMode[mode],
+                new FanStrategyChoice(
+                    selection.Mode,
+                    selection.ProfileIndex));
+        }
+        Select(_fanControlTargetMode, settings.FanControlTargetMode);
+        var targetSelected = settings.FanControlTargetMode != ItsMode.Unknown;
+        _fanControlWhitelist.Visibility = targetSelected
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        foreach (var mode in PerformanceFanLinkDefaults.SupportedModes)
+        {
+            var toggle = _fanControlNoSwitchModes[mode];
+            toggle.IsChecked = PerformanceFanLinkDefaults.IsNoSwitchMode(
+                settings,
+                mode);
+            toggle.IsEnabled = !targetSelected ||
+                               mode != settings.FanControlTargetMode;
+        }
+        _syncing = wasSyncing;
+    }
+
+    private string ItsModeDisplayName(ItsMode mode) => mode switch
+    {
+        ItsMode.PowerSaving => L("省电模式", "Power saving"),
+        ItsMode.Intelligent => L("智能模式", "Intelligent"),
+        ItsMode.Performance => L("性能模式", "Performance"),
+        ItsMode.Geek => L("极客模式", "Geek"),
+        _ => L("不切换", "Do not switch")
+    };
+
+    private static FanStrategyChoice? SelectedFanStrategy(ComboBox combo) =>
+        combo.SelectedItem is ComboBoxItem { Tag: FanStrategyChoice value }
+            ? value
+            : null;
+
+    private static void SelectFanStrategy(
+        ComboBox combo,
+        FanStrategyChoice value) =>
+        combo.SelectedItem = combo.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item =>
+                item.Tag is FanStrategyChoice choice && choice == value);
 
     private void PopulateFanPreferenceChoices()
     {
@@ -1820,6 +2146,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             Update(runtime.Snapshot);
         }
     }
+
+    private readonly record struct FanStrategyChoice(
+        FanControlMode Mode,
+        int ProfileIndex);
 
     private sealed class PowerIntegerEditor
     {

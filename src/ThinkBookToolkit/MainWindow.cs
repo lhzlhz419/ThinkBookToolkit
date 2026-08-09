@@ -174,6 +174,7 @@ public sealed class MainWindow : Window
     private bool _fanSnapshotSampling;
     private bool _fixedControlSampling;
     private bool _fanWriteInProgress;
+    private int _systemShutdownPending;
     private bool _fullSpeedEnabled;
     private bool _fullSpeedUsesAlternativeMethod;
     private bool _fullSpeedSwitching;
@@ -430,6 +431,68 @@ public sealed class MainWindow : Window
         await SampleAsync(force: true);
         if (_running || _fullSpeedEnabled)
             throw new InvalidOperationException("Firmware automatic fan control was not restored.");
+    }
+
+    internal bool RuntimePrepareForSystemShutdown(out string error)
+    {
+        if (Interlocked.Exchange(ref _systemShutdownPending, 1) != 0)
+        {
+            error = string.Empty;
+            return true;
+        }
+
+        StopFanRuntimeTimers();
+        var fullSpeedWasEnabled = _fullSpeedEnabled || _fullSpeedSwitching;
+        var fullSpeedUsedAlternativeMethod = _fullSpeedUsesAlternativeMethod;
+        _running = false;
+        _fullSpeedEnabled = false;
+        _fullSpeedSwitching = true;
+        _resumeFanControlAfterFullSpeed = false;
+        _resumeFanControlAfterSleep = false;
+        _resumeFullSpeedAfterSleep = false;
+        ResetFanTargetState();
+
+        Exception? failure = null;
+        ExecuteFanHardwareOperation(() =>
+        {
+            if (fullSpeedWasEnabled && !fullSpeedUsedAlternativeMethod)
+            {
+                try
+                {
+                    _fanController.SetFullSpeed(false);
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+            }
+
+            try
+            {
+                _fanController.RestoreAuto();
+            }
+            catch (Exception ex)
+            {
+                failure ??= ex;
+            }
+        });
+
+        _fullSpeedUsesAlternativeMethod = false;
+        _fullSpeedSwitching = false;
+        _settings.ResumeFanControlOnNextStart = false;
+        try
+        {
+            CurveProfileStore.SaveSettings(_settings);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                "Could not save the cleared fan-resume state during system shutdown.",
+                ex);
+        }
+
+        error = failure?.Message ?? string.Empty;
+        return failure is null;
     }
 
     internal async Task RuntimeSetFullSpeedAsync(bool enabled)
@@ -1453,7 +1516,8 @@ public sealed class MainWindow : Window
             try
             {
                 _lastFanSnapshotTime = DateTimeOffset.Now;
-                fans = await Task.Run(() => _fanController.ReadSnapshot());
+                fans = await Task.Run(() => ExecuteFanHardwareOperation(
+                    _fanController.ReadSnapshot));
             }
             finally
             {
@@ -1560,8 +1624,12 @@ public sealed class MainWindow : Window
                     if (!_running || _fullSpeedEnabled || _fullSpeedSwitching)
                         break;
 
-                    await Task.Run(() => ExecuteFanHardwareOperation(
-                        () => _fanController.Apply(target.Fan1Rpm, target.Fan2Rpm)));
+                    await Task.Run(() => ExecuteFanHardwareOperation(() =>
+                    {
+                        if (SystemShutdownPending)
+                            return;
+                        _fanController.Apply(target.Fan1Rpm, target.Fan2Rpm);
+                    }));
                     _lastAppliedTarget = target;
                     _lastFanWriteTime = DateTimeOffset.Now;
                 }
@@ -2350,11 +2418,7 @@ public sealed class MainWindow : Window
 
     private void OnClosed()
     {
-        _timer.Stop();
-        _trayMenuTimer.Stop();
-        _fixedControlTimer.Stop();
-        _itsModeTimer.Stop();
-        _gpuModeTimer.Stop();
+        StopFanRuntimeTimers();
         UnregisterFixedModeHotkey();
         UnregisterSuspendResumeNotifications();
         _hotkeySource?.RemoveHook(WndProc);
@@ -2418,6 +2482,24 @@ public sealed class MainWindow : Window
     {
         lock (_fanHardwareLock)
             operation();
+    }
+
+    private T ExecuteFanHardwareOperation<T>(Func<T> operation)
+    {
+        lock (_fanHardwareLock)
+            return operation();
+    }
+
+    private bool SystemShutdownPending =>
+        Volatile.Read(ref _systemShutdownPending) != 0;
+
+    private void StopFanRuntimeTimers()
+    {
+        _timer.Stop();
+        _trayMenuTimer.Stop();
+        _fixedControlTimer.Stop();
+        _itsModeTimer.Stop();
+        _gpuModeTimer.Stop();
     }
 
     private void BeginSuspendFanControlForSleep()
@@ -2732,6 +2814,8 @@ public sealed class MainWindow : Window
             {
                 ExecuteFanHardwareOperation(() =>
                 {
+                    if (SystemShutdownPending)
+                        return;
                     if (restoreAutomatic)
                         _fanController.RestoreAuto();
                     else
@@ -3428,8 +3512,11 @@ public sealed class MainWindow : Window
                 if (_fullSpeedUsesAlternativeMethod)
                     await WriteAlternativeFullSpeedAsync();
                 else
-                    await Task.Run(() => ExecuteFanHardwareOperation(
-                        () => _fanController.SetFullSpeed(true)));
+                    await Task.Run(() => ExecuteFanHardwareOperation(() =>
+                    {
+                        if (!SystemShutdownPending)
+                            _fanController.SetFullSpeed(true);
+                    }));
             }
             else if (_fullSpeedUsesAlternativeMethod)
             {
@@ -3460,9 +3547,13 @@ public sealed class MainWindow : Window
     {
         var limits = _settings.FanRpmLimits;
         await Task.Run(() => ExecuteFanHardwareOperation(() =>
+        {
+            if (SystemShutdownPending)
+                return;
             _fanController.Apply(
                 limits.Fan1MaximumRpm,
-                limits.Fan2MaximumRpm)));
+                limits.Fan2MaximumRpm);
+        }));
         _lastFanWriteTime = DateTimeOffset.Now;
     }
 

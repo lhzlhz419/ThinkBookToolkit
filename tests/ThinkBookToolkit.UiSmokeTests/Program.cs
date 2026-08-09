@@ -4,11 +4,15 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using ThinkBookToolkit;
 using ThinkBookToolkit.FanBackend;
+using ThinkBookToolkit.Guardian;
 
 namespace ThinkBookToolkit.UiSmokeTests;
 
@@ -42,9 +46,14 @@ internal static class Program
         VerifyFanBackendStartupNotice();
         VerifyAdvancedFanCurve();
         VerifyNvidiaPrivateTelemetryDecoding();
+        VerifyGpuMonitorIsolationAndWatchdogProtocol();
         VerifyPowerSettingsWindowManualInput();
         VerifyPowerDeviceProfiles();
         VerifyOverviewLayoutSettings();
+        VerifyAdaptiveUniformPanelCollapsedItems();
+        VerifySystemShutdownPreparation();
+        VerifyPerformanceFanLinkSettings();
+        VerifyApplicationIconTransparency();
         VerifyPerformancePageWithoutFanControl();
         VerifyUserFacingExceptionText();
         Assert(UiTypography.FontFamilyNameFor("zh-CN") == "Microsoft YaHei UI",
@@ -243,16 +252,78 @@ internal static class Program
             .Select(border => (string)border.Tag)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var overviewViewModel = window.CurrentPage!.DataContext as HardwareMonitorViewModel;
+        var warrantyRemainingRow = Descendants(window.CurrentPage!)
+            .OfType<FrameworkElement>()
+            .FirstOrDefault(element =>
+                string.Equals(
+                    element.Tag?.GetType().GetProperty("Property")
+                        ?.GetValue(element.Tag) as string,
+                    nameof(HardwareMonitorViewModel.WarrantyRemainingDays),
+                    StringComparison.Ordinal));
+        var warrantyRemainingItemId = warrantyRemainingRow?.Tag?.GetType()
+            .GetProperty("ItemId")?.GetValue(warrantyRemainingRow.Tag) as string;
         Assert(overviewCards.SetEquals(
                    OverviewLayoutDefaults.CardDefinitions.Keys) &&
                ContainsText(window.CurrentPage!, "功耗限制") &&
                ContainsText(window.CurrentPage!, "保修信息") &&
+               ContainsText(window.CurrentPage!, "剩余天数") &&
+               warrantyRemainingItemId == "remaining-days" &&
+               overviewViewModel?.WarrantyRemainingDays != "--" &&
                overviewViewModel?.PowerCpuPl1 == "125 W",
             $"Overview does not contain all seven configurable cards or power values. " +
             $"Cards: {string.Join(",", overviewCards)}; " +
             $"power={ContainsText(window.CurrentPage!, "功耗限制")}; " +
             $"warranty={ContainsText(window.CurrentPage!, "保修信息")}; " +
             $"value={overviewViewModel?.PowerCpuPl1}");
+        settings.OverviewPageMode = OverviewPageMode.Compact;
+        using (var compactOverview = new ToolkitOverviewPage(runtime))
+        {
+            var compactMetrics = Descendants(compactOverview)
+                .OfType<AdaptiveUniformPanel>()
+                .FirstOrDefault(panel => panel.Children.Count == 6 &&
+                    panel.Children.OfType<Border>().All(card =>
+                        Math.Abs(card.MinHeight - 126) < 0.1));
+            Assert(compactMetrics is not null &&
+                   ContainsText(compactOverview, "CPU") &&
+                   ContainsText(compactOverview, "GPU") &&
+                   ContainsText(compactOverview, "电池") &&
+                   ContainsText(compactOverview, "内存") &&
+                   ContainsText(compactOverview, "双风扇") &&
+                   ContainsText(compactOverview, "保修信息") &&
+                   !ContainsText(compactOverview, "功耗限制"),
+                "Compact overview does not contain the requested six cards.");
+            var compactViewModel = (HardwareMonitorViewModel)compactOverview.DataContext;
+            Assert(compactViewModel.CompactBattery == "80% · 101.23% · 0.0 W" &&
+                   !compactViewModel.CompactBattery.Contains("健康", StringComparison.Ordinal) &&
+                   compactViewModel.CompactMemory == "52.5% · 47.0 °C" &&
+                   compactViewModel.CompactWarranty.Contains("在保", StringComparison.Ordinal) &&
+                   compactViewModel.CompactWarranty.Contains("天", StringComparison.Ordinal),
+                "Compact battery, memory, or warranty values are incorrect.");
+        }
+        var compactLayout = OverviewLayoutDefaults.Clone(settings.OverviewLayout);
+        compactLayout.Cards[OverviewCardIds.Cpu].Items["power"] = false;
+        compactLayout.Cards[OverviewCardIds.Battery].Items["health"] = false;
+        compactLayout.Cards[OverviewCardIds.Battery].Items["power"] = false;
+        settings.OverviewLayout = compactLayout;
+        using (var filteredCompactOverview = new ToolkitOverviewPage(runtime))
+        {
+            var cards = Descendants(filteredCompactOverview)
+                .OfType<Border>()
+                .Where(card => Math.Abs(card.MinHeight - 126) < 0.1)
+                .ToArray();
+            var cpuCard = cards.First(card => ContainsText(card, "CPU"));
+            var batteryCard = cards.First(card => ContainsText(card, "电池"));
+            Assert(Descendants(cpuCard).OfType<TextBlock>()
+                       .Any(block => block.Text == "温度") &&
+                   !ContainsText(cpuCard, "温度与功耗") &&
+                   Descendants(batteryCard).OfType<TextBlock>()
+                       .Any(block => block.Text == "电量") &&
+                   !ContainsText(batteryCard, "健康度") &&
+                   !ContainsText(batteryCard, "功率"),
+                "Compact overview detail labels do not follow item visibility settings.");
+        }
+        settings.OverviewLayout = new OverviewLayoutSettings();
+        settings.OverviewPageMode = OverviewPageMode.Detailed;
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
             PowerSettings = runtime.Snapshot.PowerSettings! with
@@ -305,28 +376,35 @@ internal static class Program
         Assert(SameRow(modeChoices.Children[0], modeChoices.Children[1]),
             "Performance and GPU mode choices use an unnecessarily wide breakpoint.");
         Assert(!ContainsText(performance, "当前控制归属") &&
-               !ContainsText(performance, "控制策略"),
-            "Fan controls were not removed from the performance page.");
-        Assert(ContainsText(performance, "风扇转速"),
-            "Live fan readings were not combined in the fan card.");
-        var fan1Target = performance.DataContext?.GetType()
+               !ContainsText(performance, "控制策略") &&
+               !ContainsText(performance, "实时状态"),
+            "Fan controls or live status were not removed from the performance page.");
+
+        window.NavigateForTesting("cooling");
+        var cooling = window.CurrentPage!;
+        Assert(ContainsText(cooling, "实时状态") &&
+               ContainsText(cooling, "显存与热点"),
+            "Cooling does not contain the compact live-status cards.");
+        var fan1Target = cooling.DataContext?.GetType()
             .GetProperty("Fan1Target")
-            ?.GetValue(performance.DataContext)
+            ?.GetValue(cooling.DataContext)
             ?.ToString();
-        var fan2Target = performance.DataContext?.GetType()
+        var fan2Target = cooling.DataContext?.GetType()
             .GetProperty("Fan2Target")
-            ?.GetValue(performance.DataContext)
+            ?.GetValue(cooling.DataContext)
             ?.ToString();
-        Assert(ContainsText(performance, "转速目标") &&
+        Assert(ContainsText(cooling, "转速目标") &&
                fan1Target == "2600 RPM" &&
-               fan2Target == "2700 RPM",
+               fan2Target == "2700 RPM" &&
+               PropertyText(cooling.DataContext!, "CompactFanTargets") ==
+               "2600 / 2700 RPM",
             "Live status does not expose the actual fan target.");
-        var telemetryViewModel = performance.DataContext!;
+        var telemetryViewModel = cooling.DataContext!;
         var storageMetrics = PropertyValue<IReadOnlyList<HardwareMonitorMetric>>(
             telemetryViewModel,
             "StorageMetrics");
-        Assert(ContainsText(performance, "平均频率") &&
-               ContainsText(performance, "显存利用率") &&
+        Assert(PropertyText(telemetryViewModel, "CpuAverageFrequency") != "--" &&
+               PropertyText(telemetryViewModel, "GpuMemoryUtilization") != "--" &&
                PropertyText(telemetryViewModel, "GpuMemoryTemperature") == "56/58/56/54 °C" &&
                PropertyText(telemetryViewModel, "PhysicalMemory") == "16.5 / 31.4 GB" &&
                storageMetrics.Count == 2 &&
@@ -359,38 +437,54 @@ internal static class Program
             FanTarget = new FanTargets(2600, 2700),
             Temperatures = populatedTemperatures
         });
-        var telemetry = Descendants(performance)
+        var telemetry = Descendants(cooling)
             .OfType<AdaptiveUniformPanel>()
-            .FirstOrDefault(panel => panel.Children.Count == 4);
+            .FirstOrDefault(panel => panel.Children.Count == 5 &&
+                panel.Children.OfType<Border>().All(card =>
+                    Math.Abs(card.MinHeight - 126) < 0.1));
         Assert(telemetry is not null,
-            "Live status does not contain the four requested monitoring cards.");
+            "Cooling live status does not contain the five requested monitoring cards.");
         telemetry!.Measure(new Size(1400, double.PositiveInfinity));
         Assert(telemetry.DesiredSize.Height < 340,
-            "Four live monitoring cards do not fit on one row at the target width.");
+            "Five live monitoring cards do not fit on one row at the target width.");
         var originalOverviewLayout = settings.OverviewLayout;
         var filteredLayout = OverviewLayoutDefaults.Clone(originalOverviewLayout);
         filteredLayout.Cards[OverviewCardIds.Cpu].Enabled = false;
         settings.OverviewLayout = filteredLayout;
-        using (var filteredPerformance = new ToolkitPerformancePage(runtime))
+        using (var filteredCooling = new ToolkitPerformancePage(
+                   runtime,
+                   coolingOnly: true))
         {
-            var filteredCards = Descendants(filteredPerformance)
-                .OfType<Border>()
-                .Where(border => border.Tag is string id &&
-                    OverviewLayoutDefaults.CardDefinitions.ContainsKey(id))
-                .Select(border => border.Tag?.ToString())
-                .ToArray();
-            Assert(!filteredCards.Contains(OverviewCardIds.Cpu) &&
-                   filteredCards.Contains(OverviewCardIds.Gpu) &&
-                   filteredCards.Length == 3,
-                "Live status does not follow overview card visibility settings.");
+            var filteredTelemetry = Descendants(filteredCooling)
+                .OfType<AdaptiveUniformPanel>()
+                .FirstOrDefault(panel => panel.Children.Count == 4 &&
+                    panel.Children.OfType<Border>().All(card =>
+                        Math.Abs(card.MinHeight - 126) < 0.1));
+            Assert(filteredTelemetry is not null,
+                "Cooling live status does not follow overview card visibility settings.");
         }
         settings.OverviewLayout = originalOverviewLayout;
-
-        window.NavigateForTesting("cooling");
-        var cooling = window.CurrentPage!;
         Assert(Descendants(cooling).OfType<ComboBoxItem>()
                    .Any(item => item.Content?.ToString() == "固件自动"),
             "Cooling does not expose the firmware-automatic strategy.");
+        Assert(ContainsText(cooling, "与性能模式联动") &&
+               ContainsText(
+                   cooling,
+                   "切换性能模式时，自动切换风扇策略") &&
+               Descendants(cooling).OfType<ComboBoxItem>().Any(item =>
+                   item.Content?.ToString()?.StartsWith(
+                       "风扇曲线 1：",
+                       StringComparison.Ordinal) == true) &&
+               GetPrivateField<CheckBox>(
+                   cooling,
+                   "_linkFanStrategyToPerformanceMode").IsChecked == false &&
+               GetPrivateField<ComboBox>(
+                   cooling,
+                   "_fanControlTargetMode").SelectedItem is ComboBoxItem
+               {
+                   Tag: ItsMode.Unknown
+               },
+            "Cooling is missing the default performance/fan linkage controls or named fan profiles.");
         Assert(ContainsText(cooling, "风扇拉满") &&
                 ContainsText(cooling, "最高转速运行") &&
                 !ContainsText(cooling, "SetFullSpeed(true)") &&
@@ -757,7 +851,7 @@ internal static class Program
         var settingsPanels = Descendants(settingsPage)
             .OfType<AdaptiveUniformPanel>()
             .ToArray();
-        var globalSettings = settingsPanels.Single(panel => panel.Children.Count == 5);
+        var globalSettings = settingsPanels.Single(panel => panel.Children.Count == 6);
         var startupSettings = settingsPanels.Single(panel =>
             ContainsText(panel, "开机自启"));
         var fanBehaviorSettings = settingsPanels.Single(panel =>
@@ -768,8 +862,9 @@ internal static class Program
         Assert(SameRow(globalSettings.Children[0], globalSettings.Children[1]) &&
                SameRow(globalSettings.Children[1], globalSettings.Children[2]) &&
                SameRow(globalSettings.Children[3], globalSettings.Children[4]) &&
+               SameRow(globalSettings.Children[4], globalSettings.Children[5]) &&
                !SameRow(globalSettings.Children[2], globalSettings.Children[3]),
-            "Global settings require too much width for the requested 3+2 layout.");
+            "Global settings require too much width for the requested 3+3 layout.");
         Assert(SameRow(startupSettings.Children[0], startupSettings.Children[1]) &&
                SameRow(startupSettings.Children[2], startupSettings.Children[3]) &&
                SameRow(fanBehaviorSettings.Children[0], fanBehaviorSettings.Children[1]) &&
@@ -806,6 +901,10 @@ internal static class Program
         Assert(ContainsText(settingsPage, "全局设置") &&
                ContainsText(settingsPage, "完整功能监测结果"),
             "Settings is missing global preferences or inline availability.");
+        Assert(ContainsText(settingsPage, "概览页模式选择") &&
+               Labels(GetPrivateField<ComboBox>(settingsPage, "_overviewMode"))
+                   .SequenceEqual(["简洁模式", "详细模式"]),
+            "Settings does not expose the compact/detailed overview mode selector.");
         Assert(!ContainsText(settingsPage, "重新启动"),
             "Settings copy still describes appearance changes in terms of restarting.");
         foreach (var text in new[]
@@ -1299,11 +1398,11 @@ internal static class Program
                    TimeSpan.FromSeconds(0.5)) == TimeSpan.FromSeconds(5),
             "Continuous fan writes do not use the longer configured interval.");
         var gen6FanLimits = CurveProfileStore.DefaultFanRpmLimitsForModel(
-            "ThinkBook 14 Gen 6 Plus");
+            "ThinkBook 14 G6+ IMH");
         Assert(gen6FanLimits.Fan1MaximumRpm == 6400 &&
                gen6FanLimits.Fan2MaximumRpm == 6400 &&
                DeviceModelDetector.UsesAlternativeFullSpeedByDefault(
-                   "ThinkBook 14 Gen 6 Plus") &&
+                   "ThinkBook 14 G6+ IMH") &&
                DeviceModelDetector.UsesAlternativeFullSpeedByDefault(
                    "ThinkBook 16p G6 ADR") &&
                !DeviceModelDetector.UsesAlternativeFullSpeedByDefault(
@@ -1442,6 +1541,56 @@ internal static class Program
         Assert(StorageTemperatureReader.ReadNvmeHealthPercent(smartLog) == 88 &&
                StorageTemperatureReader.ReadNvmeHealthPercent([]) is null,
             "NVMe remaining-health fallback does not decode Percentage Used correctly.");
+    }
+
+    private static void VerifyGpuMonitorIsolationAndWatchdogProtocol()
+    {
+        var unreliable = new GpuDevicePresenceSnapshot(1, [], false);
+        var reliable = new GpuDevicePresenceSnapshot(
+            2,
+            ["NVIDIA GeForce RTX 5060 Laptop GPU"],
+            true);
+        Assert(unreliable.IsActive("NVIDIA GeForce RTX 5060 Laptop GPU") &&
+               reliable.IsActive("GeForce RTX 5060"),
+            "Display-adapter presence snapshots do not preserve fallback and normalized matching behavior.");
+
+        var snapshot = new GpuMonitorWorkerSnapshot(
+            "GPU",
+            10,
+            20,
+            1000,
+            2000,
+            50,
+            60,
+            55,
+            [54, 55],
+            30,
+            "core",
+            "memory");
+        var roundTrip = JsonSerializer.Deserialize<GpuMonitorWorkerSnapshot>(
+            JsonSerializer.Serialize(snapshot));
+        Assert(roundTrip is not null &&
+               roundTrip.Name == snapshot.Name &&
+               roundTrip.PowerW == snapshot.PowerW &&
+               roundTrip.MemoryChipTemperaturesC.SequenceEqual(
+                   snapshot.MemoryChipTemperaturesC),
+            "The isolated GPU monitor JSON contract does not round-trip.");
+
+        var fields = typeof(TemperatureReader).GetFields(
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert(fields.Any(field => field.FieldType == typeof(GpuMonitorWorkerClient)) &&
+               fields.All(field => field.FieldType != typeof(NvidiaPrivateTelemetryReader)),
+            "TemperatureReader must keep native NVIDIA polling outside the Toolkit process.");
+        Assert(GpuMonitorWorker.ReadCommand == "READ" &&
+               GpuMonitorWorker.ReadNonNvidiaCommand == "READ_NON_NVIDIA" &&
+               GpuMonitorWorker.ReadCommand != GpuMonitorWorker.ReadNonNvidiaCommand,
+            "The GPU worker and client do not expose distinct normal and non-NVIDIA fallback commands.");
+        Assert(FanWatchdogClient.ServiceName == FanWatchdogService.ServiceNameValue &&
+               string.Equals(
+                   FanWatchdogClient.MarkerDirectory(),
+                   FanWatchdogService.MarkerDirectory(),
+                   StringComparison.OrdinalIgnoreCase),
+            "The Toolkit client and Windows watchdog service disagree on their protocol names.");
     }
 
     private static void VerifyPowerSettingsWindowManualInput()
@@ -1952,7 +2101,7 @@ internal static class Program
             "The RTX 4050 G5 IRX performance defaults are incorrect.");
 
         var gen6Plus = PowerSettingsController.ResolveProfile(
-            "ThinkBook 14 Gen 6 Plus");
+            "ThinkBook 14 G6+ IMH");
         var gen6Count = Enum.GetValues<PowerSetting>()
             .Count(gen6Plus.IsExpected);
         Assert(gen6Plus.Writable && !gen6Plus.SupportsDefaults &&
@@ -1960,12 +2109,123 @@ internal static class Program
                gen6Plus.GpuTgpOffset == 60 &&
                gen6Plus.Rules[PowerSetting.CpuPl1] == new PowerSettingRule(10, 100, 1) &&
                gen6Plus.Rules[PowerSetting.GpuConfigurableTgp] == new PowerSettingRule(60, 65),
-            "ThinkBook 14 Gen 6 Plus power profile is incorrect.");
+            "ThinkBook 14 G6+ IMH power profile is incorrect.");
 
         var readOnly = PowerSettingsController.ResolveProfile("Unknown model");
         Assert(!readOnly.Writable && readOnly.CpuTemperatureOffset == 0 &&
                readOnly.GpuTgpOffset == 0,
             "Unknown devices must expose raw read-only power values.");
+    }
+
+    private static void VerifyPerformanceFanLinkSettings()
+    {
+        var value = new PerformanceFanLinkSettings
+        {
+            SwitchFanStrategyWithPerformanceMode = true,
+            FanControlTargetMode = ItsMode.Performance,
+            FanStrategiesByMode = new Dictionary<string, FanStrategySelection>
+            {
+                [ItsMode.Intelligent.ToString()] = new()
+                {
+                    Mode = FanControlMode.FanCurve,
+                    ProfileIndex = 99
+                }
+            },
+            NoSwitchModes = new Dictionary<string, bool>
+            {
+                [ItsMode.PowerSaving.ToString()] = true,
+                [ItsMode.Performance.ToString()] = false
+            }
+        };
+        var normalized = PerformanceFanLinkDefaults.Normalize(value);
+        Assert(normalized.SwitchFanStrategyWithPerformanceMode &&
+               normalized.FanStrategiesByMode.Count == 4 &&
+               PerformanceFanLinkDefaults.SelectionFor(
+                   normalized,
+                   ItsMode.Intelligent) is
+               {
+                   Mode: FanControlMode.FanCurve,
+                   ProfileIndex: 4
+               } &&
+               PerformanceFanLinkDefaults.SelectionFor(
+                   normalized,
+                   ItsMode.Geek).Mode ==
+               FanControlMode.FirmwareAutomatic &&
+               PerformanceFanLinkDefaults.IsNoSwitchMode(
+                   normalized,
+                   ItsMode.PowerSaving) &&
+               PerformanceFanLinkDefaults.IsNoSwitchMode(
+                   normalized,
+                   ItsMode.Performance),
+            "Performance/fan linkage settings were not normalized safely.");
+
+        var releaseSemantics = new FanBackendControlSemantics(
+            FanTargetZeroBehavior.ReleaseFanToFirmwareControl,
+            FanAutomaticControlRestoreMechanism.WriteZeroToBothTargets,
+            "test restore",
+            new(
+                FanFullSpeedControlMechanism.DedicatedBackendOperation,
+                "test full speed on",
+                "test full speed off"));
+        var fixedAuto = ToolkitRuntimeSnapshot.Empty with
+        {
+            FanControlRunning = true,
+            FanStrategy = ControlStrategy.FixedRpm,
+            FanTarget = new FanTargets(0, 0)
+        };
+        Assert(!ToolkitRuntimeService.IsUsingFanControl(
+                   fixedAuto,
+                   releaseSemantics) &&
+               ToolkitRuntimeService.IsUsingFanControl(
+                   fixedAuto with
+                   {
+                       FanTarget = new FanTargets(0, 100)
+                   },
+                   releaseSemantics) &&
+               ToolkitRuntimeService.IsUsingFanControl(
+                   fixedAuto with
+                   {
+                       FanStrategy = ControlStrategy.FanCurve
+                   },
+                   releaseSemantics) &&
+               ToolkitRuntimeService.IsUsingFanControl(
+                   fixedAuto with
+                   {
+                       FanControlRunning = false,
+                       FullSpeed = true
+                   },
+                   releaseSemantics),
+            "Effective fan-control detection does not handle firmware-auto fixed targets or full speed correctly.");
+    }
+
+    private static void VerifyApplicationIconTransparency()
+    {
+        var uri = new Uri(
+            "pack://application:,,,/ThinkBookToolkit;component/Assets/app-icon-tb.png",
+            UriKind.Absolute);
+        var resource = Application.GetResourceStream(uri)
+            ?? throw new InvalidOperationException(
+                "The application icon resource could not be opened.");
+        using var stream = resource.Stream;
+        var decoder = new PngBitmapDecoder(
+            stream,
+            BitmapCreateOptions.PreservePixelFormat,
+            BitmapCacheOption.OnLoad);
+        var bitmap = new FormatConvertedBitmap(
+            decoder.Frames[0],
+            PixelFormats.Bgra32,
+            null,
+            0);
+        var stride = bitmap.PixelWidth * 4;
+        var pixels = new byte[stride * bitmap.PixelHeight];
+        bitmap.CopyPixels(pixels, stride, 0);
+        int AlphaAt(int x, int y) => pixels[y * stride + x * 4 + 3];
+        Assert(AlphaAt(0, 0) == 0 &&
+               AlphaAt(bitmap.PixelWidth - 1, 0) == 0 &&
+               AlphaAt(0, bitmap.PixelHeight - 1) == 0 &&
+               AlphaAt(bitmap.PixelWidth - 1, bitmap.PixelHeight - 1) == 0 &&
+               AlphaAt(bitmap.PixelWidth / 2, bitmap.PixelHeight / 2) == 255,
+            "The application icon corners are not transparent or the logo body lost opacity.");
     }
 
     private static void VerifyOverviewLayoutSettings()
@@ -1976,8 +2236,73 @@ internal static class Program
         var normalized = OverviewLayoutDefaults.Normalize(layout);
         Assert(!normalized.Cards[OverviewCardIds.Cpu].Enabled &&
                normalized.Cards[OverviewCardIds.Warranty].Enabled &&
-               normalized.Cards[OverviewCardIds.Warranty].Items.Count == 0,
-            "Overview layout normalization does not disable empty cards or preserve warranty as a card-only switch.");
+               normalized.Cards[OverviewCardIds.Warranty].Items.Count == 5 &&
+               OverviewLayoutDefaults.CompactCardDefinitions.Count == 6 &&
+               OverviewLayoutDefaults.CompactCardDefinitions[
+                   OverviewCardIds.Cpu].SequenceEqual(
+                   ["temperature", "power"]) &&
+               OverviewLayoutDefaults.CompactCardDefinitions[
+                   OverviewCardIds.MemoryStorage].SequenceEqual(
+                   ["utilization", "average-temperature"]) &&
+               OverviewLayoutDefaults.CompactCardDefinitions[
+                   OverviewCardIds.Fans].SequenceEqual(
+                   ["fan1-speed", "fan2-speed"]) &&
+               OverviewLayoutDefaults.CompactCardDefinitions[
+                   OverviewCardIds.Warranty].SequenceEqual(
+                   ["status", "remaining-days"]),
+            "Overview layout normalization or compact card definitions are incorrect.");
+    }
+
+    private static void VerifyAdaptiveUniformPanelCollapsedItems()
+    {
+        var panel = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 180,
+            Spacing = 8
+        };
+        var items = Enumerable.Range(0, 9)
+            .Select(_ => new Border { Height = 80 })
+            .ToArray();
+        foreach (var item in items)
+            panel.Children.Add(item);
+        items[3].Visibility = Visibility.Collapsed;
+        items[6].Visibility = Visibility.Collapsed;
+        items[8].Visibility = Visibility.Collapsed;
+
+        ArrangePanel(panel, 932);
+        var third = items[2].TranslatePoint(new Point(), panel);
+        var fourthVisible = items[4].TranslatePoint(new Point(), panel);
+        var first = items[0].TranslatePoint(new Point(), panel);
+        var sixthVisible = items[7].TranslatePoint(new Point(), panel);
+        Assert(SameRow(items[2], items[4]) &&
+               Math.Abs(fourthVisible.X - third.X - 188) < 1 &&
+               !SameRow(items[0], items[7]) &&
+               Math.Abs(sixthVisible.X - first.X) < 1,
+            "Collapsed adaptive-panel items still reserve grid positions.");
+    }
+
+    private static void VerifySystemShutdownPreparation()
+    {
+        using var runtime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark"
+        });
+        runtime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty with
+        {
+            FanControlRunning = true,
+            FullSpeed = true,
+            FanTarget = new FanTargets(3200, 3300)
+        });
+
+        runtime.PrepareForSystemShutdown(ReasonSessionEnding.Shutdown);
+        runtime.PrepareForSystemShutdown(ReasonSessionEnding.Logoff);
+        Assert(runtime.IsSystemSessionEnding &&
+               runtime.ExitRequested &&
+               !runtime.Snapshot.FanControlRunning &&
+               !runtime.Snapshot.FullSpeed &&
+               runtime.Snapshot.FanTarget is null,
+            "System-session shutdown preparation is not idempotent or does not stop fan control state.");
     }
 
     private static string Category(string id)

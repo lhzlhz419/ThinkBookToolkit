@@ -63,6 +63,11 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         _snapshot.Temperatures?.VirtualMemoryTotalGb);
     public string MemorySlot1Temperature => MemorySlotTemperature(0);
     public string MemorySlot2Temperature => MemorySlotTemperature(1);
+    public string MemoryUtilization => MemoryUtilizationValue(
+        _snapshot.Temperatures?.PhysicalMemoryUsedGb,
+        _snapshot.Temperatures?.PhysicalMemoryTotalGb);
+    public string MemoryAverageTemperature => AverageTemperature(
+        _snapshot.Temperatures?.MemorySlotTemperaturesC);
     public IReadOnlyList<HardwareMonitorMetric> StorageMetrics =>
         BuildStorageMetrics(_snapshot.Temperatures);
     public IReadOnlyList<HardwareMonitorMetric> StorageTemperatureMetrics =>
@@ -74,6 +79,56 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     public string Fan2Speed => FanSpeed(_snapshot.Fans?.Fan2Rpm);
     public string Fan1Target => FanTarget(1);
     public string Fan2Target => FanTarget(2);
+
+    public string CompactCpu => CompactValues(
+        (Show(OverviewCardIds.Cpu, "temperature"), CpuTemperature),
+        (Show(OverviewCardIds.Cpu, "power"), CpuPower));
+    public string CompactGpu => CompactValues(
+        (Show(OverviewCardIds.Gpu, "core-temperature"), GpuCoreTemperature),
+        (Show(OverviewCardIds.Gpu, "power"), GpuPower));
+    public string CompactBattery => CompactValues(
+        (Show(OverviewCardIds.Battery, "charge"), BatteryCharge),
+        (Show(OverviewCardIds.Battery, "health"), BatteryHealth),
+        (Show(OverviewCardIds.Battery, "power"), BatteryPower));
+    public string CompactMemory => CompactValues(
+        (Show(OverviewCardIds.MemoryStorage, "utilization"), MemoryUtilization),
+        (Show(OverviewCardIds.MemoryStorage, "average-temperature"), MemoryAverageTemperature));
+    public string CompactFans
+    {
+        get
+        {
+            var first = Show(OverviewCardIds.Fans, "fan1-speed")
+                ? _snapshot.Fans?.Fan1Rpm
+                : null;
+            var second = Show(OverviewCardIds.Fans, "fan2-speed")
+                ? _snapshot.Fans?.Fan2Rpm
+                : null;
+            return RpmPair(first, second);
+        }
+    }
+    public string CompactFanTargets
+    {
+        get
+        {
+            var firstVisible = Show(OverviewCardIds.Fans, "fan1-target");
+            var secondVisible = Show(OverviewCardIds.Fans, "fan2-target");
+            if (firstVisible && secondVisible)
+                return $"{WithoutRpmSuffix(Fan1Target)} / {Fan2Target}";
+            if (firstVisible)
+                return Fan1Target;
+            if (secondVisible)
+                return Fan2Target;
+            return "--";
+        }
+    }
+    public string CompactVramAndHotSpot => CompactValues(
+        [
+            (Show(OverviewCardIds.Gpu, "vram-temperature"),
+                Temperature(_snapshot.Temperatures?.VramTempC)),
+            (Show(OverviewCardIds.Gpu, "hotspot-temperature"),
+                GpuHotSpotTemperature)
+        ],
+        " / ");
 
     public string PowerCpuPl1 => PowerValue(PowerSetting.CpuPl1, value => value.CpuPl1);
     public string PowerCpuPl2 => PowerValue(PowerSetting.CpuPl2, value => value.CpuPl2);
@@ -109,15 +164,85 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     };
     public string WarrantyStart => WarrantyDate(_snapshot.Warranty?.StartDate);
     public string WarrantyEnd => WarrantyDate(_snapshot.Warranty?.EndDate);
+    public string WarrantyRemainingDays => _snapshot.Warranty is
+        {
+            State: WarrantyState.InWarranty,
+            EndDate: { } endDate
+        }
+            ? $"{Math.Max(0, endDate.DayNumber - DateOnly.FromDateTime(DateTime.Now).DayNumber)} {Runtime.L("天", "days")}"
+            : "--";
+    public bool WarrantyRemainingDaysVisible =>
+        Show(OverviewCardIds.Warranty, "remaining-days") &&
+        _snapshot.Warranty is
+        {
+            State: WarrantyState.InWarranty,
+            EndDate: not null
+        };
     public string WarrantyProgress => _snapshot.Warranty is { State: not WarrantyState.Unavailable } warranty
         ? $"{warranty.ProgressPercentage}%"
         : "--";
+    public string CompactWarranty
+    {
+        get
+        {
+            var statusVisible = Show(OverviewCardIds.Warranty, "status");
+            var remainingVisible = Show(OverviewCardIds.Warranty, "remaining-days") &&
+                                   _snapshot.Warranty?.State == WarrantyState.InWarranty;
+            var status = _snapshot.Warranty?.State switch
+            {
+                WarrantyState.InWarranty => Runtime.L("在保", "Covered"),
+                WarrantyState.Expired => Runtime.L("过保", "Expired"),
+                WarrantyState.NotStarted => Runtime.L("尚未开始", "Not started"),
+                _ => Runtime.L("暂无信息", "Unavailable")
+            };
+            return CompactValues(
+                (statusVisible, status),
+                (remainingVisible, WarrantyRemainingDays));
+        }
+    }
 
     public virtual void Update(ToolkitRuntimeSnapshot snapshot)
     {
         _snapshot = snapshot;
         Notify(string.Empty);
     }
+
+    private bool Show(string cardId, string itemId) =>
+        OverviewLayoutDefaults.IsItemEnabled(
+            Runtime.Settings.OverviewLayout,
+            cardId,
+            itemId);
+
+    private static string CompactValues(
+        params (bool Visible, string Value)[] values) =>
+        CompactValues(values, " · ");
+
+    private static string CompactValues(
+        IEnumerable<(bool Visible, string Value)> values,
+        string separator)
+    {
+        var visible = values
+            .Where(value => value.Visible)
+            .Select(value => value.Value)
+            .ToArray();
+        return visible.Length == 0
+            ? "--"
+            : string.Join(separator, visible);
+    }
+
+    private static string RpmPair(int? first, int? second)
+    {
+        if (!first.HasValue && !second.HasValue)
+            return "--";
+        if (first.HasValue && second.HasValue)
+            return $"{first.Value} / {second.Value} RPM";
+        return $"{first ?? second} RPM";
+    }
+
+    private static string WithoutRpmSuffix(string value) =>
+        value.EndsWith(" RPM", StringComparison.Ordinal)
+            ? value[..^4]
+            : value;
 
     private string FanTarget(int fan)
     {
@@ -162,6 +287,16 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
             ? Temperature(values[index * 6])
             : "-";
     }
+
+    private static string MemoryUtilizationValue(double? used, double? total) =>
+        used.HasValue && total is > 0
+            ? $"{Math.Clamp(used.Value * 100 / total.Value, 0, 100):0.0}%"
+            : "--";
+
+    private static string AverageTemperature(IReadOnlyList<double>? values) =>
+        values is { Count: > 0 }
+            ? $"{values.Average():0.0} °C"
+            : "--";
 
     private IReadOnlyList<HardwareMonitorMetric> BuildStorageMetrics(
         TemperatureSnapshot? temperatures,

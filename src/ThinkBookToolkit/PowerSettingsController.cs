@@ -45,7 +45,7 @@ internal enum PowerDeviceKind
     ThinkBook16pG6Iax,
     ThinkBook16pG5Irx,
     ThinkBook16pG5IrxRtx4050,
-    ThinkBook14Gen6Plus
+    ThinkBook14G6PlusImh
 }
 
 internal sealed record PowerSettingRule(
@@ -131,7 +131,7 @@ internal static class PowerSettingsController
                 true, true, PowerSettingAvailability.All, 0, 55, rules);
         }
 
-        if (DeviceModelDetector.ModelMatches(model, DeviceModelDetector.ThinkBook14Gen6Plus))
+        if (DeviceModelDetector.ModelMatches(model, DeviceModelDetector.ThinkBook14G6PlusImh))
         {
             var available = Flag(PowerSetting.CpuPl1) |
                             Flag(PowerSetting.CpuPl2) |
@@ -148,7 +148,7 @@ internal static class PowerSettingsController
                 [PowerSetting.GpuConfigurableTgp] = new(60, 65),
                 [PowerSetting.GpuToCpuDynamicBoost] = new(0, 50)
             };
-            return new(PowerDeviceKind.ThinkBook14Gen6Plus, true, false,
+            return new(PowerDeviceKind.ThinkBook14G6PlusImh, true, false,
                 available, 0, 60, rules);
         }
 

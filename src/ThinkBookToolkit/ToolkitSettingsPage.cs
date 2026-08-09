@@ -14,6 +14,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly ComboBox _refresh = new() { MinWidth = 150 };
     private readonly ComboBox _language = new() { MinWidth = 150 };
     private readonly ComboBox _theme = new() { MinWidth = 170 };
+    private readonly ComboBox _overviewMode = new() { MinWidth = 150 };
     private readonly CheckBox _startWithWindows = new();
     private readonly CheckBox _startToTray = new();
     private readonly CheckBox _minimizeToTray = new();
@@ -70,6 +71,14 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         AddChoice(_theme, L("跟随系统", "Follow system"), "system");
         AddChoice(_theme, L("浅色", "Light"), "light");
         AddChoice(_theme, L("深色", "Dark"), "dark");
+        AddChoice(
+            _overviewMode,
+            L("简洁模式", "Compact"),
+            OverviewPageMode.Compact);
+        AddChoice(
+            _overviewMode,
+            L("详细模式", "Detailed"),
+            OverviewPageMode.Detailed);
         WireEvents();
 
         var root = new StackPanel();
@@ -93,6 +102,11 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("浅色、深色或跟随 Windows。", "Light, dark, or follow Windows."),
             _theme,
             "\uE790"));
+        global.Children.Add(SettingRow(
+            L("概览页模式选择", "Overview mode"),
+            L("在简洁读数卡片和完整硬件信息之间切换。", "Switch between compact reading cards and full hardware details."),
+            _overviewMode,
+            "\uECA5"));
         global.Children.Add(SettingRow(
             L("概览页内容", "Overview contents"),
             L("选择概览页显示的卡片和数据项。", "Choose the cards and readings shown on the overview page."),
@@ -354,6 +368,21 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 }
             }
         };
+        _overviewMode.SelectionChanged += (_, _) =>
+        {
+            if (!_syncing &&
+                Selected<OverviewPageMode>(_overviewMode) is { } value)
+            {
+                _viewModel.Status = Runtime.TrySetOverviewPageMode(
+                        value,
+                        out var error)
+                    ? string.Empty
+                    : L(
+                        "概览页模式保存失败：",
+                        "Could not save the overview mode: ") + error;
+                SyncControls();
+            }
+        };
         _startWithWindows.Click += (_, _) =>
         {
             if (_syncing) return;
@@ -440,6 +469,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         Select(_refresh, settings.IntervalSeconds);
         Select(_language, settings.Language);
         Select(_theme, settings.Theme);
+        Select(_overviewMode, settings.OverviewPageMode);
         _startWithWindows.IsChecked = settings.StartWithWindows;
         _startToTray.IsChecked = settings.StartToTray;
         _startToTray.IsEnabled = settings.StartWithWindows;
@@ -468,8 +498,13 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private UIElement BuildOverviewEditor()
     {
         var content = new StackPanel();
-        foreach (var definition in OverviewLayoutDefaults.CardDefinitions)
+        var definitions = Runtime.Settings.OverviewPageMode ==
+                OverviewPageMode.Compact
+            ? OverviewLayoutDefaults.CompactCardDefinitions
+            : OverviewLayoutDefaults.DetailedCardDefinitions;
+        foreach (var definition in definitions)
         {
+            var displayedItems = definition.Value;
             var items = new StackPanel { Margin = new Thickness(28, 5, 0, 0) };
             var cardToggle = new CheckBox
             {
@@ -482,10 +517,10 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 if (_syncing) return;
                 var card = _overviewDraft.Cards[definition.Key];
                 card.Enabled = cardToggle.IsChecked == true;
-                if (card.Enabled && card.Items.Count > 0 &&
-                    card.Items.Values.All(value => !value))
+                if (card.Enabled && displayedItems.Length > 0 &&
+                    displayedItems.All(item => !card.Items[item]))
                 {
-                    foreach (var item in card.Items.Keys.ToArray())
+                    foreach (var item in displayedItems)
                         card.Items[item] = true;
                 }
                 SyncOverviewEditor();
@@ -503,7 +538,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                     if (_syncing) return;
                     var card = _overviewDraft.Cards[definition.Key];
                     card.Items[itemId] = itemToggle.IsChecked == true;
-                    card.Enabled = card.Items.Values.Any(value => value);
+                    card.Enabled = displayedItems.Any(item =>
+                        card.Items[item]);
                     SyncOverviewEditor();
                 };
                 items.Children.Add(itemToggle);
@@ -548,7 +584,13 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         return Card(
             L("编辑概览页", "Edit overview"),
             content,
-            L("关闭单项后，同一行剩余的数据会自动占满整行。", "When one item in a pair is hidden, the remaining item fills the row."),
+            Runtime.Settings.OverviewPageMode == OverviewPageMode.Compact
+                ? L(
+                    "设置简洁模式中的卡片和读数。",
+                    "Choose the cards and readings used in compact mode.")
+                : L(
+                    "关闭单项后，同一行剩余的数据会自动占满整行。",
+                    "When one item in a pair is hidden, the remaining item fills the row."),
             "\uE70F");
     }
 
@@ -613,7 +655,10 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         OverviewCardIds.Cpu => "CPU",
         OverviewCardIds.Gpu => "GPU",
         OverviewCardIds.Battery => L("电池", "Battery"),
-        OverviewCardIds.MemoryStorage => L("内存与硬盘", "Memory and storage"),
+        OverviewCardIds.MemoryStorage => Runtime.Settings.OverviewPageMode ==
+            OverviewPageMode.Compact
+                ? L("内存", "Memory")
+                : L("内存与硬盘", "Memory and storage"),
         OverviewCardIds.Fans => L("风扇", "Fans"),
         OverviewCardIds.Power => L("功耗限制", "Power limits"),
         OverviewCardIds.Warranty => L("保修信息", "Warranty"),
@@ -646,6 +691,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             (OverviewCardIds.MemoryStorage, "slot2-temperature") => L("内存插槽2温度", "Memory slot 2 temperature"),
             (OverviewCardIds.MemoryStorage, "disk-temperatures") => L("所有硬盘温度", "All disk temperatures"),
             (OverviewCardIds.MemoryStorage, "disk-health") => L("所有硬盘健康度", "All disk health"),
+            (OverviewCardIds.MemoryStorage, "utilization") => L("利用率", "Utilization"),
+            (OverviewCardIds.MemoryStorage, "average-temperature") => L("平均温度", "Average temperature"),
             (OverviewCardIds.Fans, "fan1-speed") => L("风扇1转速", "Fan 1 speed"),
             (OverviewCardIds.Fans, "fan2-speed") => L("风扇2转速", "Fan 2 speed"),
             (OverviewCardIds.Fans, "fan1-target") => L("风扇1目标", "Fan 1 target"),
@@ -659,6 +706,11 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             (OverviewCardIds.Power, "gpu-temperature") => L("GPU 温度上限", "GPU temperature limit"),
             (OverviewCardIds.Power, "gpu-to-cpu") => "GPU to CPU Dynamic Boost",
             (OverviewCardIds.Power, "atpp") => "ATPP",
+            (OverviewCardIds.Warranty, "status") => L("保修状态", "Warranty status"),
+            (OverviewCardIds.Warranty, "start-date") => L("开始日期", "Start date"),
+            (OverviewCardIds.Warranty, "end-date") => L("结束日期", "End date"),
+            (OverviewCardIds.Warranty, "remaining-days") => L("剩余天数", "Days remaining"),
+            (OverviewCardIds.Warranty, "progress") => L("已用保修期", "Warranty elapsed"),
             _ => item
         };
 

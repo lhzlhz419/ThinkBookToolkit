@@ -74,6 +74,29 @@ public enum ItsMode
     Geek
 }
 
+public enum OverviewPageMode
+{
+    Compact,
+    Detailed
+}
+
+public sealed class FanStrategySelection
+{
+    public FanControlMode Mode { get; set; } =
+        FanControlMode.FirmwareAutomatic;
+    public int ProfileIndex { get; set; }
+}
+
+public sealed class PerformanceFanLinkSettings
+{
+    public bool SwitchFanStrategyWithPerformanceMode { get; set; }
+    public Dictionary<string, FanStrategySelection> FanStrategiesByMode
+        { get; set; } = PerformanceFanLinkDefaults.CreateFanStrategies();
+    public ItsMode FanControlTargetMode { get; set; } = ItsMode.Unknown;
+    public Dictionary<string, bool> NoSwitchModes { get; set; } =
+        PerformanceFanLinkDefaults.CreateNoSwitchModes();
+}
+
 public enum FixedGameModeOverride
 {
     None,
@@ -261,7 +284,11 @@ public sealed class AppSettings
     public double? FanWriteMinimumIntervalSeconds { get; set; }
     public bool UseAlternativeFullSpeedMethod { get; set; }
     public bool ContinuouslyWriteFanTargets { get; set; }
+    public OverviewPageMode OverviewPageMode { get; set; } =
+        OverviewPageMode.Detailed;
     public OverviewLayoutSettings OverviewLayout { get; set; } =
+        new();
+    public PerformanceFanLinkSettings PerformanceFanLink { get; set; } =
         new();
     public PowerSettingsLockSelection PowerSettingsLocks { get; set; } = new();
     public int PowerSettingsLockIntervalSeconds { get; set; } = 2;

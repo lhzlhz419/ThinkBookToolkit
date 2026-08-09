@@ -408,10 +408,13 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                 null,
                 new MonitorSection(null,
                 [
-                    new(L("状态", "Status"), nameof(HardwareMonitorViewModel.WarrantyStatus)),
-                    new(L("开始日期", "Start date"), nameof(HardwareMonitorViewModel.WarrantyStart)),
-                    new(L("结束日期", "End date"), nameof(HardwareMonitorViewModel.WarrantyEnd)),
-                    new(L("已用保修期", "Warranty elapsed"), nameof(HardwareMonitorViewModel.WarrantyProgress))
+                    new(L("状态", "Status"), nameof(HardwareMonitorViewModel.WarrantyStatus), ItemId: "status"),
+                    new(L("开始日期", "Start date"), nameof(HardwareMonitorViewModel.WarrantyStart), ItemId: "start-date"),
+                    new(L("结束日期", "End date"), nameof(HardwareMonitorViewModel.WarrantyEnd), ItemId: "end-date"),
+                    new(L("剩余天数", "Days remaining"), nameof(HardwareMonitorViewModel.WarrantyRemainingDays),
+                        ItemId: "remaining-days",
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.WarrantyRemainingDaysVisible)),
+                    new(L("已用保修期", "Warranty elapsed"), nameof(HardwareMonitorViewModel.WarrantyProgress), ItemId: "progress")
                 ])), layout);
         }
         return panel;
@@ -1020,19 +1023,25 @@ internal sealed class AdaptiveUniformPanel : Panel
 
     protected override Size MeasureOverride(Size availableSize)
     {
+        var visibleChildren = Children
+            .Cast<UIElement>()
+            .Where(child => child.Visibility != Visibility.Collapsed)
+            .ToArray();
         var width = double.IsInfinity(availableSize.Width)
-            ? Math.Max(MinimumItemWidth, Children.Count * MinimumItemWidth)
+            ? Math.Max(MinimumItemWidth, visibleChildren.Length * MinimumItemWidth)
             : Math.Max(0, availableSize.Width);
-        var columns = ColumnCount(width);
+        var columns = ColumnCount(width, visibleChildren.Length);
         var itemWidth = Math.Max(0, (width - (columns - 1) * Spacing) / columns);
         var rowHeights = new List<double>();
-        for (var i = 0; i < Children.Count; i++)
+        for (var i = 0; i < visibleChildren.Length; i++)
         {
-            Children[i].Measure(new Size(itemWidth, double.PositiveInfinity));
+            visibleChildren[i].Measure(new Size(itemWidth, double.PositiveInfinity));
             var row = i / columns;
             if (row == rowHeights.Count)
                 rowHeights.Add(0);
-            rowHeights[row] = Math.Max(rowHeights[row], Children[i].DesiredSize.Height);
+            rowHeights[row] = Math.Max(
+                rowHeights[row],
+                visibleChildren[i].DesiredSize.Height);
         }
         return new Size(
             width,
@@ -1043,24 +1052,29 @@ internal sealed class AdaptiveUniformPanel : Panel
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var columns = ColumnCount(finalSize.Width);
+        var visibleChildren = Children
+            .Cast<UIElement>()
+            .Where(child => child.Visibility != Visibility.Collapsed)
+            .ToArray();
+        var columns = ColumnCount(finalSize.Width, visibleChildren.Length);
         var itemWidth = Math.Max(
             0,
             (finalSize.Width - (columns - 1) * Spacing) / columns);
-        var rowHeights = new double[(Children.Count + columns - 1) / columns];
-        for (var i = 0; i < Children.Count; i++)
+        var rowHeights = new double[
+            (visibleChildren.Length + columns - 1) / columns];
+        for (var i = 0; i < visibleChildren.Length; i++)
             rowHeights[i / columns] = Math.Max(
                 rowHeights[i / columns],
-                Children[i].DesiredSize.Height);
+                visibleChildren[i].DesiredSize.Height);
         var y = 0d;
         for (var row = 0; row < rowHeights.Length; row++)
         {
             for (var column = 0; column < columns; column++)
             {
                 var index = row * columns + column;
-                if (index >= Children.Count)
+                if (index >= visibleChildren.Length)
                     break;
-                Children[index].Arrange(new Rect(
+                visibleChildren[index].Arrange(new Rect(
                     column * (itemWidth + Spacing),
                     y,
                     itemWidth,
@@ -1071,14 +1085,14 @@ internal sealed class AdaptiveUniformPanel : Panel
         return finalSize;
     }
 
-    private int ColumnCount(double width)
+    private int ColumnCount(double width, int itemCount)
     {
-        if (Children.Count == 0)
+        if (itemCount == 0)
             return 1;
         return Math.Max(
             1,
             Math.Min(
-                Children.Count,
+                itemCount,
                 (int)Math.Floor((width + Spacing) / (MinimumItemWidth + Spacing))));
     }
 }

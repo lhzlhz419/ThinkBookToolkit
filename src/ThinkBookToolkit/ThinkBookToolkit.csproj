@@ -23,6 +23,12 @@
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Contracts\ThinkBookToolkit.FanBackend.Contracts.csproj" />
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Wmi\ThinkBookToolkit.FanBackend.Wmi.csproj" />
 
+    <Compile Include="..\ThinkBookToolkit.Guardian\Program.cs" Link="Guardian\GuardianEntryPoint.cs" />
+    <Compile Include="..\ThinkBookToolkit.Guardian\FanWatchdogMarker.cs" Link="Guardian\FanWatchdogMarker.cs" />
+    <Compile Include="..\ThinkBookToolkit.Guardian\GuardianLog.cs" Link="Guardian\GuardianLog.cs" />
+    <Compile Include="..\ThinkBookToolkit.Guardian\FanWatchdogService.cs" Link="Guardian\FanWatchdogService.cs" />
+    <Compile Include="..\ThinkBookToolkit.Guardian\GpuMonitorWorker.cs" Link="Guardian\GpuMonitorWorker.cs" />
+
     <Content Include="default_app_settings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

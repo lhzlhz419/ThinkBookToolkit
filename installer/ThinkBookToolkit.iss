@@ -1,11 +1,11 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "0.2.5"
+  #define AppVersion "0.2.6"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\dist\v0.2.5\ThinkBookToolkit-0.2.5-win-x64-framework-dependent"
+  #define SourceDir "..\dist\v0.2.6\ThinkBookToolkit-0.2.6-win-x64-framework-dependent"
 #endif
 #ifndef OutputDir
-  #define OutputDir "..\dist\v0.2.5"
+  #define OutputDir "..\dist\v0.2.6"
 #endif
 #ifndef ChineseMessagesFile
   #define ChineseMessagesFile "compiler:Languages\ChineseSimplified.isl"
@@ -20,6 +20,7 @@
 #define RuntimeInstaller "windowsdesktop-runtime-9.0.18-win-x64.exe"
 #define RuntimeUrl "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/9.0.18/windowsdesktop-runtime-9.0.18-win-x64.exe"
 #define RuntimeSha256 "12CD00688FC9F8F5187D25911BF656DB61998C264F03EEF4022FF2D9321D6982"
+#define GuardianServiceName "ThinkBookToolkitGuardian"
 
 [Setup]
 AppId={{A4967548-B6D5-4A77-94B6-C84B6E5685AC}
@@ -106,9 +107,15 @@ Name: "{autodesktop}\ThinkBook Toolkit"; Filename: "{app}\ThinkBookToolkit.exe";
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Run]
+Filename: "{sys}\sc.exe"; Parameters: "create {#GuardianServiceName} binPath= ""\""{app}\ThinkBookToolkit.exe\"" --fan-watchdog-service"" start= demand DisplayName= ""ThinkBook Toolkit Guardian"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "description {#GuardianServiceName} ""Restores firmware automatic fan control if ThinkBook Toolkit exits unexpectedly."""; Flags: runhidden waituntilterminated
 Filename: "{app}\ThinkBookToolkit.exe"; Parameters: "--configure-lenovo-dll-directory ""{code:CustomLenovoDllDirectory}"""; Flags: runhidden waituntilterminated; Check: UseCustomLenovoDllDirectory
 Filename: "{app}\ThinkBookToolkit.exe"; Parameters: "--configure-lenovo-dll-directory"; Flags: runhidden waituntilterminated; Check: not UseCustomLenovoDllDirectory
 Filename: "{app}\ThinkBookToolkit.exe"; Description: "{cm:LaunchProgram,ThinkBook Toolkit}"; Flags: nowait postinstall skipifsilent runascurrentuser
+
+[UninstallRun]
+Filename: "{sys}\sc.exe"; Parameters: "stop {#GuardianServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "StopThinkBookToolkitGuardian"
+Filename: "{sys}\sc.exe"; Parameters: "delete {#GuardianServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteThinkBookToolkitGuardian"
 
 [Code]
 var
@@ -234,6 +241,20 @@ var
   RuntimePath: String;
   ResultCode: Integer;
 begin
+  Exec(
+    ExpandConstant('{sys}\sc.exe'),
+    'stop {#GuardianServiceName}',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode);
+  Exec(
+    ExpandConstant('{sys}\sc.exe'),
+    'delete {#GuardianServiceName}',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode);
   Result := PreserveFanBackendBeforeCleanup;
   if Result <> '' then
     Exit;
