@@ -35,6 +35,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Setup now asks a running Toolkit instance to restore firmware automatic fan
+  control and exit before files are replaced. Older versions that do not
+  support the update-exit signal receive a focused tray-exit prompt, and the
+  guardian service is stopped before Restart Manager checks file locks.
 - Restored firmware automatic fan control during Windows session shutdown and
   blocked late background writes once shutdown preparation begins.
 - Prevented disabled or removed discrete-GPU telemetry failures from crashing

@@ -13,6 +13,14 @@ public static class Program
     {
         if (Guardian.GuardianEntryPoint.TryRun(args))
             return;
+        if (args.Any(argument => string.Equals(
+                argument,
+                "--exit-for-update",
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            SingleInstanceCoordinator.TrySignalExitForUpdate();
+            return;
+        }
 
         try
         {
@@ -77,8 +85,11 @@ public static class Program
                         enableHardwareDetection: true,
                         startToTrayRequested);
                     runtime.AttachWindow(window, startToTrayRequested);
-                    singleInstance!.Listen(() => app.Dispatcher.BeginInvoke(
-                        new Action(() => runtime.ShowMainWindow())));
+                    singleInstance!.Listen(
+                        () => app.Dispatcher.BeginInvoke(
+                            new Action(() => runtime.ShowMainWindow())),
+                        () => app.Dispatcher.BeginInvoke(
+                            new Action(runtime.RequestExit)));
                     app.MainWindow = window;
                     app.Run(window);
                 }

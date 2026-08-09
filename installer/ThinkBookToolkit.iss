@@ -93,6 +93,8 @@ chinesesimplified.PreserveFanBackendFailed=无法在覆盖安装前暂存现有�
 english.PreserveFanBackendFailed=Could not preserve the existing fan backend before overwriting the installation: %1
 chinesesimplified.RestoreFanBackendFailed=安装已完成，但无法恢复选择保留的风扇后端：%1
 english.RestoreFanBackendFailed=Setup completed, but the preserved fan backend could not be restored: %1
+chinesesimplified.ToolkitStillRunning=ThinkBook Toolkit 仍在运行，安装程序无法安全地自动退出这个版本。%n%n请在系统托盘中右键单击 ThinkBook Toolkit 图标并选择“退出”。程序完全退出后，点击“重试”。%n%n请勿使用任务管理器强制结束进程，以免风扇保持在最后写入的转速。
+english.ToolkitStillRunning=ThinkBook Toolkit is still running and this version cannot be closed safely by Setup.%n%nRight-click the ThinkBook Toolkit tray icon and choose Exit. After the application has completely exited, click Retry.%n%nDo not force-end the process in Task Manager, because the fans could remain at the last written speed.
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
@@ -296,6 +298,75 @@ begin
     NeedsRestart := True;
 end;
 
+function ToolkitIsRunning: Boolean;
+begin
+  Result := CheckForMutexes('Local\ThinkBookToolkit.Application.v1');
+end;
+
+procedure StopGuardianServiceBeforeInstall;
+var
+  ResultCode: Integer;
+begin
+  Exec(
+    ExpandConstant('{sys}\net.exe'),
+    'stop {#GuardianServiceName} /y',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode);
+  Exec(
+    ExpandConstant('{sys}\sc.exe'),
+    'delete {#GuardianServiceName}',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode);
+end;
+
+function EnsureToolkitStoppedBeforeInstall: Boolean;
+var
+  ApplicationPath: String;
+  ResultCode: Integer;
+  WaitIndex: Integer;
+begin
+  Result := True;
+  while ToolkitIsRunning do
+  begin
+    ApplicationPath := ExpandConstant('{app}\ThinkBookToolkit.exe');
+    if FileExists(ApplicationPath) then
+    begin
+      Exec(
+        ApplicationPath,
+        '--exit-for-update',
+        ExpandConstant('{app}'),
+        SW_HIDE,
+        ewWaitUntilTerminated,
+        ResultCode);
+    end;
+
+    for WaitIndex := 1 to 20 do
+    begin
+      if not ToolkitIsRunning then
+        Break;
+      Sleep(250);
+    end;
+    if not ToolkitIsRunning then
+      Break;
+
+    if SuppressibleMsgBox(
+         CustomMessage('ToolkitStillRunning'),
+         mbError,
+         MB_RETRYCANCEL,
+         IDRETRY) <> IDRETRY then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end;
+
+  StopGuardianServiceBeforeInstall;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Destination: String;
@@ -497,6 +568,11 @@ var
   ExistingFanBackendVersion: String;
 begin
   Result := True;
+  if CurPageID = wpReady then
+  begin
+    Result := EnsureToolkitStoppedBeforeInstall;
+    Exit;
+  end;
   if CurPageID = wpSelectDir then
   begin
     SelectedDirectory := NormalizedDirectory(WizardDirValue);

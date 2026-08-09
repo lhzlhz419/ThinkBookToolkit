@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -47,6 +48,7 @@ internal static class Program
         VerifyAdvancedFanCurve();
         VerifyNvidiaPrivateTelemetryDecoding();
         VerifyGpuMonitorIsolationAndWatchdogProtocol();
+        VerifySingleInstanceUpdateExitSignal();
         VerifyPowerSettingsWindowManualInput();
         VerifyPowerDeviceProfiles();
         VerifyOverviewLayoutSettings();
@@ -1591,6 +1593,30 @@ internal static class Program
                    FanWatchdogService.MarkerDirectory(),
                    StringComparison.OrdinalIgnoreCase),
             "The Toolkit client and Windows watchdog service disagree on their protocol names.");
+    }
+
+    private static void VerifySingleInstanceUpdateExitSignal()
+    {
+        var instanceId = Guid.NewGuid().ToString("N");
+        if (!SingleInstanceCoordinator.TryAcquireForTesting(
+                instanceId,
+                out var coordinator) ||
+            coordinator is null)
+        {
+            throw new InvalidOperationException(
+                "The single-instance coordinator could not be acquired for the update-exit protocol test.");
+        }
+        using (coordinator)
+        using (var activated = new ManualResetEventSlim())
+        using (var exitRequested = new ManualResetEventSlim())
+        {
+            coordinator.Listen(activated.Set, exitRequested.Set);
+            Assert(SingleInstanceCoordinator.TrySignalExitForUpdateForTesting(
+                       instanceId) &&
+                   exitRequested.Wait(TimeSpan.FromSeconds(2)) &&
+                   !activated.IsSet,
+                "The installer update-exit signal did not reach the running Toolkit instance independently of activation.");
+        }
     }
 
     private static void VerifyPowerSettingsWindowManualInput()
