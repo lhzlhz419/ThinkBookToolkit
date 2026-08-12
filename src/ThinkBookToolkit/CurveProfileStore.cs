@@ -165,9 +165,40 @@ public static class CurveProfileStore
                 defaults.FanRpmLimits);
             defaults.ResumeFanControlOnNextStart = loaded.ResumeFanControlOnNextStart || loaded.FanControlWasRunning;
             defaults.StartWithWindows = loaded.StartWithWindows;
+            defaults.DelayStartup = loaded.StartWithWindows && loaded.DelayStartup;
             defaults.StartToTray = loaded.StartToTray;
             defaults.MinimizeToTray = loaded.MinimizeToTray;
             defaults.CloseToTray = loaded.CloseToTray;
+            defaults.TakeOverFnKeys = loaded.TakeOverFnKeys;
+            defaults.ShowCapsLockOsd =
+                !settingsJson.Contains(
+                    nameof(AppSettings.ShowCapsLockOsd),
+                    StringComparison.OrdinalIgnoreCase) ||
+                loaded.ShowCapsLockOsd;
+            defaults.ShowNumLockOsd =
+                !settingsJson.Contains(
+                    nameof(AppSettings.ShowNumLockOsd),
+                    StringComparison.OrdinalIgnoreCase) ||
+                loaded.ShowNumLockOsd;
+            defaults.RefreshRateCycleHz =
+                RefreshRateController.NormalizeConfiguredRates(
+                    loaded.RefreshRateCycleHz);
+            defaults.FnPerformanceModeOrder =
+                PerformanceModeCycle.NormalizeOrder(
+                    loaded.FnPerformanceModeOrder);
+            defaults.FnPerformanceModeEnabled =
+                settingsJson.Contains(
+                    nameof(AppSettings.FnPerformanceModeEnabled),
+                    StringComparison.OrdinalIgnoreCase)
+                    ? PerformanceModeCycle.NormalizeEnabled(
+                        loaded.FnPerformanceModeEnabled)
+                    : PerformanceModeCycle.DefaultOrder.ToList();
+            defaults.ShutdownPerformanceMode =
+                PerformanceModeCycle.TryParseSelectableMode(
+                    loaded.ShutdownPerformanceMode,
+                    out var shutdownMode)
+                    ? shutdownMode.ToString()
+                    : string.Empty;
             defaults.DisableControlOnSleep =
                 !settingsJson.Contains(nameof(AppSettings.DisableControlOnSleep), StringComparison.OrdinalIgnoreCase) ||
                 loaded.DisableControlOnSleep;
@@ -232,6 +263,8 @@ public static class CurveProfileStore
             }
             defaults.PowerSettingsLocksByMode = NormalizePowerModeLocks(
                 loaded.PowerSettingsLocksByMode);
+            defaults.GpuOverclock = GpuOverclockPolicy.Normalize(
+                loaded.GpuOverclock);
             defaults.LastFanBackendIdentity =
                 loaded.LastFanBackendIdentity ?? string.Empty;
             defaults.SuppressedFanBackendStartupNoticeIdentity =
@@ -293,6 +326,25 @@ public static class CurveProfileStore
         }
         settings.PowerSettingsLocksByMode = NormalizePowerModeLocks(
             settings.PowerSettingsLocksByMode);
+        settings.GpuOverclock = GpuOverclockPolicy.Normalize(
+            settings.GpuOverclock);
+        settings.FnPerformanceModeOrder =
+            PerformanceModeCycle.NormalizeOrder(
+                settings.FnPerformanceModeOrder);
+        settings.FnPerformanceModeEnabled =
+            PerformanceModeCycle.NormalizeEnabled(
+                settings.FnPerformanceModeEnabled);
+        settings.RefreshRateCycleHz =
+            RefreshRateController.NormalizeConfiguredRates(
+                settings.RefreshRateCycleHz);
+        if (!settings.StartWithWindows)
+            settings.DelayStartup = false;
+        if (!PerformanceModeCycle.TryParseSelectableMode(
+                settings.ShutdownPerformanceMode,
+                out _))
+        {
+            settings.ShutdownPerformanceMode = string.Empty;
+        }
         settings.AdvancedFanCurve = AdvancedFanCurve.Normalize(
             settings.AdvancedFanCurve,
             NormalizeFanRpmLimits(settings.FanRpmLimits));

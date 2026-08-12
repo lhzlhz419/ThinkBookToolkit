@@ -31,6 +31,8 @@ internal sealed class LenovoEnergyDriver : IDisposable
 
     public uint Call(uint ioctl, uint input) => Call<uint>(ioctl, input);
 
+    internal SafeFileHandle Handle => _handle;
+
     public T Call<T>(uint ioctl, uint input) where T : struct
     {
         var inputPointer = Marshal.AllocHGlobal(sizeof(uint));

@@ -178,7 +178,7 @@ dotnet run --project .\tests\ThinkBookToolkit.UiPreview\ThinkBookToolkit.UiPrevi
 
 ```text
 ThinkBookToolkit.Dependencies/
-|-- LibreHardwareMonitorLib.dll        # 本地参考副本；实际构建使用 NuGet 包
+|-- LibreHardwareMonitorLib.dll        # 0.9.7-pre717 本地参考副本；实际构建使用 NuGet 包
 |-- LenovoPcManager/
 |   `-- WrapPlugin.dll
 `-- VantageAddins/
@@ -204,7 +204,8 @@ ThinkBookToolkit.Dependencies/
 
 - [Lenovo Legion Toolkit（LLT）](https://github.com/LenovoLegionToolkit-Team/LenovoLegionToolkit) 为面向联想设备的专用工具结构和交互设计提供了参考；
 - [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) 提供硬件传感器访问；
-- [PawnIO](https://github.com/namazso/PawnIO) 提供 LibreHardwareMonitor 在已测试设备上读取 CPU 温度所需的系统级访问；
+- [NAudio](https://github.com/naudio/NAudio) 提供接管 Fn 快捷键时所需的 Windows 音频端点状态和麦克风静音控制；
+- [PawnIO](https://github.com/namazso/PawnIO) 提供 LibreHardwareMonitor 读取 CPU 温度所需的系统级访问；
 - 部分功能会与 [Lenovo Vantage](https://apps.microsoft.com/detail/9wzdncrfj4mv) 和 [联想电脑管家](https://guanjia.lenovo.com.cn/) 的组件协作。
 
 Lenovo、ThinkBook、Vantage 及相关名称的商标权归其各自权利人所有。

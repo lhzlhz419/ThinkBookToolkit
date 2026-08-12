@@ -110,6 +110,18 @@ internal static class LenovoWmi
             });
     }
 
+    public static void SetUtilityFeature(int featureType)
+    {
+        using var instance = GetActiveInstance("LENOVO_UTILITY_DATA");
+        InvokeVoid(
+            instance,
+            "SetFeature",
+            new Dictionary<string, object>
+            {
+                ["featuretype"] = featureType
+            });
+    }
+
     private static ManagementBaseObject? Invoke(
         ManagementObject instance,
         string method,

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Windows;
@@ -15,16 +16,28 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly ComboBox _language = new() { MinWidth = 150 };
     private readonly ComboBox _theme = new() { MinWidth = 170 };
     private readonly ComboBox _overviewMode = new() { MinWidth = 150 };
-    private readonly CheckBox _startWithWindows = new();
+    private readonly ComboBox _startupMode = new() { MinWidth = 170 };
     private readonly CheckBox _startToTray = new();
     private readonly CheckBox _minimizeToTray = new();
     private readonly CheckBox _closeToTray = new();
+    private readonly CheckBox _takeOverFnKeys = new();
     private readonly CheckBox _disableOnSleep = new();
     private readonly CheckBox _alternativeFullSpeed = new();
     private readonly CheckBox _continuousFanWrites = new();
     private readonly Button _editOverview;
     private readonly Button _restartReaders;
+    private readonly Button _checkUpdates;
+    private readonly Button _downloadUpdate;
+    private readonly TextBlock _updateStatus = new()
+    {
+        VerticalAlignment = VerticalAlignment.Center,
+        TextAlignment = TextAlignment.Right,
+        TextWrapping = TextWrapping.Wrap
+    };
+    private Uri? _availableUpdatePage;
     private Window? _overviewEditorWindow;
+    private readonly Dictionary<string, CheckBox> _overviewHeroToggles =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, CheckBox> _overviewCardToggles =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<(string Card, string Item), CheckBox>
@@ -55,6 +68,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _status = StatusText();
         _editOverview = ActionButton(L("编辑概览页", "Edit overview"));
         _restartReaders = ActionButton(L("强制刷新读数", "Restart readers"));
+        _checkUpdates = ActionButton(L("检查更新", "Check for updates"));
+        _downloadUpdate = ActionButton(L("下载更新", "Download update"), primary: true);
+        _downloadUpdate.Visibility = Visibility.Collapsed;
         Content = BuildLayout();
         SyncControls();
     }
@@ -79,6 +95,18 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             _overviewMode,
             L("详细模式", "Detailed"),
             OverviewPageMode.Detailed);
+        AddChoice(
+            _startupMode,
+            L("关闭", "Off"),
+            StartupLaunchMode.Disabled);
+        AddChoice(
+            _startupMode,
+            L("打开", "On"),
+            StartupLaunchMode.Enabled);
+        AddChoice(
+            _startupMode,
+            L("延迟启动", "Delayed start"),
+            StartupLaunchMode.Delayed);
         WireEvents();
 
         var root = new StackPanel();
@@ -117,9 +145,15 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("关闭并重新创建硬件数据读取组件。", "Close and recreate the hardware data readers."),
             _restartReaders,
             "\uE72C"));
+        var globalContent = new StackPanel();
+        globalContent.Children.Add(SettingRow(
+            L("当前版本", "Current version"),
+            $"v{ApplicationUpdateService.CurrentVersionText}",
+            BuildUpdateActions()));
+        globalContent.Children.Add(global);
         root.Children.Add(Card(
             L("全局设置", "Global settings"),
-            global,
+            globalContent,
             L("管理界面语言、外观和信息更新频率。", "Manage language, appearance, and information updates."),
             "\uE713"));
 
@@ -131,8 +165,10 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         };
         startupPrimary.Children.Add(SettingRow(
             L("开机自启", "Start with Windows"),
-            L("登录 Windows 后自动打开 Toolkit。", "Open Toolkit automatically after signing in to Windows."),
-            _startWithWindows));
+            L(
+                $"可关闭、登录后立即启动，或延迟 {MainWindow.StartupDelaySeconds} 秒启动。",
+                $"Turn off, start at sign-in, or start after a {MainWindow.StartupDelaySeconds}-second delay."),
+            _startupMode));
         startupPrimary.Children.Add(SettingRow(
             L("启动到托盘", "Start in tray"),
             L("仅在开机自启时生效。", "Used when Toolkit is launched at sign-in."),
@@ -146,6 +182,14 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("关闭按钮隐藏窗口；从托盘菜单选择退出才结束程序。", "The close button hides the window; Exit in the tray menu ends the app."),
             _closeToTray));
         startup.Children.Add(startupPrimary);
+        startup.Children.Add(SettingRow(
+            L(
+                "禁用 Lenovo Hotkeys 并接管 Fn 快捷键",
+                "Disable Lenovo Hotkeys and take over Fn keys"),
+            L(
+                "由 Toolkit 处理 ThinkBook 的 Fn 事件并显示全局提示；Fn+Q 按自定义顺序切换性能模式。关闭此项会恢复 Lenovo Hotkeys。",
+                "Let Toolkit handle ThinkBook Fn events and show a global OSD. Fn+Q follows the custom performance-mode order. Turning this off restores Lenovo Hotkeys."),
+            _takeOverFnKeys));
         if (Runtime.Report?.IsAvailable(FeatureIds.FanControl) == true)
         {
             _disableOnSleepRow = SettingRow(
@@ -383,11 +427,14 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 SyncControls();
             }
         };
-        _startWithWindows.Click += (_, _) =>
+        _startupMode.SelectionChanged += (_, _) =>
         {
-            if (_syncing) return;
-            _viewModel.SetStartWithWindows(_startWithWindows.IsChecked == true);
-            SyncControls();
+            if (!_syncing &&
+                Selected<StartupLaunchMode>(_startupMode) is { } value)
+            {
+                _viewModel.SetStartupMode(value);
+                SyncControls();
+            }
         };
         _startToTray.Click += (_, _) =>
         {
@@ -409,6 +456,21 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             _viewModel.Status = Runtime.TrySetCloseToTray(_closeToTray.IsChecked == true, out var error)
                 ? string.Empty
                 : L("设置失败，已回滚：", "Setting failed and was rolled back: ") + error;
+            SyncControls();
+        };
+        _takeOverFnKeys.Click += async (_, _) =>
+        {
+            if (_syncing)
+                return;
+            _takeOverFnKeys.IsEnabled = false;
+            var enabled = _takeOverFnKeys.IsChecked == true;
+            var error = await Runtime.SetFnKeyTakeoverAsync(enabled);
+            _viewModel.Status = string.IsNullOrWhiteSpace(error)
+                ? string.Empty
+                : L(
+                    "Fn 快捷键接管设置失败，已回滚：",
+                    "Fn-key takeover could not be changed and was rolled back: ") +
+                  error;
             SyncControls();
         };
         _disableOnSleep.Click += (_, _) =>
@@ -454,12 +516,96 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             _restartReaders.IsEnabled = true;
             _status.Text = _viewModel.Status;
         };
+        _checkUpdates.Click += async (_, _) => await CheckForUpdatesAsync();
+        _downloadUpdate.Click += (_, _) => OpenAvailableUpdate();
         _fanReadMinimumInterval.LostKeyboardFocus += (_, _) =>
             SaveFanIoIntervals();
         _fanWriteMinimumInterval.LostKeyboardFocus += (_, _) =>
             SaveFanIoIntervals();
         _fanReadMinimumInterval.KeyDown += CommitFanIoIntervalsOnEnter;
         _fanWriteMinimumInterval.KeyDown += CommitFanIoIntervalsOnEnter;
+    }
+
+    private async System.Threading.Tasks.Task CheckForUpdatesAsync()
+    {
+        _checkUpdates.IsEnabled = false;
+        _availableUpdatePage = null;
+        _downloadUpdate.Visibility = Visibility.Collapsed;
+        _updateStatus.Text = L("正在检查…", "Checking…");
+        try
+        {
+            ToolkitLog.Info("Checking GitHub Releases for an application update.");
+            var release = await ApplicationUpdateService.CheckAsync();
+            ApplyUpdateResult(release);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error("The application update check failed.", ex);
+            _updateStatus.Text = L(
+                "检查失败，请稍后重试",
+                "Check failed. Try again later");
+        }
+        finally
+        {
+            _checkUpdates.IsEnabled = true;
+        }
+    }
+
+    private UIElement BuildUpdateActions()
+    {
+        _updateStatus.Foreground = Brush(Palette.Muted);
+        _updateStatus.Margin = new Thickness(0, 0, 16, 0);
+        _downloadUpdate.Margin = new Thickness(0, 0, 8, 0);
+        _checkUpdates.Margin = new Thickness(0);
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        actions.Children.Add(_updateStatus);
+        actions.Children.Add(_downloadUpdate);
+        actions.Children.Add(_checkUpdates);
+        return actions;
+    }
+
+    private void ApplyUpdateResult(ApplicationRelease release)
+    {
+        if (ApplicationUpdateService.IsNewer(release))
+        {
+            _availableUpdatePage = release.PageUri;
+            _updateStatus.Text = L(
+                $"最新版 {release.TagName}",
+                $"Latest {release.TagName}");
+            _downloadUpdate.Visibility = Visibility.Visible;
+            return;
+        }
+
+        _availableUpdatePage = null;
+        _updateStatus.Text = L(
+            "当前已是最新版",
+            "Already up to date");
+        _downloadUpdate.Visibility = Visibility.Collapsed;
+    }
+
+    private void OpenAvailableUpdate()
+    {
+        if (_availableUpdatePage is null)
+            return;
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = _availableUpdatePage.AbsoluteUri,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error("The GitHub Release page could not be opened.", ex);
+            _updateStatus.Text = L(
+                "无法打开下载页面",
+                "Could not open the download page");
+        }
     }
 
     private void SyncControls()
@@ -470,11 +616,13 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         Select(_language, settings.Language);
         Select(_theme, settings.Theme);
         Select(_overviewMode, settings.OverviewPageMode);
-        _startWithWindows.IsChecked = settings.StartWithWindows;
+        Select(_startupMode, Runtime.CurrentStartupMode);
         _startToTray.IsChecked = settings.StartToTray;
         _startToTray.IsEnabled = settings.StartWithWindows;
         _minimizeToTray.IsChecked = settings.MinimizeToTray;
         _closeToTray.IsChecked = settings.CloseToTray;
+        _takeOverFnKeys.IsChecked = settings.TakeOverFnKeys;
+        _takeOverFnKeys.IsEnabled = true;
         _disableOnSleep.IsChecked =
             Runtime.FanBackendSupportsDisableControlOnSleep
                 ? settings.DisableControlOnSleep
@@ -498,6 +646,39 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private UIElement BuildOverviewEditor()
     {
         var content = new StackPanel();
+        var heroItems = new StackPanel { Margin = new Thickness(0, 5, 0, 0) };
+        foreach (var heroId in OverviewLayoutDefaults.HeroCardDefinitions)
+        {
+            var toggle = new CheckBox
+            {
+                Content = OverviewHeroName(heroId),
+                Margin = new Thickness(0, 4, 0, 4)
+            };
+            _overviewHeroToggles[heroId] = toggle;
+            toggle.Click += (_, _) =>
+            {
+                if (_syncing) return;
+                _overviewDraft.HeroCards[heroId] = toggle.IsChecked == true;
+            };
+            heroItems.Children.Add(toggle);
+        }
+        var heroSection = new StackPanel();
+        heroSection.Children.Add(new TextBlock
+        {
+            Text = L("设备控制中心", "Device control center"),
+            FontWeight = FontWeights.SemiBold
+        });
+        heroSection.Children.Add(heroItems);
+        content.Children.Add(new Border
+        {
+            Background = Brush(Palette.SurfaceRaised),
+            BorderBrush = Brush(Palette.Border),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(13),
+            Margin = new Thickness(0, 0, 0, 8),
+            Child = heroSection
+        });
         var definitions = Runtime.Settings.OverviewPageMode ==
                 OverviewPageMode.Compact
             ? OverviewLayoutDefaults.CompactCardDefinitions
@@ -604,6 +785,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
 
         _overviewDraft = OverviewLayoutDefaults.Clone(
             Runtime.Settings.OverviewLayout);
+        _overviewHeroToggles.Clear();
         _overviewCardToggles.Clear();
         _overviewItemToggles.Clear();
         var editor = BuildOverviewEditor();
@@ -639,6 +821,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     {
         var wasSyncing = _syncing;
         _syncing = true;
+        foreach (var pair in _overviewHeroToggles)
+            pair.Value.IsChecked = _overviewDraft.HeroCards[pair.Key];
         foreach (var pair in _overviewCardToggles)
             pair.Value.IsChecked = _overviewDraft.Cards[pair.Key].Enabled;
         foreach (var pair in _overviewItemToggles)
@@ -662,6 +846,16 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         OverviewCardIds.Fans => L("风扇", "Fans"),
         OverviewCardIds.Power => L("功耗限制", "Power limits"),
         OverviewCardIds.Warranty => L("保修信息", "Warranty"),
+        _ => id
+    };
+
+    private string OverviewHeroName(string id) => id switch
+    {
+        OverviewHeroIds.PerformanceMode => L("性能模式", "Performance mode"),
+        OverviewHeroIds.GpuMode => L("GPU 模式", "GPU mode"),
+        OverviewHeroIds.FanControl => L("风扇控制", "Fan control"),
+        OverviewHeroIds.DiscreteGpuStatus => L("独显状态", "Discrete GPU status"),
+        OverviewHeroIds.RestartStatus => L("重启状态", "Restart status"),
         _ => id
     };
 
@@ -849,6 +1043,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         "输入设备" => L("输入设备", "Input devices"),
         "设备" => L("设备", "Device"),
         "高级工具" => L("高级工具", "Advanced tools"),
+        "设置" => L("设置", "Settings"),
         _ => category
     };
 
@@ -862,6 +1057,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.SleepFanControl => "Release fan control while sleeping",
             FeatureIds.PerformanceMode => "Performance mode",
             FeatureIds.GpuMode => "GPU working mode",
+            FeatureIds.DiscreteGpuManagement =>
+                "Discrete GPU status and applications",
+            FeatureIds.GpuOverclock => "Discrete GPU overclocking",
             FeatureIds.PowerSettings => "Power limits",
             FeatureIds.BatteryChargeMode => "Charging mode",
             FeatureIds.OvernightCharging => "Overnight charging",
@@ -871,6 +1069,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.VantageEyeCare => "Vantage eye care",
             FeatureIds.PcManagerEyeCare => "PC Manager eye care",
             FeatureIds.ColorManagement => "Color management",
+            FeatureIds.DisplayRefreshRate =>
+                "Laptop display refresh-rate switching",
             FeatureIds.DolbyAtmos => "Dolby Atmos",
             FeatureIds.SpeakerNoiseCancellation => "Speaker noise cancellation",
             FeatureIds.MicrophoneNoiseCancellation => "Microphone noise cancellation",
@@ -881,12 +1081,14 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.NumLockOsd => "NumLock OSD",
             FeatureIds.FnCtrlSwap => "Swap Fn and Ctrl",
             FeatureIds.Touchpad => "Touchpad",
+            FeatureIds.FnKeyTakeover => "Fn-key takeover",
             FeatureIds.DeviceInformation => "Device information",
             FeatureIds.WarrantyInformation => "Warranty information",
             FeatureIds.BootLogo => "Boot logo customization",
             FeatureIds.BiosSetup => "Enter BIOS setup",
             FeatureIds.StartupInterrupt => "Startup interrupt menu",
             FeatureIds.SecureWipe => "Secure wipe",
+            FeatureIds.UpdateCheck => "Software update check",
             _ => fallback
         };
     }
@@ -946,9 +1148,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             set => base.Status = value;
         }
 
-        public void SetStartWithWindows(bool value)
+        public void SetStartupMode(StartupLaunchMode value)
         {
-            Status = Runtime.TrySetStartWithWindows(value, out var error)
+            Status = Runtime.TrySetStartupMode(value, out var error)
                 ? string.Empty
                 : Runtime.L("设置失败，已回滚：", "Setting failed and was rolled back: ") + error;
         }

@@ -15,6 +15,15 @@ public static class OverviewCardIds
     public const string Warranty = "warranty";
 }
 
+public static class OverviewHeroIds
+{
+    public const string PerformanceMode = "performance-mode";
+    public const string GpuMode = "gpu-mode";
+    public const string FanControl = "fan-control";
+    public const string DiscreteGpuStatus = "discrete-gpu-status";
+    public const string RestartStatus = "restart-status";
+}
+
 public sealed class OverviewCardSettings
 {
     public bool Enabled { get; set; } = true;
@@ -24,12 +33,23 @@ public sealed class OverviewCardSettings
 
 public sealed class OverviewLayoutSettings
 {
+    public Dictionary<string, bool> HeroCards { get; set; } =
+        OverviewLayoutDefaults.CreateHeroCards();
     public Dictionary<string, OverviewCardSettings> Cards { get; set; } =
         OverviewLayoutDefaults.CreateCards();
 }
 
 internal static class OverviewLayoutDefaults
 {
+    private static readonly string[] HeroDefinitions =
+    [
+        OverviewHeroIds.PerformanceMode,
+        OverviewHeroIds.GpuMode,
+        OverviewHeroIds.FanControl,
+        OverviewHeroIds.DiscreteGpuStatus,
+        OverviewHeroIds.RestartStatus
+    ];
+
     private static readonly IReadOnlyDictionary<string, string[]> Definitions =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
@@ -55,9 +75,24 @@ internal static class OverviewLayoutDefaults
             },
             StringComparer.OrdinalIgnoreCase);
 
+    public static Dictionary<string, bool> CreateHeroCards() =>
+        HeroDefinitions.ToDictionary(
+            item => item,
+            _ => true,
+            StringComparer.OrdinalIgnoreCase);
+
     public static OverviewLayoutSettings Normalize(
         OverviewLayoutSettings? value)
     {
+        var heroCards = CreateHeroCards();
+        if (value?.HeroCards is not null)
+        {
+            foreach (var item in HeroDefinitions)
+            {
+                if (value.HeroCards.TryGetValue(item, out var enabled))
+                    heroCards[item] = enabled;
+            }
+        }
         var cards = CreateCards();
         if (value?.Cards is not null)
         {
@@ -83,7 +118,11 @@ internal static class OverviewLayoutDefaults
                 }
             }
         }
-        return new OverviewLayoutSettings { Cards = cards };
+        return new OverviewLayoutSettings
+        {
+            HeroCards = heroCards,
+            Cards = cards
+        };
     }
 
     public static OverviewLayoutSettings Clone(OverviewLayoutSettings value) =>
@@ -96,6 +135,15 @@ internal static class OverviewLayoutDefaults
         var normalized = Normalize(value);
         return normalized.Cards.TryGetValue(cardId, out var card) &&
                card.Enabled;
+    }
+
+    public static bool IsHeroCardEnabled(
+        OverviewLayoutSettings? value,
+        string cardId)
+    {
+        var normalized = Normalize(value);
+        return normalized.HeroCards.TryGetValue(cardId, out var enabled) &&
+               enabled;
     }
 
     public static bool IsItemEnabled(
@@ -112,6 +160,9 @@ internal static class OverviewLayoutDefaults
 
     public static IReadOnlyDictionary<string, string[]> CardDefinitions =>
         Definitions;
+
+    public static IReadOnlyList<string> HeroCardDefinitions =>
+        HeroDefinitions;
 
     public static IReadOnlyDictionary<string, string[]>
         DetailedCardDefinitions { get; } =

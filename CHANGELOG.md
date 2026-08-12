@@ -7,6 +7,65 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-08-12
+
+### Added
+
+- Added discrete-GPU lifecycle management for Hybrid Auto and Hybrid iGPU
+  modes. Toolkit releases NVIDIA monitoring resources before firmware removes
+  the adapter, follows PnP-confirmed disconnect and reconnect events, and shows
+  desktop notifications when the discrete GPU changes state.
+- Added discrete-GPU status and NVIDIA performance-state reporting to Overview
+  and Performance, together with views for GPU-using applications and an
+  optional action to close those applications.
+- Added NVIDIA GPU overclock controls for core and memory offsets plus an
+  optional core-clock range, with explicit safety guidance and reset support.
+- Added optional Lenovo Hotkeys takeover for ThinkBook Fn keys, topmost OSD
+  notifications, configurable Fn+Q performance-mode order, Fn+R refresh-rate
+  cycling, and Toolkit-provided CapsLock and NumLock OSD handling.
+- Added laptop-panel refresh-rate selection and a configurable list shared by
+  the Display page and Fn+R. The default cycle contains 60 Hz and the highest
+  available refresh rate.
+- Added disabled, immediate, and delayed Windows startup modes.
+- Added the application version to the native title bar and Settings. Manual
+  update checking uses the latest stable GitHub Release and exposes a download
+  button inline when a newer version is available.
+
+### Changed
+
+- Upgraded LibreHardwareMonitorLib to `0.9.7-pre717` and aligned its sensor
+  support dependencies with the versions required by that build.
+- Moved NVIDIA telemetry and control into the isolated GPU worker and tightened
+  startup and mode-transition coordination so sensor polling no longer keeps
+  an eject-capable discrete GPU connected.
+- Performance-mode and fan-strategy linkage now waits two seconds after a
+  performance-mode switch is confirmed before applying the requested fan
+  strategy. Fan-initiated linkage no longer changes the fan strategy when the
+  linked performance-mode switch fails.
+- Power-limit locks now retain their per-performance-mode values across mode
+  changes, and Geek mode is omitted while the computer is running on battery.
+- Refined the fan-curve editor layout: profile and name share one row, fan
+  selection moved beside the chart, and the independent-fan toggle now uses
+  direct rather than inverted wording.
+- Settings navigation now uses a short fade-and-slide transition, and update,
+  GPU, refresh-rate, and Fn-key capabilities appear in feature monitoring.
+
+### Fixed
+
+- Restored the previously selected fan strategy after a normal restart rather
+  than always returning to firmware automatic control.
+- Fixed discrete-GPU removal failures caused by active hardware telemetry and
+  improved fallback to integrated-GPU readings after the adapter disappears.
+- Reduced Fn-key input latency and missed rapid key presses, synchronized mute
+  and microphone indicator LEDs, restored Fn+R handling, and restored Lenovo
+  Hotkeys whenever Toolkit exits or Windows shuts down.
+- Preserved the current performance mode across Windows shutdown and startup
+  without changing ordinary manual-exit behavior.
+- Hardened microphone endpoint handling against unsupported COM interfaces and
+  moved operation results to non-blocking Toolkit notifications.
+- Removed the unavailable PCH temperature reading and its unused embedded
+  hardware module.
+
 ## [0.2.6] - 2026-08-09
 
 ### Added
@@ -190,7 +249,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.3...v0.2.4

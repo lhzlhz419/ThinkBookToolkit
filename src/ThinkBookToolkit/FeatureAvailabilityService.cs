@@ -50,6 +50,9 @@ internal static class FeatureIds
     public const string SleepFanControl = "performance.fan.sleep";
     public const string PerformanceMode = "performance.its";
     public const string GpuMode = "performance.gpu";
+    public const string DiscreteGpuManagement =
+        "performance.discrete-gpu-management";
+    public const string GpuOverclock = "performance.gpu-overclock";
     public const string PowerSettings = "performance.power";
     public const string BatteryChargeMode = "battery.charge";
     public const string OvernightCharging = "battery.overnight";
@@ -59,6 +62,7 @@ internal static class FeatureIds
     public const string VantageEyeCare = "display.vantage-eye-care";
     public const string PcManagerEyeCare = "display.pc-manager-eye-care";
     public const string ColorManagement = "display.color";
+    public const string DisplayRefreshRate = "display.refresh-rate";
     public const string DolbyAtmos = "sound.dolby";
     public const string SpeakerNoiseCancellation = "sound.speaker-noise";
     public const string MicrophoneNoiseCancellation = "sound.microphone-noise";
@@ -69,12 +73,14 @@ internal static class FeatureIds
     public const string NumLockOsd = "input.num-osd";
     public const string FnCtrlSwap = "input.fn-ctrl";
     public const string Touchpad = "input.touchpad";
+    public const string FnKeyTakeover = "input.fn-key-takeover";
     public const string DeviceInformation = "device.information";
     public const string WarrantyInformation = "device.warranty";
     public const string BootLogo = "advanced.boot-logo";
     public const string BiosSetup = "advanced.bios-setup";
     public const string StartupInterrupt = "advanced.startup-interrupt";
     public const string SecureWipe = "advanced.secure-wipe";
+    public const string UpdateCheck = "settings.update-check";
 }
 
 internal static class FeatureAvailabilityCache
@@ -93,7 +99,10 @@ internal static class FeatureAvailabilityService
 
         Probe(result, FeatureIds.TemperatureMonitoring, "监控", "温度与功耗监控", () =>
         {
-            using var reader = new TemperatureReader();
+            // CPU and memory probing is sufficient here. Starting the GPU
+            // worker before Hybrid Auto protection is initialized could keep
+            // the discrete adapter connected during an unplug transition.
+            using var reader = new TemperatureReader(enableGpuTelemetry: false);
             _ = reader.Read();
             return "LibreHardwareMonitor 可用";
         });
@@ -147,6 +156,26 @@ internal static class FeatureAvailabilityService
                 throw new NotSupportedException("没有检测到可切换的 GPU 模式");
             return $"支持 {state.SupportedModes.Count} 种模式";
         });
+
+        var hasNvidiaGpu = HasNvidiaDisplayAdapter();
+        AddState(
+            result,
+            FeatureIds.DiscreteGpuManagement,
+            "性能",
+            "独立显卡状态与占用应用",
+            hasNvidiaGpu,
+            hasNvidiaGpu
+                ? "检测到 NVIDIA 独立显卡"
+                : "未检测到 NVIDIA 独立显卡");
+        AddState(
+            result,
+            FeatureIds.GpuOverclock,
+            "性能",
+            "独立显卡超频",
+            hasNvidiaGpu,
+            hasNvidiaGpu
+                ? "NVAPI 控制组件可用"
+                : "未检测到 NVIDIA 独立显卡");
 
         try
         {
@@ -232,6 +261,32 @@ internal static class FeatureAvailabilityService
             DisplaySettingsController.Shutdown();
         }
 
+        if (RefreshRateController.TryReadState(
+                out var refreshRate,
+                out var refreshRateError) &&
+            refreshRate is not null)
+        {
+            AddState(
+                result,
+                FeatureIds.DisplayRefreshRate,
+                "显示",
+                "笔记本屏幕刷新率切换",
+                refreshRate.AvailableHz.Count > 1,
+                refreshRate.AvailableHz.Count > 1
+                    ? $"支持 {refreshRate.AvailableHz.Count} 种刷新率"
+                    : "当前显示模式只有一种刷新率");
+        }
+        else
+        {
+            AddState(
+                result,
+                FeatureIds.DisplayRefreshRate,
+                "显示",
+                "笔记本屏幕刷新率切换",
+                false,
+                refreshRateError);
+        }
+
         try
         {
             var sound = SoundSettingsController.ReadState();
@@ -275,12 +330,56 @@ internal static class FeatureAvailabilityService
             result.Add(new(FeatureIds.KeyboardBacklightAutoOff, "输入设备", "键盘背光自动关闭", false, ex.Message));
         }
 
+        var fnKeyTakeoverAvailable = false;
+        try
+        {
+            using var energyDriver = new LenovoEnergyDriver();
+            fnKeyTakeoverAvailable = true;
+            AddState(
+                result,
+                FeatureIds.FnKeyTakeover,
+                "输入设备",
+                "Fn 快捷键接管",
+                true,
+                "EnergyDrv 与 Toolkit OSD 可用");
+        }
+        catch (Exception ex)
+        {
+            AddState(
+                result,
+                FeatureIds.FnKeyTakeover,
+                "输入设备",
+                "Fn 快捷键接管",
+                false,
+                ex.Message);
+        }
+
         try
         {
             var input = InputSettingsController.ReadState(refreshWmiState: true);
             AddToggle(result, FeatureIds.FunctionLock, "功能锁定", input.FunctionLock);
-            AddToggle(result, FeatureIds.CapsLockOsd, "CapsLock OSD", input.CapsLockOsd);
-            AddToggle(result, FeatureIds.NumLockOsd, "NumLock OSD", input.NumLockOsd);
+            AddState(
+                result,
+                FeatureIds.CapsLockOsd,
+                "输入设备",
+                "CapsLock OSD",
+                input.CapsLockOsd.Supported || fnKeyTakeoverAvailable,
+                input.CapsLockOsd.Supported
+                    ? input.CapsLockOsd.Error
+                    : fnKeyTakeoverAvailable
+                        ? "可由 Toolkit 快捷键接管提供"
+                        : input.CapsLockOsd.Error);
+            AddState(
+                result,
+                FeatureIds.NumLockOsd,
+                "输入设备",
+                "NumLock OSD",
+                input.NumLockOsd.Supported || fnKeyTakeoverAvailable,
+                input.NumLockOsd.Supported
+                    ? input.NumLockOsd.Error
+                    : fnKeyTakeoverAvailable
+                        ? "可由 Toolkit 快捷键接管提供"
+                        : input.NumLockOsd.Error);
             AddToggle(result, FeatureIds.FnCtrlSwap, "Fn/Ctrl 互换", input.FnCtrlSwap);
             AddToggle(result, FeatureIds.Touchpad, "触摸板", input.Touchpad);
         }
@@ -288,10 +387,26 @@ internal static class FeatureAvailabilityService
         {
             AddFailureGroup(result, "输入设备", ex.Message,
                 (FeatureIds.FunctionLock, "功能锁定"),
-                (FeatureIds.CapsLockOsd, "CapsLock OSD"),
-                (FeatureIds.NumLockOsd, "NumLock OSD"),
                 (FeatureIds.FnCtrlSwap, "Fn/Ctrl 互换"),
                 (FeatureIds.Touchpad, "触摸板"));
+            AddState(
+                result,
+                FeatureIds.CapsLockOsd,
+                "输入设备",
+                "CapsLock OSD",
+                fnKeyTakeoverAvailable,
+                fnKeyTakeoverAvailable
+                    ? "可由 Toolkit 快捷键接管提供"
+                    : ex.Message);
+            AddState(
+                result,
+                FeatureIds.NumLockOsd,
+                "输入设备",
+                "NumLock OSD",
+                fnKeyTakeoverAvailable,
+                fnKeyTakeoverAvailable
+                    ? "可由 Toolkit 快捷键接管提供"
+                    : ex.Message);
         }
 
         try
@@ -324,7 +439,42 @@ internal static class FeatureAvailabilityService
                 (FeatureIds.SecureWipe, "安全擦除"));
         }
 
+        AddState(
+            result,
+            FeatureIds.UpdateCheck,
+            "设置",
+            "软件更新检查",
+            true,
+            "通过 GitHub Releases 检查最新正式版本");
+
         return new FeatureAvailabilityReport(result);
+    }
+
+    private static bool HasNvidiaDisplayAdapter()
+    {
+        try
+        {
+            using var searcher = new System.Management.ManagementObjectSearcher(
+                "SELECT Name FROM Win32_PnPEntity " +
+                "WHERE PNPClass = 'Display'");
+            using var items = searcher.Get();
+            foreach (System.Management.ManagementObject item in items)
+            {
+                using (item)
+                {
+                    if (Convert.ToString(item["Name"])?.Contains(
+                            "NVIDIA",
+                            StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+        return false;
     }
 
     private static void Probe(

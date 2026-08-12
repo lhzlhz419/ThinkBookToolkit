@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json.Serialization;
 
 namespace ThinkBookToolkit;
@@ -11,6 +12,14 @@ public sealed record FanSnapshot(
     int Fan1Rpm,
     int Fan2Rpm,
     IReadOnlyDictionary<string, FanLimit> Limits);
+
+public enum DiscreteGpuActivityState
+{
+    Unknown,
+    Active,
+    Inactive,
+    Off
+}
 
 public sealed record TemperatureSnapshot(
     double? CpuTempC,
@@ -26,7 +35,6 @@ public sealed record TemperatureSnapshot(
     public double? CpuLoadPercent { get; init; }
     public double? CpuAverageClockMhz { get; init; }
     public double? CpuMaximumClockMhz { get; init; }
-
     public string GpuName { get; init; } = string.Empty;
     public double? GpuLoadPercent { get; init; }
     public double? GpuMemoryLoadPercent { get; init; }
@@ -34,6 +42,9 @@ public sealed record TemperatureSnapshot(
     public double? GpuMemoryClockMhz { get; init; }
     public double? GpuHotSpotTempC { get; init; }
     public IReadOnlyList<double> VramChipTemperaturesC { get; init; } = [];
+    public DiscreteGpuActivityState DiscreteGpuState { get; init; } =
+        DiscreteGpuActivityState.Unknown;
+    public string GpuPerformanceState { get; init; } = string.Empty;
 
     public double? PhysicalMemoryUsedGb { get; init; }
     public double? PhysicalMemoryTotalGb { get; init; }
@@ -259,7 +270,7 @@ public sealed class AppSettings
     public double IntervalSeconds { get; set; } = 2.0;
     public int LastProfileIndex { get; set; }
     public int EditFan { get; set; } = 1;
-    public bool SyncFanSpeeds { get; set; }
+    public bool SyncFanSpeeds { get; set; } = true;
     public ControlStrategy ControlStrategy { get; set; } = ControlStrategy.FixedRpm;
     public bool FanCurveWarningAccepted { get; set; }
     public double GameExitHoldSeconds { get; set; } = 20;
@@ -275,9 +286,19 @@ public sealed class AppSettings
     public bool ResumeFanControlOnNextStart { get; set; }
     public bool FanControlWasRunning { get; set; }
     public bool StartWithWindows { get; set; }
+    public bool DelayStartup { get; set; }
     public bool StartToTray { get; set; }
     public bool MinimizeToTray { get; set; }
     public bool CloseToTray { get; set; }
+    public bool TakeOverFnKeys { get; set; }
+    public bool ShowCapsLockOsd { get; set; } = true;
+    public bool ShowNumLockOsd { get; set; } = true;
+    public List<uint> RefreshRateCycleHz { get; set; } = [];
+    public List<ItsMode> FnPerformanceModeOrder { get; set; } =
+        PerformanceModeCycle.DefaultOrder.ToList();
+    public List<ItsMode> FnPerformanceModeEnabled { get; set; } =
+        PerformanceModeCycle.DefaultOrder.ToList();
+    public string ShutdownPerformanceMode { get; set; } = "";
     public bool DisableControlOnSleep { get; set; } = true;
     public bool AttemptDisableControlOnSleepWhenUnsupported { get; set; }
     public double? FanReadMinimumIntervalSeconds { get; set; }
@@ -295,6 +316,7 @@ public sealed class AppSettings
     public PowerSettingsState? PowerSettingsLockTarget { get; set; }
     public Dictionary<string, PowerModeLockSettings> PowerSettingsLocksByMode
         { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public GpuOverclockSettings GpuOverclock { get; set; } = new();
     public string LastFanBackendIdentity { get; set; } = "";
     public string SuppressedFanBackendStartupNoticeIdentity { get; set; } = "";
     public string PendingGpuMode { get; set; } = "";
@@ -303,4 +325,11 @@ public sealed class AppSettings
     public string PendingGpuModeBootSessionId { get; set; } = "";
     public int PcManagerNormalDefaultTemperature { get; set; } = 6600;
     public int PcManagerEyeCareDefaultTemperature { get; set; } = 3500;
+}
+
+internal enum StartupLaunchMode
+{
+    Disabled,
+    Enabled,
+    Delayed
 }

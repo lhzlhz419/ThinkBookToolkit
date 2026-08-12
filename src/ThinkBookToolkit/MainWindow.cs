@@ -28,6 +28,7 @@ namespace ThinkBookToolkit;
 public sealed class MainWindow : Window
 {
     private const string StartupTaskName = "ThinkBookToolkit";
+    internal const int StartupDelaySeconds = 30;
     private const double HeatSoakEnterTempC = 75;
     private const double HeatSoakExitTempC = 65;
     private static readonly TimeSpan HeatSoakDuration = TimeSpan.FromSeconds(60);
@@ -396,6 +397,21 @@ public sealed class MainWindow : Window
     internal FanBackendControlSemantics RuntimeFanControlSemantics =>
         _fanController.ControlSemantics;
 
+    internal bool RuntimeWouldUseFanControl(
+        FanControlMode mode,
+        ItsMode performanceMode)
+    {
+        if (mode == FanControlMode.FirmwareAutomatic)
+            return false;
+        if (mode != FanControlMode.FixedRpm)
+            return true;
+
+        var target = GetFixedTarget(performanceMode, _effectiveGameMode);
+        return target is not { Fan1Rpm: 0, Fan2Rpm: 0 } ||
+               _fanController.ControlSemantics.ZeroRpmBehavior !=
+               FanTargetZeroBehavior.ReleaseFanToFirmwareControl;
+    }
+
     internal IReadOnlyList<FanProfile> RuntimeProfiles() =>
         _profiles.Select(CloneProfile).ToArray();
 
@@ -442,6 +458,10 @@ public sealed class MainWindow : Window
         }
 
         StopFanRuntimeTimers();
+        var resumeFanControlOnNextStart = ShouldResumeFanControlAfterSystemShutdown(
+            _running,
+            _resumeFanControlAfterFullSpeed,
+            _resumeFanControlAfterSleep);
         var fullSpeedWasEnabled = _fullSpeedEnabled || _fullSpeedSwitching;
         var fullSpeedUsedAlternativeMethod = _fullSpeedUsesAlternativeMethod;
         _running = false;
@@ -479,7 +499,7 @@ public sealed class MainWindow : Window
 
         _fullSpeedUsesAlternativeMethod = false;
         _fullSpeedSwitching = false;
-        _settings.ResumeFanControlOnNextStart = false;
+        _settings.ResumeFanControlOnNextStart = resumeFanControlOnNextStart;
         try
         {
             CurveProfileStore.SaveSettings(_settings);
@@ -487,13 +507,19 @@ public sealed class MainWindow : Window
         catch (Exception ex)
         {
             ToolkitLog.Error(
-                "Could not save the cleared fan-resume state during system shutdown.",
+                "Could not save the fan-resume state during system shutdown.",
                 ex);
         }
 
         error = failure?.Message ?? string.Empty;
         return failure is null;
     }
+
+    internal static bool ShouldResumeFanControlAfterSystemShutdown(
+        bool controlRunning,
+        bool resumeAfterFullSpeed,
+        bool resumeAfterSleep) =>
+        controlRunning || resumeAfterFullSpeed || resumeAfterSleep;
 
     internal async Task RuntimeSetFullSpeedAsync(bool enabled)
     {
@@ -521,6 +547,32 @@ public sealed class MainWindow : Window
         _smoothedGpuTempC = null;
         _timer.Start();
         await SampleAsync(force: true);
+    }
+
+    internal GpuWorkerCommandResponse RuntimeQueryDiscreteGpuApplications()
+    {
+        _temperatureReader ??= new TemperatureReader();
+        return _temperatureReader.QueryDiscreteGpuApplications();
+    }
+
+    internal GpuWorkerCommandResponse RuntimeKillDiscreteGpuApplications()
+    {
+        _temperatureReader ??= new TemperatureReader();
+        return _temperatureReader.KillDiscreteGpuApplications();
+    }
+
+    internal GpuWorkerCommandResponse RuntimeApplyGpuOverclock(
+        GpuOverclockSettings settings,
+        bool force = false)
+    {
+        _temperatureReader ??= new TemperatureReader();
+        return _temperatureReader.ApplyGpuOverclock(settings, force);
+    }
+
+    internal GpuWorkerCommandResponse RuntimeResetGpuOverclock()
+    {
+        _temperatureReader ??= new TemperatureReader();
+        return _temperatureReader.ResetGpuOverclock();
     }
 
     internal void RuntimeSelectProfile(int index)
@@ -1886,7 +1938,9 @@ public sealed class MainWindow : Window
             DeleteLegacyStartupRunEntry();
 
             if (settings.StartWithWindows)
-                CreateStartupTask(settings.StartToTray);
+                CreateStartupTask(
+                    settings.StartToTray,
+                    settings.DelayStartup);
             else
                 DeleteStartupTask();
             return null;
@@ -1917,7 +1971,9 @@ public sealed class MainWindow : Window
         key?.DeleteValue(StartupTaskName, throwOnMissingValue: false);
     }
 
-    private static void CreateStartupTask(bool startToTray)
+    private static void CreateStartupTask(
+        bool startToTray,
+        bool delayStartup)
     {
         var executablePath = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(executablePath))
@@ -1926,7 +1982,13 @@ public sealed class MainWindow : Window
         var xmlPath = Path.Combine(Path.GetTempPath(), StartupTaskName + ".xml");
         try
         {
-            File.WriteAllText(xmlPath, BuildStartupTaskXml(executablePath, startToTray), Encoding.Unicode);
+            File.WriteAllText(
+                xmlPath,
+                BuildStartupTaskXml(
+                    executablePath,
+                    startToTray,
+                    delayStartup),
+                Encoding.Unicode);
             RunSchtasks(false, "/Create", "/TN", StartupTaskName, "/XML", xmlPath, "/F");
         }
         finally
@@ -1940,7 +2002,10 @@ public sealed class MainWindow : Window
         RunSchtasks(true, "/Delete", "/TN", StartupTaskName, "/F");
     }
 
-    private static string BuildStartupTaskXml(string executablePath, bool startToTray)
+    internal static string BuildStartupTaskXml(
+        string executablePath,
+        bool startToTray,
+        bool delayStartup = false)
     {
         using var identity = WindowsIdentity.GetCurrent();
         var sid = identity.User?.Value;
@@ -1949,7 +2014,12 @@ public sealed class MainWindow : Window
 
         var escapedSid = SecurityElement.Escape(sid);
         var escapedPath = SecurityElement.Escape(executablePath);
-        var arguments = startToTray ? "      <Arguments>--startup-tray</Arguments>\r\n" : "";
+        var arguments = startToTray
+            ? "      <Arguments>--startup --startup-tray</Arguments>\r\n"
+            : "      <Arguments>--startup</Arguments>\r\n";
+        var delay = delayStartup
+            ? $"      <Delay>PT{StartupDelaySeconds}S</Delay>\r\n"
+            : string.Empty;
         return $"""
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -1961,7 +2031,7 @@ public sealed class MainWindow : Window
     <LogonTrigger>
       <Enabled>true</Enabled>
       <UserId>{escapedSid}</UserId>
-    </LogonTrigger>
+{delay}    </LogonTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -4255,6 +4325,7 @@ public sealed class MainWindow : Window
         {
             case "startup":
                 _settings.StartWithWindows = value;
+                _settings.DelayStartup = false;
                 ApplyStartupSetting();
                 break;
             case "startToTray":

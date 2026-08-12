@@ -30,6 +30,18 @@ internal static class BatteryInformationReader
     private static DateTime _lastOnBatteryLookup;
     private static DateTime? _cachedOnBatterySince;
 
+    public static bool TryGetAcConnectionState(out bool isAcConnected)
+    {
+        if (Native.GetSystemPowerStatus(out var status))
+        {
+            isAcConnected = status.ACLineStatus == 1;
+            return status.ACLineStatus is 0 or 1;
+        }
+
+        isAcConnected = false;
+        return false;
+    }
+
     public static BatteryInformationSnapshot Read()
     {
         using var battery = new BatteryDevice();

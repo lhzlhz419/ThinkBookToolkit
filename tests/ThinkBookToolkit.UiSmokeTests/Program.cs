@@ -47,7 +47,9 @@ internal static class Program
         VerifyFanBackendStartupNotice();
         VerifyAdvancedFanCurve();
         VerifyNvidiaPrivateTelemetryDecoding();
+        VerifyGpuOverclockSettings();
         VerifyGpuMonitorIsolationAndWatchdogProtocol();
+        VerifyHybridAutoGpuPolicy();
         VerifySingleInstanceUpdateExitSignal();
         VerifyPowerSettingsWindowManualInput();
         VerifyPowerDeviceProfiles();
@@ -55,6 +57,10 @@ internal static class Program
         VerifyAdaptiveUniformPanelCollapsedItems();
         VerifySystemShutdownPreparation();
         VerifyPerformanceFanLinkSettings();
+        VerifyPerformanceModeAvailability();
+        VerifyPerformanceModeCycleAndStartupTask();
+        VerifyRefreshRatePreferences();
+        VerifyApplicationUpdateService();
         VerifyApplicationIconTransparency();
         VerifyPerformancePageWithoutFanControl();
         VerifyUserFacingExceptionText();
@@ -73,6 +79,8 @@ internal static class Program
         using var runtime = new ToolkitRuntimeService(settings);
         ModernTheme.Apply(Application.Current, runtime.IsDark);
         var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false);
+        Assert(window.Title == "ThinkBook Toolkit v0.2.7",
+            "The native title bar does not show the current application version.");
         runtime.SetReportForTesting(CreateReport(_ => true));
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
@@ -158,8 +166,53 @@ internal static class Program
         Assert(window.MainScrollViewer.VerticalScrollBarVisibility == ScrollBarVisibility.Auto &&
                window.MainScrollViewer.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled,
             "The main content area must own the only page scrollbar.");
+        var pageHost = GetPrivateField<ContentControl>(window, "_pageHost");
+        Assert(pageHost.RenderTransform is TranslateTransform &&
+               ToolkitMainWindow.PageTransitionDuration ==
+               TimeSpan.FromMilliseconds(180),
+            "Page navigation is missing the shared short fade-and-slide transition.");
         Assert(!window.ToastVisibleForTesting,
             "The transient notification is visible before an operation reports a result.");
+        using (var versionSettingsPage = new ToolkitSettingsPage(runtime))
+        {
+            Assert(ContainsText(versionSettingsPage, "当前版本") &&
+                   ContainsText(versionSettingsPage, "v0.2.7") &&
+                   ContainsButtonText(versionSettingsPage, "检查更新") &&
+                   ContainsText(versionSettingsPage, "软件更新检查"),
+                "The settings page does not expose the current version and update check.");
+            var applyUpdateResult = typeof(ToolkitSettingsPage).GetMethod(
+                "ApplyUpdateResult",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new MissingMethodException(
+                    nameof(ToolkitSettingsPage),
+                    "ApplyUpdateResult");
+            var newerRelease = ApplicationUpdateService.ParseReleaseJson(
+                "{\"tag_name\":\"v0.3.0\",\"html_url\":" +
+                "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v0.3.0\"}");
+            applyUpdateResult.Invoke(versionSettingsPage, [newerRelease]);
+            Assert(GetPrivateField<TextBlock>(
+                       versionSettingsPage,
+                       "_updateStatus").Text == "最新版 v0.3.0" &&
+                   GetPrivateField<Button>(
+                       versionSettingsPage,
+                       "_downloadUpdate").Visibility == Visibility.Visible,
+                "An available update is not shown inline with its download button.");
+            applyUpdateResult.Invoke(versionSettingsPage,
+            [
+                new ApplicationRelease(
+                    new Version(0, 2, 7),
+                    "v0.2.7",
+                    new Uri(
+                        "https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v0.2.7"))
+            ]);
+            Assert(GetPrivateField<TextBlock>(
+                       versionSettingsPage,
+                       "_updateStatus").Text == "当前已是最新版" &&
+                   GetPrivateField<Button>(
+                       versionSettingsPage,
+                       "_downloadUpdate").Visibility == Visibility.Collapsed,
+                "The up-to-date result is not shown inline or leaves the download button visible.");
+        }
         runtime.SetStatus("已复制到剪贴板");
         Assert(window.ToastVisibleForTesting &&
                window.ToastTextForTesting == "已复制到剪贴板",
@@ -207,6 +260,29 @@ internal static class Program
                ContainsText(window.CurrentPage!, "持续写入风扇值") &&
                ContainsText(window.CurrentPage!, "强制刷新读数"),
             "New overview, fan-write, or reader-refresh settings are missing.");
+        Assert(ContainsText(window.CurrentPage!, "独立显卡状态与占用应用") &&
+               ContainsText(window.CurrentPage!, "独立显卡超频") &&
+               ContainsText(window.CurrentPage!, "笔记本屏幕刷新率切换") &&
+               ContainsText(window.CurrentPage!, "Fn 快捷键接管") &&
+               ContainsText(window.CurrentPage!, "CapsLock OSD") &&
+               ContainsText(window.CurrentPage!, "NumLock OSD"),
+            "Feature monitoring omits one or more independent GPU, refresh-rate, or Fn-key capabilities.");
+
+        window.NavigateForTesting("display");
+        var displayPage = window.CurrentPage!;
+        var refreshSelector = GetPrivateField<ComboBox>(
+            displayPage,
+            "_refreshRate");
+        var refreshSettings = GetPrivateField<Button>(
+            displayPage,
+            "_refreshRateSettings");
+        Assert(ContainsText(displayPage, "笔记本屏幕刷新率") &&
+               LogicalTreeHelper.GetParent(refreshSelector) is Grid refreshLayout &&
+               refreshLayout.ColumnDefinitions.Count == 2 &&
+               refreshLayout.ColumnDefinitions[0].Width.IsStar &&
+               refreshLayout.ColumnDefinitions[1].Width.IsAuto &&
+               Grid.GetColumn(refreshSettings) == 1,
+            "Display refresh-rate selector and settings action are missing or not laid out in one row.");
 
         window.NavigateForTesting("overview");
         Assert(ContainsText(window.CurrentPage!, "性能模式") &&
@@ -381,6 +457,74 @@ internal static class Program
                !ContainsText(performance, "控制策略") &&
                !ContainsText(performance, "实时状态"),
             "Fan controls or live status were not removed from the performance page.");
+        var originalGpuTemperatures = runtime.Snapshot.Temperatures!;
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            Temperatures = originalGpuTemperatures with
+            {
+                DiscreteGpuState = DiscreteGpuActivityState.Active,
+                GpuPerformanceState = "P0"
+            }
+        });
+        var gpuStatusRow = GetPrivateField<Border>(
+            performance,
+            "_discreteGpuStatusRow");
+        var gpuOverclockRow = GetPrivateField<Border>(
+            performance,
+            "_gpuOverclockRow");
+        var viewGpuApplications = GetPrivateField<Button>(
+            performance,
+            "_viewGpuApplications");
+        var killGpuApplications = GetPrivateField<Button>(
+            performance,
+            "_killGpuApplications");
+        Assert(gpuStatusRow.Visibility == Visibility.Visible &&
+               gpuOverclockRow.Visibility == Visibility.Visible &&
+               ContainsText(gpuStatusRow, "活跃 · P0") &&
+               viewGpuApplications.Visibility == Visibility.Visible &&
+               killGpuApplications.Visibility == Visibility.Visible,
+            "Active dGPU controls or the shared P-state label are missing from the performance page.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            Temperatures = originalGpuTemperatures with
+            {
+                DiscreteGpuState = DiscreteGpuActivityState.Inactive,
+                GpuPerformanceState = "P8"
+            }
+        });
+        Assert(ContainsText(gpuStatusRow, "不活跃 · P8") &&
+               viewGpuApplications.Visibility == Visibility.Collapsed &&
+               killGpuApplications.Visibility == Visibility.Collapsed &&
+               gpuOverclockRow.Visibility == Visibility.Visible,
+            "Inactive dGPU state must hide process actions without hiding overclock settings.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            Temperatures = originalGpuTemperatures with
+            {
+                DiscreteGpuState = DiscreteGpuActivityState.Off,
+                GpuPerformanceState = string.Empty
+            }
+        });
+        Assert(gpuStatusRow.Visibility == Visibility.Collapsed &&
+               gpuOverclockRow.Visibility == Visibility.Collapsed,
+            "dGPU status and overclock controls remain visible while the dGPU is off.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            Temperatures = originalGpuTemperatures
+        });
+        var acBattery = runtime.Snapshot.Battery!;
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            Battery = acBattery with { IsAcConnected = false }
+        });
+        Assert(Descendants(performance).OfType<ComboBoxItem>()
+                   .Single(item => item.Tag is ItsMode.Geek)
+                   .Visibility == Visibility.Collapsed,
+            "Geek mode remains selectable while the device is running on battery.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            Battery = acBattery
+        });
 
         window.NavigateForTesting("cooling");
         var cooling = window.CurrentPage!;
@@ -473,6 +617,7 @@ internal static class Program
                ContainsText(
                    cooling,
                    "切换性能模式时，自动切换风扇策略") &&
+               ContainsText(cooling, "等待 2 秒") &&
                Descendants(cooling).OfType<ComboBoxItem>().Any(item =>
                    item.Content?.ToString()?.StartsWith(
                        "风扇曲线 1：",
@@ -514,6 +659,32 @@ internal static class Program
                Labels(strategySelector).SequenceEqual(
                    ["固件自动", "固定转速", "风扇曲线", "高级曲线"]),
             "Curve strategy did not hide fixed-only options.");
+        var independentCurves = GetPrivateField<CheckBox>(
+            cooling,
+            "_independentCurves");
+        var editFan = GetPrivateField<ComboBox>(cooling, "_editFan");
+        var profileAndName = Descendants(curvePanel)
+            .OfType<Border>()
+            .Single(border => Equals(
+                border.Tag,
+                "FanCurveProfileAndName"));
+        var profileAndNameContent = (Grid)profileAndName.Child;
+        var curveEditRow = FindAncestor<Grid>(independentCurves);
+        var editFanSetting = FindAncestor<Border>(editFan);
+        Assert(profileAndNameContent.ColumnDefinitions.Count == 3 &&
+               profileAndNameContent.ColumnDefinitions[1].Width.Value == 1 &&
+               profileAndNameContent.Children.OfType<Border>().Count() == 1 &&
+               Equals(
+                   independentCurves.Content,
+                   "独立控制两个风扇的曲线") &&
+               independentCurves.IsChecked == false &&
+               ContainsText(curvePanel, "选择要编辑的风扇") &&
+               curveEditRow is not null &&
+               editFanSetting is not null &&
+               ReferenceEquals(FindAncestor<Grid>(editFanSetting), curveEditRow) &&
+               Grid.GetColumn(independentCurves) == 0 &&
+               Grid.GetColumn(editFanSetting) == 1,
+            "Fan-curve independence or fan-selection controls are not arranged correctly.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
             FanStrategy = ControlStrategy.AdvancedCurve,
@@ -894,6 +1065,23 @@ internal static class Program
         Assert(ContainsText(settingsPage, "启动与程序行为") &&
                !ContainsText(settingsPage, "启动与窗口行为"),
             "The startup section does not use the requested program-behavior title.");
+        Assert(ContainsText(
+                   settingsPage,
+                   "禁用 Lenovo Hotkeys 并接管 Fn 快捷键"),
+            "Settings is missing the Lenovo Hotkeys/Fn-key takeover option.");
+        var startupMode = GetPrivateField<ComboBox>(
+            settingsPage,
+            "_startupMode");
+        Assert(startupMode.Items.OfType<ComboBoxItem>()
+                   .Select(item => item.Tag)
+                   .SequenceEqual(
+                   [
+                       StartupLaunchMode.Disabled,
+                       StartupLaunchMode.Enabled,
+                       StartupLaunchMode.Delayed
+                   ]) &&
+               ContainsText(settingsPage, "延迟 30 秒启动"),
+            "Start with Windows is not exposed as Off, On, and Delayed start.");
         Assert(!ContainsText(settingsPage, "关闭单项后，同一行剩余的数据会自动占满整行。") &&
                settingsPage.GetType().GetField(
                        "_overviewEditorWindow",
@@ -1292,7 +1480,8 @@ internal static class Program
                     PowerSettingsLocks: { Any: false },
                     PowerSettingsLockIntervalSeconds: 2,
                     PowerSettingsLockTarget: null,
-                    PowerSettingsLocksByMode.Count: 0
+                    PowerSettingsLocksByMode.Count: 0,
+                    SyncFanSpeeds: true
                },
             "Fan I/O interval overrides or unsupported-backend sleep behavior have unsafe defaults.");
         var cpuPl1Lock = new PowerSettingsLockSelection { CpuPl1 = true };
@@ -1376,7 +1565,8 @@ internal static class Program
             ItsMode = ItsMode.Intelligent
         });
         Assert(runtime.CurrentPowerSettingsLocks.CpuPl1 &&
-               !runtime.CurrentPowerSettingsLocks.CpuPl2,
+               !runtime.CurrentPowerSettingsLocks.CpuPl2 &&
+               runtime.CurrentPowerSettingsLockTarget?.CpuPl1 == 95,
             "Intelligent-mode power locks were not selected.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
@@ -1384,9 +1574,21 @@ internal static class Program
         });
         Assert(runtime.CurrentPowerSettingsLocks.CpuPl2 &&
                !runtime.CurrentPowerSettingsLocks.CpuPl1 &&
+               runtime.CurrentPowerSettingsLockTarget?.CpuPl2 == 157 &&
                CurveProfileStore.NormalizePowerModeLocks(
                    settings.PowerSettingsLocksByMode).Count == 2,
             "Power locks are not isolated by performance mode.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            ItsMode = ItsMode.Intelligent
+        });
+        Assert(runtime.CurrentPowerSettingsLocks.CpuPl1 &&
+               runtime.CurrentPowerSettingsLockTarget?.CpuPl1 == 95 &&
+               PowerSettingsController.ApplyLockedValues(
+                   confirmedPower,
+                   runtime.CurrentPowerSettingsLockTarget!,
+                   runtime.CurrentPowerSettingsLocks).CpuPl1 == 95,
+            "Returning to a performance mode loses its locked power target.");
         Assert(MainWindow.SuppressSmallTargetChanges(
                    new FanTargets(1599, 1600),
                    new FanTargets(1500, 1500)) ==
@@ -1584,15 +1786,267 @@ internal static class Program
                fields.All(field => field.FieldType != typeof(NvidiaPrivateTelemetryReader)),
             "TemperatureReader must keep native NVIDIA polling outside the Toolkit process.");
         Assert(GpuMonitorWorker.ReadCommand == "READ" &&
+               GpuMonitorWorker.ReadQuiescingCommand == "READ_QUIESCING" &&
                GpuMonitorWorker.ReadNonNvidiaCommand == "READ_NON_NVIDIA" &&
-               GpuMonitorWorker.ReadCommand != GpuMonitorWorker.ReadNonNvidiaCommand,
-            "The GPU worker and client do not expose distinct normal and non-NVIDIA fallback commands.");
+               GpuMonitorWorker.ReadCommand != GpuMonitorWorker.ReadNonNvidiaCommand &&
+               GpuMonitorWorker.ListApplicationsCommand == "LIST_APPLICATIONS" &&
+               GpuMonitorWorker.KillApplicationsCommand == "KILL_APPLICATIONS" &&
+               GpuMonitorWorker.ApplyOverclockCommand == "APPLY_OVERCLOCK:" &&
+               GpuMonitorWorker.ResetOverclockCommand == "RESET_OVERCLOCK" &&
+               GpuMonitorWorker.ListApplicationsCommand !=
+                   GpuMonitorWorker.KillApplicationsCommand,
+            "The GPU worker and client do not expose distinct telemetry and control commands.");
         Assert(FanWatchdogClient.ServiceName == FanWatchdogService.ServiceNameValue &&
                string.Equals(
                    FanWatchdogClient.MarkerDirectory(),
                    FanWatchdogService.MarkerDirectory(),
                    StringComparison.OrdinalIgnoreCase),
             "The Toolkit client and Windows watchdog service disagree on their protocol names.");
+    }
+
+    private static void VerifyGpuOverclockSettings()
+    {
+        var valid = new GpuOverclockSettings
+        {
+            Enabled = true,
+            CoreFrequencyOffsetMhz = 500,
+            MemoryFrequencyOffsetMhz = -1000,
+            MinimumCoreFrequencyMhz = 0,
+            MaximumCoreFrequencyMhz = 3500
+        };
+        Assert(GpuOverclockPolicy.TryValidate(valid, out _) &&
+               !GpuOverclockPolicy.IsDefault(valid),
+            "Valid GPU overclock boundary values were rejected.");
+        Assert(!GpuOverclockPolicy.TryValidate(
+                   new GpuOverclockSettings
+                   {
+                       CoreFrequencyOffsetMhz = 501
+                   },
+                   out _) &&
+               !GpuOverclockPolicy.TryValidate(
+                   new GpuOverclockSettings
+                   {
+                       MemoryFrequencyOffsetMhz = -1001
+                   },
+                   out _) &&
+               !GpuOverclockPolicy.TryValidate(
+                   new GpuOverclockSettings
+                   {
+                       MinimumCoreFrequencyMhz = 1000
+                   },
+                   out _) &&
+               !GpuOverclockPolicy.TryValidate(
+                   new GpuOverclockSettings
+                   {
+                       MinimumCoreFrequencyMhz = 2000,
+                       MaximumCoreFrequencyMhz = 1000
+                   },
+                   out _),
+            "Invalid GPU offsets or core-frequency limits were accepted.");
+        var normalized = GpuOverclockPolicy.Normalize(
+            new GpuOverclockSettings
+            {
+                CoreFrequencyOffsetMhz = 800,
+                MemoryFrequencyOffsetMhz = -4000,
+                MinimumCoreFrequencyMhz = 2000,
+                MaximumCoreFrequencyMhz = 1000
+            });
+        Assert(normalized.CoreFrequencyOffsetMhz == 500 &&
+               normalized.MemoryFrequencyOffsetMhz == -1000 &&
+               normalized.MinimumCoreFrequencyMhz is null &&
+               normalized.MaximumCoreFrequencyMhz is null,
+            "Legacy invalid GPU overclock settings are not normalized safely on load.");
+        Assert(DiscreteGpuStatusFormatter.Format(
+                   DiscreteGpuActivityState.Active,
+                   "P0",
+                   true) == "活跃 · P0" &&
+               DiscreteGpuStatusFormatter.Format(
+                   DiscreteGpuActivityState.Inactive,
+                   "P8",
+                   false) == "Inactive · P8" &&
+               DiscreteGpuStatusFormatter.Format(
+                   DiscreteGpuActivityState.Off,
+                   "P0",
+                   true) == "关闭",
+            "The shared discrete-GPU status formatter handles P-states incorrectly.");
+
+        using var runtime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark",
+            GpuOverclock = new GpuOverclockSettings()
+        });
+        var font = new FontFamily("Microsoft YaHei UI");
+        var overclockWindow = new GpuOverclockWindow(
+            null,
+            runtime,
+            font,
+            14);
+        var coreEditor = GetPrivateField<object>(
+            overclockWindow,
+            "_coreOffset");
+        var memoryEditor = GetPrivateField<object>(
+            overclockWindow,
+            "_memoryOffset");
+        var coreSlider = (Slider)coreEditor.GetType()
+            .GetProperty("Slider")!
+            .GetValue(coreEditor)!;
+        var memorySlider = (Slider)memoryEditor.GetType()
+            .GetProperty("Slider")!
+            .GetValue(memoryEditor)!;
+        Assert(coreSlider.Minimum == -500 && coreSlider.Maximum == 500 &&
+               memorySlider.Minimum == -1000 &&
+               memorySlider.Maximum == 3000 &&
+               ContainsText(overclockWindow, "不要与其它超频软件一起使用") &&
+               ContainsText(overclockWindow, "限制核心频率") &&
+               GetPrivateField<Button>(overclockWindow, "_restore")
+                   .HorizontalAlignment == HorizontalAlignment.Left &&
+               Descendants(overclockWindow).OfType<Button>()
+                   .Select(button => button.Content?.ToString())
+                   .SequenceEqual(["恢复默认", "保存", "保存并关闭"]),
+            "The disabled GPU-overclock dialog does not expose the requested ranges and save actions.");
+
+        var applicationsWindow = new GpuApplicationsWindow(
+            null,
+            [new DiscreteGpuApplication(1234, "Example.exe", @"C:\Apps\Example.exe")],
+            true,
+            true,
+            font,
+            14);
+        Assert(ContainsText(applicationsWindow, "Example.exe") &&
+               ContainsText(applicationsWindow, "PID 1234") &&
+               ContainsText(applicationsWindow, @"C:\Apps\Example.exe"),
+            "The discrete-GPU application dialog omits process details.");
+    }
+
+    private static void VerifyHybridAutoGpuPolicy()
+    {
+        var present = new DiscreteGpuPresenceSnapshot(
+            true,
+            true,
+            [@"PCI\VEN_10DE&DEV_2D59"]);
+        var absent = new DiscreteGpuPresenceSnapshot(true, false, []);
+        var unreliable = new DiscreteGpuPresenceSnapshot(false, true, []);
+
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.HybridAuto,
+                   false,
+                   present,
+                   GpuTelemetryMode.Full) == GpuTelemetryMode.Quiescing,
+            "Hybrid Auto on battery must enter two-phase quiescing while a loaded dGPU is still present.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.HybridAuto,
+                   false,
+                   present,
+                   GpuTelemetryMode.Paused) == GpuTelemetryMode.Paused,
+            "The silent ejection window must remain active while the dGPU is still present.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.HybridAuto,
+                   false,
+                   present,
+                   GpuTelemetryMode.Paused,
+                   startupProtectionActive: true) == GpuTelemetryMode.Paused,
+            "Application-startup recovery must suppress telemetry until the initial dGPU ejection attempt completes.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.HybridAuto,
+                   false,
+                   absent,
+                   GpuTelemetryMode.Paused) == GpuTelemetryMode.IntegratedOnly,
+            "GPU monitoring must resume in integrated-only mode after dGPU disappears.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.HybridAuto,
+                   true,
+                   present,
+                   GpuTelemetryMode.Paused) == GpuTelemetryMode.Full,
+            "Full GPU monitoring must resume after dGPU reconnects on AC power.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.HybridAuto,
+                   false,
+                   unreliable,
+                   GpuTelemetryMode.Full) == GpuTelemetryMode.Quiescing,
+            "An unreliable PnP check during a runtime transition must preserve the quiescing path.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.IntegratedOnly,
+                   true,
+                   present,
+                   GpuTelemetryMode.Full) == GpuTelemetryMode.Quiescing,
+            "iGPU-only mode must enter two-phase quiescing until the dGPU is removed.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.IntegratedOnly,
+                   true,
+                   present,
+                   GpuTelemetryMode.Paused,
+                   startupProtectionActive: true) == GpuTelemetryMode.Paused,
+            "iGPU-only startup recovery must suppress telemetry before the initial ejection attempt.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.IntegratedOnly,
+                   false,
+                   absent,
+                   GpuTelemetryMode.Paused) == GpuTelemetryMode.IntegratedOnly,
+            "iGPU-only mode must resume integrated telemetry after dGPU disappears.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   GpuWorkingMode.IntegratedOnly,
+                   true,
+                   unreliable,
+                   GpuTelemetryMode.Full) == GpuTelemetryMode.Quiescing,
+            "An unreliable PnP check in runtime iGPU-only mode must preserve the quiescing path.");
+        Assert(HybridAutoGpuPolicy.ShouldEnterSilentEjectWindow(
+                   GpuTelemetryMode.Quiescing,
+                   DiscreteGpuActivityState.Inactive) &&
+               HybridAutoGpuPolicy.ShouldEnterSilentEjectWindow(
+                   GpuTelemetryMode.Quiescing,
+                   DiscreteGpuActivityState.Off) &&
+               !HybridAutoGpuPolicy.ShouldEnterSilentEjectWindow(
+                   GpuTelemetryMode.Quiescing,
+                   DiscreteGpuActivityState.Active) &&
+               !HybridAutoGpuPolicy.ShouldEnterSilentEjectWindow(
+                   GpuTelemetryMode.Full,
+                   DiscreteGpuActivityState.Inactive),
+            "The silent ejection window must begin only after a quiescing dGPU becomes inactive or powered off.");
+        Assert(HybridAutoGpuPolicy.ShouldDisconnectDiscreteGpu(
+                   GpuWorkingMode.IntegratedOnly,
+                   true) &&
+               HybridAutoGpuPolicy.ShouldDisconnectDiscreteGpu(
+                   GpuWorkingMode.HybridAuto,
+                   false) &&
+               !HybridAutoGpuPolicy.ShouldDisconnectDiscreteGpu(
+                   GpuWorkingMode.HybridAuto,
+                   true) &&
+               !HybridAutoGpuPolicy.ShouldDisconnectDiscreteGpu(
+                   GpuWorkingMode.Hybrid,
+                   false),
+            "dGPU eject policy does not match iGPU-only and Hybrid Auto semantics.");
+        Assert(HybridAutoGpuPolicy.ShouldUseSoftwareRendering(
+                   GpuWorkingMode.IntegratedOnly) &&
+               HybridAutoGpuPolicy.ShouldUseSoftwareRendering(
+                   GpuWorkingMode.HybridAuto) &&
+               !HybridAutoGpuPolicy.ShouldUseSoftwareRendering(
+                   GpuWorkingMode.Hybrid),
+            "Software rendering must cover eject-capable modes without affecting normal Hybrid mode.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   null,
+                   false,
+                   present,
+                   GpuTelemetryMode.Paused,
+                   startupProtectionActive: true) == GpuTelemetryMode.Paused,
+            "A failed GPU-mode read must not undo startup protection.");
+        Assert(HybridAutoGpuPolicy.ResolveTelemetryMode(
+                   null,
+                   false,
+                   present,
+                   GpuTelemetryMode.Paused) == GpuTelemetryMode.Full,
+            "A failed GPU-mode read after resume must not leave runtime telemetry paused when the dGPU is present.");
+
+        var identity = new DiscreteGpuHardwareIdentity("10DE", "2D59");
+        Assert(identity.Matches(@"PCI\VEN_10DE&DEV_2D59&SUBSYS_00000000") &&
+               !identity.Matches(@"PCI\VEN_8086&DEV_7D55"),
+            "dGPU presence matching must use PCI vendor and device IDs.");
+
+        var pnp = new DiscreteGpuPresenceDetector(() => identity)
+            .Capture(force: true);
+        Assert(pnp.Reliable &&
+               pnp.MatchingDeviceIds.All(identity.Matches),
+            "SetupAPI display-adapter enumeration did not return a reliable hardware-ID snapshot.");
     }
 
     private static void VerifySingleInstanceUpdateExitSignal()
@@ -2042,18 +2496,45 @@ internal static class Program
             .Select(id => new FeatureAvailability(
                 id,
                 Category(id),
-                id,
+                FeatureNameForSmoke(id),
                 available(id),
                 available(id) ? "smoke test available" : "smoke test unavailable")));
+
+    private static string FeatureNameForSmoke(string id) => id switch
+    {
+        FeatureIds.DiscreteGpuManagement => "独立显卡状态与占用应用",
+        FeatureIds.GpuOverclock => "独立显卡超频",
+        FeatureIds.DisplayRefreshRate => "笔记本屏幕刷新率切换",
+        FeatureIds.FnKeyTakeover => "Fn 快捷键接管",
+        FeatureIds.CapsLockOsd => "CapsLock OSD",
+        FeatureIds.NumLockOsd => "NumLock OSD",
+        FeatureIds.UpdateCheck => "软件更新检查",
+        _ => id
+    };
+
+    private static void VerifyApplicationUpdateService()
+    {
+        Assert(ApplicationUpdateService.CurrentVersionText == "0.2.7",
+            "The application version is not the expected release version.");
+        var release = ApplicationUpdateService.ParseReleaseJson(
+            "{\"tag_name\":\"v0.3.0\",\"html_url\":" +
+            "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v0.3.0\"}");
+        Assert(release.Version == new Version(0, 3, 0) &&
+               release.TagName == "v0.3.0" &&
+               ApplicationUpdateService.IsNewer(release),
+            "The GitHub Release response is not parsed or compared correctly.");
+    }
 
     private static void VerifyPerformancePageWithoutFanControl()
     {
         using var runtime = new ToolkitRuntimeService(new AppSettings
         {
             Language = "zh-CN",
-            Theme = "dark"
+            Theme = "dark",
+            TakeOverFnKeys = true
         });
-        runtime.SetReportForTesting(CreateReport(_ => false));
+        runtime.SetReportForTesting(CreateReport(id =>
+            id == FeatureIds.PerformanceMode));
         var page = new ToolkitPerformancePage(runtime);
         try
         {
@@ -2066,6 +2547,39 @@ internal static class Program
             reload.Invoke(page, null);
             Assert(!ContainsText(page, "风扇控制"),
                 "The unavailable fan-control editor was unexpectedly created.");
+            Assert(GetPrivateField<Button>(
+                       page,
+                       "_performanceModeOrderSettings").Visibility ==
+                   Visibility.Visible,
+                "The Fn+Q mode-order settings button is not shown while Fn-key takeover is enabled.");
+            var modeCombo = GetPrivateField<ComboBox>(page, "_itsMode");
+            var modeSettings = GetPrivateField<Button>(
+                page,
+                "_performanceModeOrderSettings");
+            Assert(VisualTreeHelper.GetParent(modeCombo) is Grid modeLayout &&
+                   modeLayout.ColumnDefinitions.Count == 2 &&
+                   modeLayout.ColumnDefinitions[0].Width.IsStar &&
+                   Grid.GetColumn(modeSettings) == 1 &&
+                   modeCombo.HorizontalAlignment ==
+                   HorizontalAlignment.Stretch,
+                "The performance-mode selector does not fill the space before the right-aligned settings button.");
+            var orderWindow = new PerformanceModeOrderWindow(
+                null,
+                runtime,
+                new FontFamily("Microsoft YaHei UI"),
+                14);
+            var modeToggles = Descendants(orderWindow)
+                .OfType<CheckBox>()
+                .ToArray();
+            Assert(modeToggles.Length == 4 &&
+                   modeToggles.All(toggle => toggle.IsChecked == true),
+                "The Fn+Q order editor does not enable all performance modes by default.");
+            for (var index = 0; index < modeToggles.Length - 1; index++)
+                modeToggles[index].IsChecked = false;
+            modeToggles[^1].IsChecked = false;
+            Assert(modeToggles[^1].IsChecked == true,
+                "The Fn+Q order editor allows every performance mode to be disabled.");
+            orderWindow.Close();
         }
         finally
         {
@@ -2164,7 +2678,9 @@ internal static class Program
             }
         };
         var normalized = PerformanceFanLinkDefaults.Normalize(value);
-        Assert(normalized.SwitchFanStrategyWithPerformanceMode &&
+        Assert(ToolkitRuntimeService.PerformanceFanStrategyApplyDelay ==
+                   TimeSpan.FromSeconds(2) &&
+               normalized.SwitchFanStrategyWithPerformanceMode &&
                normalized.FanStrategiesByMode.Count == 4 &&
                PerformanceFanLinkDefaults.SelectionFor(
                    normalized,
@@ -2183,7 +2699,7 @@ internal static class Program
                PerformanceFanLinkDefaults.IsNoSwitchMode(
                    normalized,
                    ItsMode.Performance),
-            "Performance/fan linkage settings were not normalized safely.");
+            "Performance/fan linkage settings or the post-switch delay are invalid.");
 
         var releaseSemantics = new FanBackendControlSemantics(
             FanTargetZeroBehavior.ReleaseFanToFirmwareControl,
@@ -2222,6 +2738,130 @@ internal static class Program
                    },
                    releaseSemantics),
             "Effective fan-control detection does not handle firmware-auto fixed targets or full speed correctly.");
+    }
+
+    private static void VerifyPerformanceModeAvailability()
+    {
+        Assert(PerformanceModeAvailability.CanSelect(
+                   ItsMode.Geek,
+                   true) &&
+               PerformanceModeAvailability.CanSelect(
+                   ItsMode.Geek,
+                   null) &&
+               !PerformanceModeAvailability.CanSelect(
+                   ItsMode.Geek,
+                   false) &&
+               Enum.GetValues<ItsMode>()
+                   .Where(mode => mode != ItsMode.Geek)
+                   .All(mode => PerformanceModeAvailability.CanSelect(
+                       mode,
+                       false)),
+            "Geek mode is not limited to AC power without affecting the other performance modes.");
+    }
+
+    private static void VerifyPerformanceModeCycleAndStartupTask()
+    {
+        var normalized = PerformanceModeCycle.NormalizeOrder(
+        [
+            ItsMode.Performance,
+            ItsMode.Performance,
+            ItsMode.Unknown,
+            ItsMode.PowerSaving
+        ]);
+        Assert(normalized.SequenceEqual(
+               [
+                   ItsMode.Performance,
+                   ItsMode.PowerSaving,
+                   ItsMode.Intelligent,
+                   ItsMode.Geek
+               ]) &&
+               PerformanceModeCycle.Next(
+                   normalized,
+                   PerformanceModeCycle.DefaultOrder,
+                   ItsMode.Performance,
+                   isAcConnected: true) == ItsMode.PowerSaving &&
+               PerformanceModeCycle.Next(
+                   normalized,
+                   [ItsMode.Performance, ItsMode.PowerSaving],
+                   ItsMode.Intelligent,
+                   isAcConnected: false) == ItsMode.Performance,
+            "Fn+Q mode-order normalization, disabled-mode filtering, or battery filtering is incorrect.");
+
+        var visibleXml = MainWindow.BuildStartupTaskXml(
+            @"C:\Program Files\ThinkBook Toolkit\ThinkBookToolkit.exe",
+            startToTray: false);
+        var trayXml = MainWindow.BuildStartupTaskXml(
+            @"C:\Program Files\ThinkBook Toolkit\ThinkBookToolkit.exe",
+            startToTray: true);
+        var delayedXml = MainWindow.BuildStartupTaskXml(
+            @"C:\Program Files\ThinkBook Toolkit\ThinkBookToolkit.exe",
+            startToTray: false,
+            delayStartup: true);
+        Assert(visibleXml.Contains(
+                   "<Arguments>--startup</Arguments>",
+                   StringComparison.Ordinal) &&
+               trayXml.Contains(
+                   "<Arguments>--startup --startup-tray</Arguments>",
+                   StringComparison.Ordinal) &&
+               !visibleXml.Contains("<Delay>", StringComparison.Ordinal) &&
+               delayedXml.Contains(
+                   $"<Delay>PT{MainWindow.StartupDelaySeconds}S</Delay>",
+                   StringComparison.Ordinal),
+            "The startup task does not identify auto-start launches or apply the requested delay.");
+        Assert(RefreshRateController.SelectNextRefreshRate(
+                   [165, 60, 240, 60],
+                   60) == 165 &&
+               RefreshRateController.SelectNextRefreshRate(
+                   [165, 60, 240],
+                   240) == 60,
+            "Fn+R refresh-rate cycling is not ordered or does not wrap.");
+    }
+
+    private static void VerifyRefreshRatePreferences()
+    {
+        Assert(RefreshRateController.EffectiveCycleRates(
+                   [60, 120, 165],
+                   null).SequenceEqual([60u, 165u]) &&
+               RefreshRateController.EffectiveCycleRates(
+                   [60, 120, 165],
+                   [120]).SequenceEqual([120u]) &&
+               RefreshRateController.EffectiveCycleRates(
+                   [60, 120, 165],
+                   [75]).SequenceEqual([60u, 165u]),
+            "Refresh-rate defaults or configured-rate filtering are incorrect.");
+
+        var settings = new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark"
+        };
+        Assert(settings.ShowCapsLockOsd &&
+               settings.ShowNumLockOsd &&
+               settings.RefreshRateCycleHz.Count == 0,
+            "Toolkit lock-key OSD or refresh-rate defaults are incorrect.");
+        using var runtime = new ToolkitRuntimeService(settings);
+        var state = new DisplayRefreshRateState(
+            "DISPLAY1",
+            120,
+            [60, 120, 165]);
+        var window = new RefreshRateSettingsWindow(
+            null,
+            runtime,
+            state,
+            new FontFamily("Microsoft YaHei UI"),
+            14);
+        var toggles = Descendants(window)
+            .OfType<CheckBox>()
+            .ToDictionary(
+                toggle => toggle.Content?.ToString() ?? string.Empty,
+                toggle => toggle.IsChecked == true,
+                StringComparer.Ordinal);
+        Assert(toggles.Count == 3 &&
+               toggles["60 Hz"] &&
+               !toggles["120 Hz"] &&
+               toggles["165 Hz"],
+            "Refresh-rate editor does not default to 60 Hz and the panel maximum.");
+        window.Close();
     }
 
     private static void VerifyApplicationIconTransparency()
@@ -2309,11 +2949,13 @@ internal static class Program
 
     private static void VerifySystemShutdownPreparation()
     {
-        using var runtime = new ToolkitRuntimeService(new AppSettings
-        {
-            Language = "zh-CN",
-            Theme = "dark"
-        });
+        using var runtime = new ToolkitRuntimeService(
+            new AppSettings
+            {
+                Language = "zh-CN",
+                Theme = "dark"
+            },
+            persistSystemSessionState: false);
         runtime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty with
         {
             FanControlRunning = true,
@@ -2329,6 +2971,24 @@ internal static class Program
                !runtime.Snapshot.FullSpeed &&
                runtime.Snapshot.FanTarget is null,
             "System-session shutdown preparation is not idempotent or does not stop fan control state.");
+        Assert(ToolkitRuntimeService.ShouldRecordShutdownPerformanceMode(
+                   ReasonSessionEnding.Shutdown) &&
+               !ToolkitRuntimeService.ShouldRecordShutdownPerformanceMode(
+                   ReasonSessionEnding.Logoff),
+            "Performance mode would be recorded for an ordinary sign-out instead of only shutdown/restart.");
+        Assert(MainWindow.ShouldResumeFanControlAfterSystemShutdown(
+                   controlRunning: true,
+                   resumeAfterFullSpeed: false,
+                   resumeAfterSleep: false) &&
+               MainWindow.ShouldResumeFanControlAfterSystemShutdown(
+                   controlRunning: false,
+                   resumeAfterFullSpeed: true,
+                   resumeAfterSleep: false) &&
+               !MainWindow.ShouldResumeFanControlAfterSystemShutdown(
+                   controlRunning: false,
+                   resumeAfterFullSpeed: false,
+                   resumeAfterSleep: false),
+            "System shutdown does not preserve the user's active fan-control strategy.");
     }
 
     private static string Category(string id)
@@ -2341,6 +3001,7 @@ internal static class Program
         if (id.StartsWith("input.", StringComparison.Ordinal)) return "输入设备";
         if (id.StartsWith("device.", StringComparison.Ordinal)) return "设备";
         if (id.StartsWith("advanced.", StringComparison.Ordinal)) return "高级工具";
+        if (id.StartsWith("settings.", StringComparison.Ordinal)) return "设置";
         return "监控";
     }
 
@@ -2393,6 +3054,19 @@ internal static class Program
         owner.GetType().GetProperty(name)?.GetValue(owner) is T value
             ? value
             : throw new MissingMemberException(owner.GetType().Name, name);
+
+    private static T? FindAncestor<T>(DependencyObject child)
+        where T : DependencyObject
+    {
+        var current = LogicalTreeHelper.GetParent(child);
+        while (current is not null)
+        {
+            if (current is T match)
+                return match;
+            current = LogicalTreeHelper.GetParent(current);
+        }
+        return null;
+    }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {

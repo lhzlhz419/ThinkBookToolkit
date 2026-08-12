@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -44,6 +45,9 @@ internal sealed class ToolkitMainWindow : Window
     private bool _forceClose;
     private bool _disposed;
 
+    internal static TimeSpan PageTransitionDuration { get; } =
+        TimeSpan.FromMilliseconds(180);
+
     public ToolkitMainWindow(bool enableHardwareDetection = true)
         : this(
             new ToolkitRuntimeService(enableHardwareDetection
@@ -73,7 +77,7 @@ internal sealed class ToolkitMainWindow : Window
         _ownsRuntime = ownsRuntime;
         _enableHardwareDetection = enableHardwareDetection;
         _startToTrayRequested = startToTrayRequested;
-        Title = "ThinkBook Toolkit";
+        Title = $"ThinkBook Toolkit v{ApplicationUpdateService.CurrentVersionText}";
         Width = 1380;
         Height = 880;
         MinWidth = 780;
@@ -148,7 +152,8 @@ internal sealed class ToolkitMainWindow : Window
         _pageHost = new ContentControl
         {
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            VerticalContentAlignment = VerticalAlignment.Top
+            VerticalContentAlignment = VerticalAlignment.Top,
+            RenderTransform = new TranslateTransform()
         };
         _mainScroll = new ScrollViewer
         {
@@ -425,6 +430,48 @@ internal sealed class ToolkitMainWindow : Window
         }
         _pageHost.Content = page;
         _mainScroll.ScrollToTop();
+        AnimatePageTransition();
+    }
+
+    private void AnimatePageTransition()
+    {
+        if (_pageHost.RenderTransform is not TranslateTransform transform)
+        {
+            transform = new TranslateTransform();
+            _pageHost.RenderTransform = transform;
+        }
+
+        _pageHost.BeginAnimation(OpacityProperty, null);
+        transform.BeginAnimation(TranslateTransform.YProperty, null);
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            _pageHost.Opacity = 1;
+            transform.Y = 0;
+            return;
+        }
+
+        var duration = new Duration(PageTransitionDuration);
+        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+        _pageHost.Opacity = 0;
+        transform.Y = 10;
+        _pageHost.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(0, 1, duration)
+            {
+                EasingFunction = easing,
+                FillBehavior = FillBehavior.Stop
+            },
+            HandoffBehavior.SnapshotAndReplace);
+        transform.BeginAnimation(
+            TranslateTransform.YProperty,
+            new DoubleAnimation(10, 0, duration)
+            {
+                EasingFunction = easing,
+                FillBehavior = FillBehavior.Stop
+            },
+            HandoffBehavior.SnapshotAndReplace);
+        _pageHost.Opacity = 1;
+        transform.Y = 0;
     }
 
     private ToolkitPageBase CreatePage(string page) => page switch
@@ -463,12 +510,12 @@ internal sealed class ToolkitMainWindow : Window
         if (report is null) return true;
         return page switch
         {
-            "performance" => report.AnyAvailable(FeatureIds.TemperatureMonitoring, FeatureIds.PerformanceMode, FeatureIds.GpuMode, FeatureIds.PowerSettings),
+            "performance" => report.AnyAvailable(FeatureIds.TemperatureMonitoring, FeatureIds.PerformanceMode, FeatureIds.GpuMode, FeatureIds.DiscreteGpuManagement, FeatureIds.GpuOverclock, FeatureIds.PowerSettings),
             "cooling" => report.AnyAvailable(FeatureIds.FanControl),
             "battery" => report.AnyAvailable(FeatureIds.BatteryChargeMode, FeatureIds.OvernightCharging, FeatureIds.AlwaysOnUsb, FeatureIds.FlipToStart, FeatureIds.BatteryInformation),
-            "display" => report.AnyAvailable(FeatureIds.VantageEyeCare, FeatureIds.PcManagerEyeCare, FeatureIds.ColorManagement),
+            "display" => report.AnyAvailable(FeatureIds.DisplayRefreshRate, FeatureIds.VantageEyeCare, FeatureIds.PcManagerEyeCare, FeatureIds.ColorManagement),
             "sound" => report.AnyAvailable(FeatureIds.DolbyAtmos, FeatureIds.SpeakerNoiseCancellation, FeatureIds.MicrophoneNoiseCancellation),
-            "input" => report.AnyAvailable(FeatureIds.KeyboardBacklight, FeatureIds.KeyboardBacklightAutoOff, FeatureIds.FunctionLock, FeatureIds.CapsLockOsd, FeatureIds.NumLockOsd, FeatureIds.FnCtrlSwap, FeatureIds.Touchpad),
+            "input" => report.AnyAvailable(FeatureIds.KeyboardBacklight, FeatureIds.KeyboardBacklightAutoOff, FeatureIds.FunctionLock, FeatureIds.CapsLockOsd, FeatureIds.NumLockOsd, FeatureIds.FnCtrlSwap, FeatureIds.Touchpad, FeatureIds.FnKeyTakeover),
             "device" => report.AnyAvailable(FeatureIds.DeviceInformation, FeatureIds.WarrantyInformation),
             "advanced" => report.AnyAvailable(FeatureIds.BootLogo, FeatureIds.BiosSetup, FeatureIds.StartupInterrupt, FeatureIds.SecureWipe),
             _ => true

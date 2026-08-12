@@ -201,10 +201,40 @@ internal sealed class ToolkitInputPage : ToolkitPageBase
             {
                 try
                 {
-                    Input = await Task.Run(() => InputSettingsController.ReadState(refreshWmiState: true));
+                    Input = await Task.Run(() =>
+                        InputSettingsController.ReadState(
+                            refreshWmiState: true));
+                    if (Runtime.Settings.TakeOverFnKeys)
+                    {
+                        Input = Input
+                            .With(
+                                InputSettingKind.CapsLockOsd,
+                                new ToggleSettingState(
+                                    true,
+                                    Runtime.Settings.ShowCapsLockOsd))
+                            .With(
+                                InputSettingKind.NumLockOsd,
+                                new ToggleSettingState(
+                                    true,
+                                    Runtime.Settings.ShowNumLockOsd));
+                    }
                 }
                 catch (Exception ex)
                 {
+                    if (Runtime.Settings.TakeOverFnKeys)
+                    {
+                        var failed = ToggleSettingState.Failed(ex);
+                        Input = new InputSettingsState(
+                            failed,
+                            new ToggleSettingState(
+                                true,
+                                Runtime.Settings.ShowCapsLockOsd),
+                            new ToggleSettingState(
+                                true,
+                                Runtime.Settings.ShowNumLockOsd),
+                            failed,
+                            failed);
+                    }
                     errors.Add(Runtime.L("按键与触摸板：", "Keys and touchpad: ") + ex.Message);
                 }
             }
@@ -238,10 +268,39 @@ internal sealed class ToolkitInputPage : ToolkitPageBase
             await WriteAsync(
                 async () =>
                 {
+                    if (Runtime.Settings.TakeOverFnKeys &&
+                        kind is InputSettingKind.CapsLockOsd or
+                            InputSettingKind.NumLockOsd)
+                    {
+                        if (!Runtime.TrySetLockKeyOsd(
+                                kind,
+                                value,
+                                out var saveError))
+                        {
+                            throw new InvalidOperationException(saveError);
+                        }
+                        Input = (Input ??
+                            InputSettingsController.ReadState())
+                            .With(
+                                kind,
+                                new ToggleSettingState(true, value));
+                        return;
+                    }
                     var confirmed = await Task.Run(() => InputSettingsController.SetState(kind, value));
                     if (!confirmed.Supported || confirmed.Enabled != value)
                         throw new InvalidOperationException(Runtime.L("硬件未确认新的状态。", "Hardware did not confirm the new state."));
                     Input = (Input ?? InputSettingsController.ReadState()).With(kind, confirmed);
+                    if (kind is InputSettingKind.CapsLockOsd or
+                        InputSettingKind.NumLockOsd)
+                    {
+                        if (!Runtime.TrySetLockKeyOsd(
+                                kind,
+                                value,
+                                out var saveError))
+                        {
+                            throw new InvalidOperationException(saveError);
+                        }
+                    }
                 },
                 () => Input = previous);
         }

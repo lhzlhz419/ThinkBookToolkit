@@ -48,7 +48,6 @@
     </Content>
 
     <Resource Include="Assets\app-icon-tb.png" />
-
     <Content Include="$(ExternalDependenciesRoot)\LenovoPcManager\WrapPlugin.dll"
              Condition="Exists('$(ExternalDependenciesRoot)\LenovoPcManager\WrapPlugin.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -61,15 +60,17 @@
       <TargetPath>VantageAddins\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
     </Content>
 
-    <PackageReference Include="DiskInfoToolkit" Version="2.1.0" />
+    <PackageReference Include="DiskInfoToolkit" Version="2.1.2" />
     <PackageReference Include="HidSharp" Version="2.6.4" />
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre717" />
+    <PackageReference Include="LLT.NvAPIWrapper.Net" Version="1.0.0-pre8" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="Mono.Posix.NETStandard" Version="1.0.0" />
-    <PackageReference Include="RAMSPDToolkit-NDD" Version="1.5.0" />
-    <PackageReference Include="System.IO.Ports" Version="10.0.7" />
-    <PackageReference Include="System.Management" Version="10.0.7" />
+    <PackageReference Include="RAMSPDToolkit-NDD" Version="1.6.0" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.10" />
+    <PackageReference Include="System.Management" Version="10.0.10" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.7" />
-    <PackageReference Include="System.Threading.AccessControl" Version="10.0.7" />
+    <PackageReference Include="System.Threading.AccessControl" Version="10.0.10" />
 
   </ItemGroup>
 </Project>

@@ -223,23 +223,38 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
         });
         var pills = new AdaptiveUniformPanel
         {
-            MinimumItemWidth = 150,
+            MinimumItemWidth = 135,
             Spacing = 8,
             Margin = new Thickness(0, 15, 0, 0)
         };
-        pills.Children.Add(HeroModeControl(
-            L("性能模式", "Performance mode"),
-            _itsMode));
-        pills.Children.Add(HeroModeControl(
-            L("GPU 模式", "GPU mode"),
-            _gpuMode));
-        pills.Children.Add(HeroModeControl(
-            L("风扇控制", "Fan control"),
-            _fanMode));
-        pills.Children.Add(HeroStatus(
-            L("重启状态", "Restart state"),
-            nameof(OverviewViewModel.PendingRestart),
-            16));
+        var layout = Runtime.Settings.OverviewLayout;
+        AddHero(
+            OverviewHeroIds.PerformanceMode,
+            HeroModeControl(
+                L("性能模式", "Performance mode"),
+                _itsMode));
+        AddHero(
+            OverviewHeroIds.GpuMode,
+            HeroModeControl(
+                L("GPU 模式", "GPU mode"),
+                _gpuMode));
+        AddHero(
+            OverviewHeroIds.FanControl,
+            HeroModeControl(
+                L("风扇控制", "Fan control"),
+                _fanMode));
+        AddHero(
+            OverviewHeroIds.DiscreteGpuStatus,
+            HeroStatus(
+                L("独显状态", "Discrete GPU"),
+                nameof(OverviewViewModel.DiscreteGpuStatus),
+                16));
+        AddHero(
+            OverviewHeroIds.RestartStatus,
+            HeroStatus(
+                L("重启状态", "Restart state"),
+                nameof(OverviewViewModel.PendingRestart),
+                16));
         left.Children.Add(pills);
         content.Children.Add(left);
 
@@ -267,6 +282,12 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
             ClipToBounds = true,
             Child = content
         };
+
+        void AddHero(string id, UIElement element)
+        {
+            if (OverviewLayoutDefaults.IsHeroCardEnabled(layout, id))
+                pills.Children.Add(element);
+        }
     }
 
     private Border HeroStatus(string label, string property, double valueFontSize = 14)
@@ -401,8 +422,23 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
     {
         _syncingModes = true;
         var snapshot = Runtime.Snapshot;
-        if (snapshot.ItsMode != ItsMode.Unknown)
+        var isAcConnected = snapshot.Battery?.IsAcConnected;
+        foreach (var item in _itsMode.Items.OfType<ComboBoxItem>())
+        {
+            item.Visibility = item.Tag is ItsMode mode &&
+                              PerformanceModeAvailability.CanSelect(
+                                  mode,
+                                  isAcConnected)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+        if (snapshot.ItsMode != ItsMode.Unknown &&
+            PerformanceModeAvailability.CanSelect(
+                snapshot.ItsMode,
+                isAcConnected))
             Select(_itsMode, snapshot.ItsMode);
+        else
+            _itsMode.SelectedItem = null;
         foreach (var item in _gpuMode.Items.OfType<ComboBoxItem>())
         {
             item.Visibility = snapshot.SupportedGpuModes.Count == 0 ||
@@ -455,6 +491,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
     private sealed class OverviewViewModel : HardwareMonitorViewModel
     {
         private string _pendingRestart = "--";
+        private string _discreteGpuStatus = "--";
 
         public OverviewViewModel(ToolkitRuntimeService runtime)
             : base(runtime)
@@ -464,6 +501,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
         }
 
         public string PendingRestart { get => _pendingRestart; private set => SetField(ref _pendingRestart, value); }
+        public string DiscreteGpuStatus { get => _discreteGpuStatus; private set => SetField(ref _discreteGpuStatus, value); }
 
         private void OnSnapshotChanged(object? sender, EventArgs args) =>
             Update(Runtime.Snapshot);
@@ -475,6 +513,11 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
                     snapshot.PendingGpuMode)
                 ? Runtime.L("无需重启", "No restart required")
                 : Runtime.L("需要重启", "Restart required");
+            DiscreteGpuStatus = DiscreteGpuStatusFormatter.Format(
+                snapshot.Temperatures?.DiscreteGpuState ??
+                    DiscreteGpuActivityState.Unknown,
+                snapshot.Temperatures?.GpuPerformanceState,
+                Runtime.IsChinese);
         }
 
         public override void Dispose()

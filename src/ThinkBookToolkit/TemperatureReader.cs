@@ -10,12 +10,15 @@ public sealed class TemperatureReader : IDisposable
 {
     private const double BytesPerGiB = 1024d * 1024d * 1024d;
     private readonly Computer _computer;
-    private readonly GpuMonitorWorkerClient _gpuMonitor = new();
+    private readonly GpuMonitorWorkerClient? _gpuMonitor;
     private readonly StorageTemperatureReader? _storageTelemetry;
     private TemperatureSnapshot? _lastSnapshot;
 
-    public TemperatureReader()
+    public TemperatureReader(bool enableGpuTelemetry = true)
     {
+        _gpuMonitor = enableGpuTelemetry
+            ? new GpuMonitorWorkerClient()
+            : null;
         _computer = new Computer
         {
             IsCpuEnabled = true,
@@ -63,9 +66,35 @@ public sealed class TemperatureReader : IDisposable
         }
     }
 
+    internal GpuWorkerCommandResponse QueryDiscreteGpuApplications() =>
+        _gpuMonitor?.QueryApplications() ??
+        GpuWorkerCommandResponse.Failure(
+            "GPU monitoring is unavailable.");
+
+    internal GpuWorkerCommandResponse KillDiscreteGpuApplications() =>
+        _gpuMonitor?.KillApplications() ??
+        GpuWorkerCommandResponse.Failure(
+            "GPU monitoring is unavailable.");
+
+    internal GpuWorkerCommandResponse ApplyGpuOverclock(
+        GpuOverclockSettings settings,
+        bool force = false) =>
+        _gpuMonitor?.ApplyOverclock(settings, force) ??
+        GpuWorkerCommandResponse.Failure(
+            "GPU monitoring is unavailable.");
+
+    internal GpuWorkerCommandResponse ResetGpuOverclock() =>
+        _gpuMonitor?.ResetOverclock() ??
+        GpuWorkerCommandResponse.Failure(
+            "GPU monitoring is unavailable.");
+
     private TemperatureSnapshot ReadCore()
     {
-        var isolatedGpu = _gpuMonitor.Read();
+        var isolatedGpu = _gpuMonitor?.Read();
+        var retainedGpu = isolatedGpu is null &&
+                          GpuTelemetryControl.Mode == GpuTelemetryMode.Paused
+            ? _lastSnapshot
+            : null;
         var sensors = new List<SensorReading>();
         var hardware = new List<HardwareReading>();
         foreach (var item in _computer.Hardware)
@@ -153,13 +182,19 @@ public sealed class TemperatureReader : IDisposable
             CpuMaximumClockMhz = cpuClocks.Length > 0
                 ? cpuClocks.Max()
                 : null,
-            GpuName = isolatedGpu?.Name ?? string.Empty,
+            GpuName = isolatedGpu?.Name ?? retainedGpu?.GpuName ?? string.Empty,
             GpuLoadPercent = isolatedGpu?.LoadPercent,
             GpuMemoryLoadPercent = isolatedGpu?.MemoryLoadPercent,
             GpuCoreClockMhz = isolatedGpu?.CoreClockMhz,
             GpuMemoryClockMhz = isolatedGpu?.MemoryClockMhz,
             GpuHotSpotTempC = isolatedGpu?.HotSpotTemperatureC,
             VramChipTemperaturesC = isolatedGpu?.MemoryChipTemperaturesC ?? [],
+            DiscreteGpuState = isolatedGpu?.DiscreteGpuState ??
+                retainedGpu?.DiscreteGpuState ??
+                DiscreteGpuActivityState.Unknown,
+            GpuPerformanceState = isolatedGpu?.PerformanceState ??
+                retainedGpu?.GpuPerformanceState ??
+                string.Empty,
             PhysicalMemoryUsedGb = physicalUsed,
             PhysicalMemoryTotalGb = physicalTotal,
             VirtualMemoryUsedGb = virtualUsed,
@@ -171,7 +206,7 @@ public sealed class TemperatureReader : IDisposable
 
     public void Dispose()
     {
-        _gpuMonitor.Dispose();
+        _gpuMonitor?.Dispose();
         try
         {
             _computer.Close();

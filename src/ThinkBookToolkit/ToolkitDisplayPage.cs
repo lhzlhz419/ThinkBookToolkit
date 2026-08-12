@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -11,6 +12,8 @@ namespace ThinkBookToolkit;
 internal sealed class ToolkitDisplayPage : ToolkitPageBase
 {
     private readonly DisplayViewModel _viewModel;
+    private readonly ComboBox _refreshRate = new() { MinWidth = 150 };
+    private readonly Button _refreshRateSettings;
     private readonly CheckBox _vantageEnabled = new();
     private readonly ComboBox _effect = new() { MinWidth = 180 };
     private readonly ComboBox _schedule = new() { MinWidth = 180 };
@@ -33,6 +36,7 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
     public ToolkitDisplayPage(ToolkitRuntimeService runtime) : base(runtime)
     {
         _viewModel = new DisplayViewModel(runtime);
+        _refreshRateSettings = ActionButton(L("设置", "Settings"));
         DataContext = _viewModel;
         _status = StatusText();
         Content = BuildLayout();
@@ -45,6 +49,39 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
         WireEvents();
         var root = new StackPanel();
         var report = Runtime.Report;
+
+        if (report?.IsAvailable(FeatureIds.DisplayRefreshRate) != false)
+        {
+            var control = new Grid
+            {
+                MinWidth = 340,
+                HorizontalAlignment = HorizontalAlignment.Stretch
+            };
+            control.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star)
+            });
+            control.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = GridLength.Auto
+            });
+            _refreshRate.HorizontalAlignment = HorizontalAlignment.Stretch;
+            control.Children.Add(_refreshRate);
+            _refreshRateSettings.Margin = new Thickness(10, 0, 0, 0);
+            Grid.SetColumn(_refreshRateSettings, 1);
+            control.Children.Add(_refreshRateSettings);
+            root.Children.Add(Card(
+                L("笔记本屏幕刷新率", "Laptop display refresh rate"),
+                SettingRow(
+                    L("刷新率", "Refresh rate"),
+                    L(
+                        "直接切换笔记本内置屏幕的刷新率；设置中的选项也用于 Fn+R 循环。",
+                        "Switch the laptop panel refresh rate. Enabled rates are also used by the Fn+R cycle."),
+                    control,
+                    "\uE7F4"),
+                null,
+                "\uE7F4"));
+        }
 
         if (report?.IsAvailable(FeatureIds.VantageEyeCare) != false)
         {
@@ -175,6 +212,27 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
 
     private void WireEvents()
     {
+        _refreshRate.SelectionChanged += async (_, _) =>
+        {
+            if (!_syncing && Selected<uint>(_refreshRate) is { } value)
+                await RunAsync(() => _viewModel.SetRefreshRateAsync(value));
+        };
+        _refreshRateSettings.Click += async (_, _) =>
+        {
+            if (_viewModel.RefreshRate is not { } state)
+                return;
+            var window = new RefreshRateSettingsWindow(
+                Window.GetWindow(this),
+                Runtime,
+                state,
+                FontFamily,
+                FontSize);
+            if (window.ShowDialog() == true)
+            {
+                await _viewModel.ReloadRefreshRateAsync();
+                SyncControls();
+            }
+        };
         _vantageEnabled.Click += async (_, _) =>
         {
             if (!_syncing) await RunAsync(() => _viewModel.SetVantageEnabledAsync(_vantageEnabled.IsChecked == true));
@@ -249,6 +307,7 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
     {
         _syncing = true;
         var state = _viewModel.State;
+        RefreshRefreshRates(_viewModel.RefreshRate);
         if (state is not null)
         {
             _vantageEnabled.IsChecked = state.EyeCare.Enabled;
@@ -269,6 +328,28 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
         _status.Text = _viewModel.Status;
         _syncing = false;
         SetEnabled(true);
+    }
+
+    private void RefreshRefreshRates(DisplayRefreshRateState? state)
+    {
+        _refreshRate.Items.Clear();
+        if (state is null)
+            return;
+        var enabled = RefreshRateController.EffectiveCycleRates(
+            state.AvailableHz,
+            Runtime.Settings.RefreshRateCycleHz);
+        foreach (var rate in enabled)
+            AddChoice(_refreshRate, $"{rate} Hz", rate);
+        if (!enabled.Contains(state.CurrentHz))
+        {
+            _refreshRate.Items.Add(new ComboBoxItem
+            {
+                Content = $"{state.CurrentHz} Hz",
+                Tag = state.CurrentHz,
+                IsEnabled = false
+            });
+        }
+        Select(_refreshRate, state.CurrentHz);
     }
 
     private void RefreshColorModes(ColorManagementState state)
@@ -295,6 +376,10 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
         _pcManagerEnabled.IsEnabled = value && state?.PcManagerEyeCare.Available == true;
         _pcTemperature.IsEnabled = value && state?.PcManagerEyeCare is { Available: true, Enabled: false };
         _colorMode.IsEnabled = value && state?.ColorManagement.Available == true;
+        _refreshRate.IsEnabled = value &&
+            _viewModel.RefreshRate?.AvailableHz.Count > 0;
+        _refreshRateSettings.IsEnabled = value &&
+            _viewModel.RefreshRate?.AvailableHz.Count > 0;
     }
 
     private static void AddChoice<T>(ComboBox combo, string label, T value) =>
@@ -325,6 +410,7 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
     {
         public DisplayViewModel(ToolkitRuntimeService runtime) : base(runtime) { }
         public DisplaySettingsState? State { get; private set; }
+        public DisplayRefreshRateState? RefreshRate { get; private set; }
 
         private PcManagerEyeCareDefaults Defaults => new PcManagerEyeCareDefaults(
             Runtime.Settings.PcManagerNormalDefaultTemperature,
@@ -333,16 +419,97 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
         public async Task LoadAsync()
         {
             IsBusy = true;
-            try
+            var errors = new List<string>();
+            if (Runtime.Report?.IsAvailable(
+                    FeatureIds.DisplayRefreshRate) != false)
             {
-                State = await Task.Run(() => DisplaySettingsController.ReadState(Defaults));
+                await ReloadRefreshRateAsync(errors);
+            }
+            if (Runtime.Report?.AnyAvailable(
+                    FeatureIds.VantageEyeCare,
+                    FeatureIds.PcManagerEyeCare,
+                    FeatureIds.ColorManagement) != false)
+            {
+                try
+                {
+                    State = await Task.Run(() =>
+                        DisplaySettingsController.ReadState(Defaults));
+                }
+                catch (Exception ex)
+                {
+                    errors.Add(Runtime.L(
+                        "显示设置：",
+                        "Display settings: ") + ex.Message);
+                }
+            }
+            Status = errors.Count == 0
+                ? string.Empty
+                : Runtime.L(
+                    "部分状态读取失败：",
+                    "Some states could not be read: ") +
+                  string.Join(" · ", errors);
+            IsBusy = false;
+        }
+
+        public async Task ReloadRefreshRateAsync()
+        {
+            await ReloadRefreshRateAsync(null);
+            if (RefreshRate is not null)
                 Status = string.Empty;
-            }
-            catch (Exception ex)
+        }
+
+        private async Task ReloadRefreshRateAsync(
+            ICollection<string>? errors)
+        {
+            var result = await Task.Run(() =>
             {
-                Status = Runtime.L("读取失败：", "Read failed: ") + ex.Message;
+                var success = RefreshRateController.TryReadState(
+                    out var state,
+                    out var error);
+                return (success, state, error);
+            });
+            if (result.success)
+            {
+                RefreshRate = result.state;
+                return;
             }
-            finally { IsBusy = false; }
+            RefreshRate = null;
+            if (errors is not null)
+            {
+                errors.Add(Runtime.L(
+                    "刷新率：",
+                    "Refresh rate: ") + result.error);
+            }
+            else
+            {
+                Status = Runtime.L(
+                    "刷新率读取失败：",
+                    "Could not read refresh rates: ") + result.error;
+            }
+        }
+
+        public async Task SetRefreshRateAsync(uint value)
+        {
+            IsBusy = true;
+            var result = await Task.Run(() =>
+            {
+                var success = RefreshRateController.TrySetRefreshRate(
+                    value,
+                    out var error);
+                return (success, error);
+            });
+            if (!result.success)
+            {
+                Status = Runtime.L(
+                    "刷新率切换失败：",
+                    "Could not change the refresh rate: ") + result.error;
+                IsBusy = false;
+                return;
+            }
+            await ReloadRefreshRateAsync();
+            if (RefreshRate is not null)
+                Status = string.Empty;
+            IsBusy = false;
         }
 
         public Task SetVantageEnabledAsync(bool value) =>

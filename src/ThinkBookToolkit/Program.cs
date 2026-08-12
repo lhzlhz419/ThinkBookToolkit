@@ -53,10 +53,37 @@ public static class Program
                 ConfigurationMigrationService.EnsureInitialized();
                 var settings = CurveProfileStore.LoadSettings();
                 CurveProfileStore.ApplyPendingInstallerSettings(settings);
+                if (settings.StartWithWindows)
+                {
+                    var startupTaskError =
+                        MainWindow.ApplyStartupTaskSetting(settings);
+                    if (!string.IsNullOrWhiteSpace(startupTaskError))
+                    {
+                        ToolkitLog.Warning(
+                            "The startup task could not be refreshed: " +
+                            startupTaskError);
+                    }
+                }
+                // Select software rendering and suppress NVIDIA telemetry only
+                // for startup recovery when the current state already expects
+                // the dGPU to be absent. Runtime mode and power transitions
+                // continue monitoring until PnP reports the adapter removed.
+                HybridAutoGpuManager.PrepareForApplicationStartup();
                 ModernTheme.Apply(app, ToolkitRuntimeService.ResolveDarkTheme(settings.Theme));
                 var startToTrayRequested = args.Any(argument =>
                     string.Equals(argument, "--startup-tray", StringComparison.OrdinalIgnoreCase));
-                using var runtime = new ToolkitRuntimeService(settings);
+                var launchedAtStartup = args.Any(argument =>
+                    string.Equals(
+                        argument,
+                        "--startup",
+                        StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(
+                        argument,
+                        "--startup-tray",
+                        StringComparison.OrdinalIgnoreCase));
+                using var runtime = new ToolkitRuntimeService(
+                    settings,
+                    launchedAtStartup);
                 SessionEndingCancelEventHandler sessionEnding = (_, eventArgs) =>
                 {
                     try

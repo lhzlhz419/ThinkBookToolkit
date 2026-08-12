@@ -20,11 +20,17 @@ internal sealed record GpuMonitorWorkerSnapshot(
     IReadOnlyList<double> MemoryChipTemperaturesC,
     double? PowerW,
     string CoreTemperatureSensor,
-    string MemoryTemperatureSensor);
+    string MemoryTemperatureSensor,
+    DiscreteGpuActivityState DiscreteGpuState =
+        DiscreteGpuActivityState.Unknown,
+    string PerformanceState = "");
 
 internal sealed class GpuMonitorWorkerClient : IDisposable
 {
     private static readonly TimeSpan ResponseTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan ProcessTerminationTimeout =
+        TimeSpan.FromSeconds(60);
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan NonNvidiaFallbackDuration =
         TimeSpan.FromSeconds(10);
@@ -39,6 +45,12 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
     private int _adapterGeneration = -1;
     private bool _disposed;
     private bool _missingExecutableLogged;
+    private string _appliedOverclockSignature = string.Empty;
+
+    public GpuMonitorWorkerClient()
+    {
+        GpuTelemetryControl.ModeChanged += OnTelemetryModeChanged;
+    }
 
     public GpuMonitorWorkerSnapshot? Read()
     {
@@ -46,6 +58,13 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
         {
             if (_disposed)
                 return null;
+
+            var telemetryMode = GpuTelemetryControl.Mode;
+            if (telemetryMode == GpuTelemetryMode.Paused)
+            {
+                StopWorker();
+                return null;
+            }
 
             var adapters = GpuDevicePresenceDetector.Capture();
             if (_adapterGeneration >= 0 &&
@@ -59,15 +78,29 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
             }
             _adapterGeneration = adapters.Generation;
 
+            if (telemetryMode == GpuTelemetryMode.Quiescing &&
+                DateTimeOffset.UtcNow < _nonNvidiaFallbackUntil)
+            {
+                // Do not reopen LHM merely to obtain an iGPU fallback while
+                // the dGPU is waiting to be removed. LHM discovery itself can
+                // touch NVIDIA even before the first Update() call.
+                StopWorker();
+                return null;
+            }
+
             if (!EnsureWorker())
                 return null;
 
             try
             {
                 _writer!.WriteLine(
-                    DateTimeOffset.UtcNow < _nonNvidiaFallbackUntil
+                    telemetryMode == GpuTelemetryMode.IntegratedOnly
                         ? Guardian.GpuMonitorWorker.ReadNonNvidiaCommand
-                        : Guardian.GpuMonitorWorker.ReadCommand);
+                        : DateTimeOffset.UtcNow < _nonNvidiaFallbackUntil
+                            ? Guardian.GpuMonitorWorker.ReadNonNvidiaFallbackCommand
+                        : telemetryMode == GpuTelemetryMode.Quiescing
+                            ? Guardian.GpuMonitorWorker.ReadQuiescingCommand
+                            : Guardian.GpuMonitorWorker.ReadCommand);
                 _writer.Flush();
                 var responseTask = _reader!.ReadLineAsync();
                 if (!responseTask.Wait(ResponseTimeout))
@@ -81,7 +114,26 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
                         "The isolated GPU monitor returned an empty response.");
                 if (response == "null")
                     return null;
-                return JsonSerializer.Deserialize<GpuMonitorWorkerSnapshot>(response);
+
+                var snapshot = JsonSerializer.Deserialize<GpuMonitorWorkerSnapshot>(
+                    response);
+                if (snapshot is not null &&
+                    HybridAutoGpuPolicy.ShouldEnterSilentEjectWindow(
+                        telemetryMode,
+                        snapshot.DiscreteGpuState))
+                {
+                    // LLT stops both NVIDIA LHM and NVAPI while the firmware
+                    // is trying to remove an idle dGPU.  Keeping even this
+                    // isolated process alive leaves native NVIDIA handles in
+                    // the system and can prevent the final PnP removal.
+                    ToolkitLog.Info(
+                        "The discrete GPU is inactive; ending the isolated GPU monitor and entering the silent ejection window.");
+                    GpuTelemetryControl.SetMode(
+                        GpuTelemetryMode.Paused,
+                        "the discrete GPU is inactive and ready for firmware removal");
+                }
+
+                return snapshot;
             }
             catch (Exception ex)
             {
@@ -99,6 +151,102 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
                 StopWorker();
                 _nextStart = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
                 return null;
+            }
+        }
+    }
+
+    public GpuWorkerCommandResponse QueryApplications() =>
+        ExecuteCommand(Guardian.GpuMonitorWorker.ListApplicationsCommand);
+
+    public GpuWorkerCommandResponse KillApplications() =>
+        ExecuteCommand(
+            Guardian.GpuMonitorWorker.KillApplicationsCommand,
+            ProcessTerminationTimeout);
+
+    public GpuWorkerCommandResponse ApplyOverclock(
+        GpuOverclockSettings settings,
+        bool force = false)
+    {
+        if (!GpuOverclockPolicy.TryValidate(settings, out var error))
+            return GpuWorkerCommandResponse.Failure(error);
+        var signature = GpuOverclockPolicy.Signature(settings);
+        lock (_sync)
+        {
+            if (!force && signature == _appliedOverclockSignature)
+                return GpuWorkerCommandResponse.Ok();
+        }
+        var payload = Convert.ToBase64String(
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(settings)));
+        var result = ExecuteCommand(
+            Guardian.GpuMonitorWorker.ApplyOverclockCommand + payload,
+            OperationTimeout);
+        if (result.Success)
+        {
+            lock (_sync)
+                _appliedOverclockSignature = signature;
+        }
+        return result;
+    }
+
+    public GpuWorkerCommandResponse ResetOverclock()
+    {
+        var result = ExecuteCommand(
+            Guardian.GpuMonitorWorker.ResetOverclockCommand,
+            OperationTimeout);
+        if (result.Success)
+        {
+            lock (_sync)
+                _appliedOverclockSignature =
+                    GpuOverclockPolicy.Signature(
+                        new GpuOverclockSettings());
+        }
+        return result;
+    }
+
+    private GpuWorkerCommandResponse ExecuteCommand(
+        string command,
+        TimeSpan? timeout = null)
+    {
+        lock (_sync)
+        {
+            if (_disposed)
+                return GpuWorkerCommandResponse.Failure(
+                    "The GPU monitor is not running.");
+            if (GpuTelemetryControl.Mode is GpuTelemetryMode.Paused or
+                GpuTelemetryMode.IntegratedOnly)
+            {
+                return GpuWorkerCommandResponse.Failure(
+                    "The discrete GPU is unavailable.");
+            }
+            if (!EnsureWorker())
+                return GpuWorkerCommandResponse.Failure(
+                    "The isolated GPU monitor could not be started.");
+
+            try
+            {
+                _writer!.WriteLine(command);
+                _writer.Flush();
+                var responseTask = _reader!.ReadLineAsync();
+                if (!responseTask.Wait(timeout ?? ResponseTimeout))
+                    throw new TimeoutException(
+                        "The isolated GPU monitor did not finish the requested operation in time.");
+                var response = responseTask.Result;
+                if (string.IsNullOrWhiteSpace(response))
+                    throw new InvalidDataException(
+                        "The isolated GPU monitor returned an empty operation response.");
+                return JsonSerializer.Deserialize<GpuWorkerCommandResponse>(
+                           response) ??
+                       GpuWorkerCommandResponse.Failure(
+                           "The isolated GPU monitor returned an invalid operation response.");
+            }
+            catch (Exception ex)
+            {
+                ToolkitLog.Error(
+                    "An isolated GPU operation failed.",
+                    ex);
+                StopWorker();
+                _nextStart = DateTimeOffset.UtcNow + RestartDelay;
+                return GpuWorkerCommandResponse.Failure(ex.Message);
             }
         }
     }
@@ -186,6 +334,29 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
         }
     }
 
+    private void OnTelemetryModeChanged(GpuTelemetryMode mode)
+    {
+        lock (_sync)
+        {
+            if (_disposed)
+                return;
+
+            // Full and quiescing modes share the same worker only while the
+            // dGPU still has real clients. Once it becomes inactive Read()
+            // switches to Paused and this callback ends the entire process,
+            // releasing LHM, NVAPI and all native NVIDIA handles together.
+            if (mode is GpuTelemetryMode.Full or
+                GpuTelemetryMode.Quiescing)
+            {
+                return;
+            }
+
+            StopWorker();
+            _nextStart = DateTimeOffset.MinValue;
+            _nonNvidiaFallbackUntil = DateTimeOffset.MinValue;
+        }
+    }
+
     private void StopWorker()
     {
         var process = _process;
@@ -223,6 +394,7 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
         _pipe = null;
         _job?.Dispose();
         _job = null;
+        _appliedOverclockSignature = string.Empty;
     }
 
     private static int? TryGetExitCode(Process? process)
@@ -244,5 +416,6 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
             _disposed = true;
             StopWorker();
         }
+        GpuTelemetryControl.ModeChanged -= OnTelemetryModeChanged;
     }
 }

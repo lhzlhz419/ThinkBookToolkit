@@ -299,6 +299,24 @@ internal static class PowerSettingsController
             Value(target, setting) is int targetValue &&
             currentValue != targetValue);
 
+    internal static PowerSettingsState ApplyLockedValues(
+        PowerSettingsState current,
+        PowerSettingsState target,
+        PowerSettingsLockSelection selection)
+    {
+        var result = current;
+        foreach (var setting in Settings)
+        {
+            if (selection.IsLocked(setting) &&
+                current.IsAvailable(setting) &&
+                target.IsAvailable(setting))
+            {
+                result = WithSetting(result, target, setting);
+            }
+        }
+        return result;
+    }
+
     public static void WriteLockedState(
         PowerSettingsState current,
         PowerSettingsState target,

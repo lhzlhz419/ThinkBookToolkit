@@ -52,7 +52,7 @@ is available in Settings.
 - Windows 11 x64 and administrator privileges.
 - The Lenovo drivers and services required by each device feature.
 - [PawnIO](https://pawnio.eu/) must be installed and available for
-  LibreHardwareMonitor to read the CPU temperature on the tested device. PawnIO
+  LibreHardwareMonitor to read CPU temperature on the tested device. PawnIO
   is a system-level component and is not bundled with Toolkit or the external
   dependency directory.
 - Continuous temperature monitoring whenever custom fan control is active.
@@ -241,7 +241,7 @@ compatibility guarantee.
 
 ```text
 ThinkBookToolkit.Dependencies/
-|-- LibreHardwareMonitorLib.dll        # local reference copy; NuGet is used by the build
+|-- LibreHardwareMonitorLib.dll        # 0.9.7-pre717 local reference copy; NuGet is used by the build
 |-- LenovoPcManager/
 |   `-- WrapPlugin.dll
 `-- VantageAddins/
@@ -279,9 +279,10 @@ number.
   device utility.
 - [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
   provides hardware sensor access.
+- [NAudio](https://github.com/naudio/NAudio) provides Windows audio endpoint
+  state and microphone mute control used by Fn-key takeover.
 - [PawnIO](https://github.com/namazso/PawnIO) provides the system-level access
-  used by LibreHardwareMonitor for CPU temperature telemetry on the tested
-  device.
+  used for CPU temperature telemetry on the tested device.
 - Some capabilities interoperate with components from
   [Lenovo Vantage](https://apps.microsoft.com/detail/9wzdncrfj4mv) and
   [Lenovo PC Manager](https://guanjia.lenovo.com.cn/).

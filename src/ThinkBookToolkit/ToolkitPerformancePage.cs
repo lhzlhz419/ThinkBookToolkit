@@ -14,11 +14,19 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 {
     private readonly bool _coolingOnly;
     private readonly ComboBox _itsMode = new() { MinWidth = 190 };
+    private readonly Button _performanceModeOrderSettings;
     private readonly ComboBox _gpuMode = new() { MinWidth = 210 };
     private readonly TextBlock _modeStatus;
     private readonly TextBlock _pendingRestartText = new();
     private readonly Button _restartNow;
     private Border _pendingRestartRow = new();
+    private readonly TextBlock _discreteGpuStatus = new();
+    private readonly Button _viewGpuApplications;
+    private readonly Button _killGpuApplications;
+    private readonly Button _gpuOverclockSettings;
+    private readonly CheckBox _gpuOverclockEnabled = new();
+    private Border _discreteGpuStatusRow = new();
+    private Border _gpuOverclockRow = new();
     private readonly CheckBox _fullSpeed = new();
     private readonly TextBlock _fanStatus;
     private readonly ComboBox _strategy = new() { MinWidth = 180 };
@@ -40,7 +48,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private readonly ComboBox _profile = new() { MinWidth = 200 };
     private readonly TextBox _profileName = new() { MinWidth = 180 };
     private readonly ComboBox _editFan = new() { MinWidth = 120 };
-    private readonly CheckBox _syncCurve = new();
+    private readonly CheckBox _independentCurves = new();
     private readonly CheckBox _syncFixed = new();
     private readonly CheckBox _autoGames = new();
     private readonly ComboBox _gameHold = new() { MinWidth = 150 };
@@ -91,6 +99,14 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _coolingOnly = coolingOnly;
         _modeStatus = StatusText();
         _restartNow = ActionButton(L("立即重启", "Restart now"), primary: true);
+        _viewGpuApplications = ActionButton(
+            L("查看占用应用", "View applications"));
+        _killGpuApplications = ActionButton(
+            L("强制关闭占用应用", "Force close applications"),
+            danger: true);
+        _gpuOverclockSettings = ActionButton(L("设置", "Settings"));
+        _performanceModeOrderSettings = ActionButton(
+            L("设置", "Settings"));
         _fanStatus = StatusText();
         _draftStatus = StatusText();
         _powerStatus = StatusText();
@@ -123,6 +139,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         UpdateFanDraftStatus();
         UpdatePowerStatus();
         runtime.SnapshotChanged += OnSnapshotChanged;
+        runtime.FnKeyTakeoverChanged += OnFnKeyTakeoverChanged;
         SyncRuntimeControls();
         Loaded += async (_, _) => await LoadAsync();
     }
@@ -137,7 +154,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         }
 
         if (!_coolingOnly &&
-            Runtime.Report?.AnyAvailable(FeatureIds.PerformanceMode, FeatureIds.GpuMode) != false)
+            Runtime.Report?.AnyAvailable(
+                FeatureIds.PerformanceMode,
+                FeatureIds.GpuMode,
+                FeatureIds.TemperatureMonitoring) != false)
             root.Children.Add(BuildModeCard());
         if (_coolingOnly && Runtime.Report?.IsAvailable(FeatureIds.FanControl) != false)
             root.Children.Add(BuildFanCard());
@@ -253,10 +273,30 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         };
         if (Runtime.Report?.IsAvailable(FeatureIds.PerformanceMode) != false)
         {
+            var performanceModeControl = new Grid
+            {
+                MinWidth = 430,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Stretch
+            };
+            performanceModeControl.ColumnDefinitions.Add(
+                new ColumnDefinition
+                {
+                    Width = new GridLength(1, GridUnitType.Star)
+                });
+            performanceModeControl.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+            _itsMode.HorizontalAlignment = HorizontalAlignment.Stretch;
+            performanceModeControl.Children.Add(_itsMode);
+            _performanceModeOrderSettings.Margin =
+                new Thickness(10, 0, 0, 0);
+            Grid.SetColumn(_performanceModeOrderSettings, 1);
+            performanceModeControl.Children.Add(
+                _performanceModeOrderSettings);
             choices.Children.Add(SettingRow(
                 L("性能模式", "Performance mode"),
                 L("切换 Lenovo ITS 固件性能状态。", "Switch the Lenovo ITS firmware performance state."),
-                _itsMode,
+                performanceModeControl,
                 "\uE945"));
         }
         if (Runtime.Report?.IsAvailable(FeatureIds.GpuMode) != false)
@@ -268,6 +308,51 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
                 "\uE7F4"));
         }
         content.Children.Add(choices);
+
+        var gpuStatusControl = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        _viewGpuApplications.Margin = new Thickness(0, 0, 8, 0);
+        _killGpuApplications.Margin = new Thickness(0, 0, 14, 0);
+        _discreteGpuStatus.VerticalAlignment = VerticalAlignment.Center;
+        _discreteGpuStatus.FontWeight = FontWeights.SemiBold;
+        _discreteGpuStatus.Foreground = Brush(Palette.Text);
+        gpuStatusControl.Children.Add(_viewGpuApplications);
+        gpuStatusControl.Children.Add(_killGpuApplications);
+        gpuStatusControl.Children.Add(_discreteGpuStatus);
+        _discreteGpuStatusRow = SettingRow(
+            L("独立显卡状态", "Discrete GPU status"),
+            L(
+                "显示独显当前活动状态和性能状态。",
+                "Shows the current discrete-GPU activity and performance state."),
+            gpuStatusControl,
+            "\uE7F4");
+        if (Runtime.Report?.IsAvailable(
+                FeatureIds.DiscreteGpuManagement) != false)
+        {
+            content.Children.Add(_discreteGpuStatusRow);
+        }
+
+        var overclockControl = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        _gpuOverclockSettings.Margin = new Thickness(0, 0, 12, 0);
+        overclockControl.Children.Add(_gpuOverclockSettings);
+        overclockControl.Children.Add(_gpuOverclockEnabled);
+        _gpuOverclockRow = SettingRow(
+            L("超频独立显卡", "Overclock discrete GPU"),
+            L(
+                "超频需谨慎，不要与其它超频软件一起使用；如需更完整的显卡超频功能，建议改用 MSI Afterburner。",
+                "Overclock with care. Do not use Toolkit together with other overclocking software; use MSI Afterburner instead for more complete GPU overclocking features."),
+            overclockControl,
+            "\uE945");
+        if (Runtime.Report?.IsAvailable(FeatureIds.GpuOverclock) != false)
+            content.Children.Add(_gpuOverclockRow);
+
         var restartControl = new StackPanel { Orientation = Orientation.Horizontal };
         _pendingRestartText.Foreground = Brush(Palette.Warning);
         _pendingRestartText.VerticalAlignment = VerticalAlignment.Center;
@@ -356,8 +441,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
                 "切换性能模式时，自动切换风扇策略",
                 "Switch fan strategy with performance mode"),
             L(
-                "为四种性能模式分别指定风扇策略；单独切换风扇策略不会反向改变性能模式。",
-                "Assign a fan strategy to each performance mode. Changing only the fan strategy does not change the performance mode."),
+                "为四种性能模式分别指定风扇策略；确认模式切换成功并等待 2 秒后应用。",
+                "Assign a fan strategy to each performance mode. It is applied two seconds after the mode switch is confirmed."),
             _linkFanStrategyToPerformanceMode));
 
         var bindingGrid = new AdaptiveUniformPanel
@@ -422,8 +507,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         content.Children.Add(SettingRow(
             L("当使用风扇控制时，切换到", "When fan control is used, switch to"),
             L(
-                "固件自动不触发切换；固定转速中两个风扇均由固件自动控制时也不触发。",
-                "Firmware automatic does not trigger a switch. Fixed RPM also does not trigger it when both fans remain firmware-controlled."),
+                "需要切换时，确认性能模式切换成功并等待 2 秒后才启用风扇控制；固件自动和双风扇均由固件控制的固定转速不触发。",
+                "When a switch is needed, fan control starts two seconds after the performance mode is confirmed. Firmware automatic and fixed RPM with both fans firmware-controlled do not trigger it."),
             _fanControlTargetMode));
 
         var whitelist = new AdaptiveUniformPanel
@@ -757,18 +842,72 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         AddChoice(_editFan, "Fan 1", 1);
         AddChoice(_editFan, "Fan 2", 2);
-        var general = new AdaptiveUniformPanel { MinimumItemWidth = 250, Spacing = 8 };
-        general.Children.Add(CompactSetting(L("方案", "Profile"), _profile));
-        general.Children.Add(CompactSetting(L("名称", "Name"), _profileName));
-        general.Children.Add(CompactSetting(L("编辑风扇", "Edit fan"), _editFan));
-        general.Children.Add(CompactSetting(L("温度平滑（秒）", "Temperature smoothing (s)"), _smoothing));
-        general.Children.Add(CompactSetting(L("升速限制（RPM/s）", "Ramp-up limit (RPM/s)"), _curveRampUp));
-        general.Children.Add(CompactSetting(L("降速限制（RPM/s）", "Ramp-down limit (RPM/s)"), _curveRampDown));
-        general.Children.Add(CompactSetting(L("高温后降速限制（RPM/s）", "Post-high-temperature ramp-down limit (RPM/s)"), _rampDown));
-        _curvePanel.Children.Add(general);
-        _syncCurve.Content = L("同步两个风扇的曲线", "Synchronize both fan curves");
-        _syncCurve.Margin = new Thickness(0, 12, 0, 10);
-        _curvePanel.Children.Add(_syncCurve);
+        var identityContent = new Grid();
+        identityContent.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        identityContent.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1)
+        });
+        identityContent.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        var profile = CompactSettingContent(L("方案", "Profile"), _profile);
+        profile.Margin = new Thickness(12, 9, 12, 9);
+        var divider = new Border { Background = Brush(Palette.Border) };
+        Grid.SetColumn(divider, 1);
+        var name = CompactSettingContent(L("名称", "Name"), _profileName);
+        name.Margin = new Thickness(12, 9, 12, 9);
+        Grid.SetColumn(name, 2);
+        identityContent.Children.Add(profile);
+        identityContent.Children.Add(divider);
+        identityContent.Children.Add(name);
+        var identity = new Border
+        {
+            Tag = "FanCurveProfileAndName",
+            Background = Brush(Palette.SurfaceRaised),
+            BorderBrush = Brush(Palette.Border),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(11),
+            ClipToBounds = true,
+            Child = identityContent
+        };
+        _curvePanel.Children.Add(identity);
+
+        var limits = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 220,
+            Spacing = 8,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        limits.Children.Add(CompactSetting(L("温度平滑（秒）", "Temperature smoothing (s)"), _smoothing));
+        limits.Children.Add(CompactSetting(L("升速限制（RPM/s）", "Ramp-up limit (RPM/s)"), _curveRampUp));
+        limits.Children.Add(CompactSetting(L("降速限制（RPM/s）", "Ramp-down limit (RPM/s)"), _curveRampDown));
+        limits.Children.Add(CompactSetting(L("高温后降速限制（RPM/s）", "Post-high-temperature ramp-down limit (RPM/s)"), _rampDown));
+        _curvePanel.Children.Add(limits);
+
+        var editRow = new Grid { Margin = new Thickness(0, 10, 0, 10) };
+        editRow.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        editRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _independentCurves.Content = L(
+            "独立控制两个风扇的曲线",
+            "Control both fan curves independently");
+        _independentCurves.VerticalAlignment = VerticalAlignment.Center;
+        editRow.Children.Add(_independentCurves);
+        var editFan = CompactSetting(
+            L("选择要编辑的风扇", "Select fan to edit"),
+            _editFan);
+        editFan.MinWidth = 330;
+        editFan.HorizontalAlignment = HorizontalAlignment.Right;
+        Grid.SetColumn(editFan, 1);
+        editRow.Children.Add(editFan);
+        _curvePanel.Children.Add(editRow);
         _curvePanel.Children.Add(_cpuCurve);
         _gpuCurve.Margin = new Thickness(0, 10, 0, 0);
         _curvePanel.Children.Add(_gpuCurve);
@@ -799,9 +938,28 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
     private Border CompactSetting(string label, UIElement control)
     {
+        return new Border
+        {
+            Background = Brush(Palette.SurfaceRaised),
+            BorderBrush = Brush(Palette.Border),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(11),
+            Padding = new Thickness(12, 9, 12, 9),
+            Child = CompactSettingContent(label, control)
+        };
+    }
+
+    private Grid CompactSettingContent(string label, UIElement control)
+    {
         var panel = new Grid();
-        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        panel.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        panel.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = GridLength.Auto
+        });
         panel.Children.Add(new TextBlock
         {
             Text = label,
@@ -812,15 +970,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         });
         Grid.SetColumn(control, 1);
         panel.Children.Add(control);
-        return new Border
-        {
-            Background = Brush(Palette.SurfaceRaised),
-            BorderBrush = Brush(Palette.Border),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(11),
-            Padding = new Thickness(12, 9, 12, 9),
-            Child = panel
-        };
+        return panel;
     }
 
     private UIElement BuildPowerCard()
@@ -1160,6 +1310,39 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             SetModeControls(true);
             SyncRuntimeControls();
         };
+        _performanceModeOrderSettings.Click += (_, _) =>
+        {
+            var window = new PerformanceModeOrderWindow(
+                Window.GetWindow(this),
+                Runtime,
+                FontFamily,
+                FontSize);
+            window.ShowDialog();
+        };
+        _viewGpuApplications.Click += async (_, _) =>
+            await ShowGpuApplicationsAsync();
+        _killGpuApplications.Click += async (_, _) =>
+            await KillGpuApplicationsAsync();
+        _gpuOverclockSettings.Click += (_, _) =>
+        {
+            var window = new GpuOverclockWindow(
+                Window.GetWindow(this),
+                Runtime,
+                FontFamily,
+                FontSize);
+            window.ShowDialog();
+            SyncRuntimeControls();
+        };
+        _gpuOverclockEnabled.Click += async (_, _) =>
+        {
+            if (_syncing)
+                return;
+            var enabled = _gpuOverclockEnabled.IsChecked == true;
+            _gpuOverclockEnabled.IsEnabled = false;
+            var error = await Runtime.SetGpuOverclockEnabledAsync(enabled);
+            _modeStatus.Text = error ?? string.Empty;
+            SyncRuntimeControls();
+        };
         _restartNow.Click += async (_, _) =>
         {
             if (MessageBox.Show(
@@ -1243,11 +1426,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _advancedCurve.ValuesChanged += (_, _) => MarkFanDirty();
         _gameHold.SelectionChanged += (_, _) => MarkFanDirty();
         _hotkey.TextChanged += (_, _) => MarkFanDirty();
-        _syncCurve.Click += (_, _) =>
+        _independentCurves.Click += (_, _) =>
         {
             if (_syncing) return;
-            _cpuCurve.SetSyncFanSpeeds(_syncCurve.IsChecked == true);
-            _gpuCurve.SetSyncFanSpeeds(_syncCurve.IsChecked == true);
+            var synchronize = _independentCurves.IsChecked != true;
+            _cpuCurve.SetSyncFanSpeeds(synchronize);
+            _gpuCurve.SetSyncFanSpeeds(synchronize);
             MarkFanDirty();
         };
         _syncFixed.Click += (_, _) =>
@@ -1328,6 +1512,74 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         if (!_coolingOnly &&
             Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
             await LoadPowerAsync();
+    }
+
+    private async Task ShowGpuApplicationsAsync()
+    {
+        _viewGpuApplications.IsEnabled = false;
+        _killGpuApplications.IsEnabled = false;
+        try
+        {
+            var result = await Runtime.QueryDiscreteGpuApplicationsAsync();
+            if (!result.Success)
+            {
+                _modeStatus.Text = L(
+                    "无法读取独显占用应用：",
+                    "Could not read applications using the discrete GPU: ") +
+                    result.Error;
+                return;
+            }
+            var window = new GpuApplicationsWindow(
+                Window.GetWindow(this),
+                result.Applications,
+                Runtime.IsChinese,
+                Runtime.IsDark,
+                FontFamily,
+                FontSize);
+            window.ShowDialog();
+            _modeStatus.Text = string.Empty;
+        }
+        finally
+        {
+            SyncRuntimeControls();
+        }
+    }
+
+    private async Task KillGpuApplicationsAsync()
+    {
+        if (MessageBox.Show(
+                Window.GetWindow(this),
+                L(
+                    "将强制结束当前占用独立显卡的所有非系统应用及其子进程。未保存的数据可能丢失。是否继续？",
+                    "All non-system applications currently using the discrete GPU and their child processes will be terminated. Unsaved data may be lost. Continue?"),
+                "ThinkBook Toolkit",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No) != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _viewGpuApplications.IsEnabled = false;
+        _killGpuApplications.IsEnabled = false;
+        try
+        {
+            var result = await Runtime.KillDiscreteGpuApplicationsAsync();
+            var message = result.Success
+                ? L(
+                    $"已关闭 {result.AffectedProcesses} 个占用独显的应用进程。",
+                    $"Closed {result.AffectedProcesses} application processes using the discrete GPU.")
+                : L(
+                    $"已关闭 {result.AffectedProcesses} 个进程，但部分应用关闭失败：",
+                    $"Closed {result.AffectedProcesses} processes, but some applications could not be closed: ") +
+                  result.Error;
+            _modeStatus.Text = string.Empty;
+            Runtime.SetStatus(message);
+        }
+        finally
+        {
+            SyncRuntimeControls();
+        }
     }
 
     private async Task ChangeFanControlModeAsync(FanControlMode mode)
@@ -1470,7 +1722,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _profile.SelectedIndex = index;
         LoadProfileDraft(index, keepSyncing: true);
         var settings = Runtime.Settings;
-        _syncCurve.IsChecked = settings.SyncFanSpeeds;
+        _independentCurves.IsChecked = !settings.SyncFanSpeeds;
+        _cpuCurve.SetSyncFanSpeeds(settings.SyncFanSpeeds);
+        _gpuCurve.SetSyncFanSpeeds(settings.SyncFanSpeeds);
         _syncFixed.IsChecked = settings.FixedSyncFanSpeeds;
         _autoGames.IsChecked = settings.AutoDetectGames;
         Select(_gameHold, settings.GameExitHoldSeconds);
@@ -1570,7 +1824,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             Runtime.FanRuntime.RuntimeApplyFanConfiguration(
                 _profile.SelectedIndex,
                 _draftProfile,
-                _syncCurve.IsChecked == true,
+                _independentCurves.IsChecked != true,
                 _syncFixed.IsChecked == true,
                 _autoGames.IsChecked == true,
                 hold,
@@ -1887,7 +2141,22 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         _syncing = true;
         var snapshot = Runtime.Snapshot;
-        Select(_itsMode, snapshot.ItsMode);
+        var isAcConnected = snapshot.Battery?.IsAcConnected;
+        foreach (var item in _itsMode.Items.OfType<ComboBoxItem>())
+        {
+            item.Visibility = item.Tag is ItsMode mode &&
+                              PerformanceModeAvailability.CanSelect(
+                                  mode,
+                                  isAcConnected)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+        if (PerformanceModeAvailability.CanSelect(
+                snapshot.ItsMode,
+                isAcConnected))
+            Select(_itsMode, snapshot.ItsMode);
+        else
+            _itsMode.SelectedItem = null;
         foreach (var item in _gpuMode.Items.OfType<ComboBoxItem>())
             item.Visibility = item.Tag is GpuWorkingMode mode && snapshot.SupportedGpuModes.Contains(mode)
                 ? Visibility.Visible
@@ -1906,6 +2175,36 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
             ? Visibility.Collapsed
             : Visibility.Visible;
         _pendingRestartText.Text = PendingGpuModeText(snapshot);
+        var gpuState = snapshot.Temperatures?.DiscreteGpuState ??
+                       DiscreteGpuActivityState.Unknown;
+        var gpuClosed = gpuState == DiscreteGpuActivityState.Off;
+        var gpuActive = gpuState == DiscreteGpuActivityState.Active;
+        _discreteGpuStatus.Text = DiscreteGpuStatusFormatter.Format(
+            gpuState,
+            snapshot.Temperatures?.GpuPerformanceState,
+            Runtime.IsChinese);
+        _discreteGpuStatusRow.Visibility = gpuClosed
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        _gpuOverclockRow.Visibility = gpuClosed
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        _viewGpuApplications.Visibility = gpuActive
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        _killGpuApplications.Visibility = gpuActive
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        _viewGpuApplications.IsEnabled = gpuActive;
+        _killGpuApplications.IsEnabled = gpuActive;
+        _gpuOverclockSettings.IsEnabled = !gpuClosed;
+        _gpuOverclockEnabled.IsChecked =
+            Runtime.Settings.GpuOverclock.Enabled;
+        _gpuOverclockEnabled.IsEnabled = !gpuClosed;
+        _performanceModeOrderSettings.Visibility =
+            Runtime.Settings.TakeOverFnKeys
+                ? Visibility.Visible
+                : Visibility.Collapsed;
         _fullSpeed.IsChecked = snapshot.FullSpeed;
         var fanMode = snapshot.FanControlRunning || snapshot.FullSpeed
             ? snapshot.FanStrategy switch
@@ -1945,7 +2244,20 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private void SetModeControls(bool value)
     {
         _itsMode.IsEnabled = value && Runtime.Report?.IsAvailable(FeatureIds.PerformanceMode) != false;
+        _performanceModeOrderSettings.IsEnabled =
+            value && Runtime.Settings.TakeOverFnKeys;
         _gpuMode.IsEnabled = value && Runtime.Report?.IsAvailable(FeatureIds.GpuMode) != false;
+    }
+
+    private void OnFnKeyTakeoverChanged(object? sender, EventArgs args)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+                OnFnKeyTakeoverChanged(sender, args)));
+            return;
+        }
+        SyncRuntimeControls();
     }
 
     private void ApplyStrategyVisibility(FanControlMode mode)
@@ -2136,6 +2448,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         _disposed = true;
         Runtime.SnapshotChanged -= OnSnapshotChanged;
+        Runtime.FnKeyTakeoverChanged -= OnFnKeyTakeoverChanged;
         base.Dispose();
     }
 

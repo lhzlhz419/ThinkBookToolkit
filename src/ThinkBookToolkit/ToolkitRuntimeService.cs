@@ -71,6 +71,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly DispatcherTimer _powerSettingsLockTimer = new();
     private readonly SemaphoreSlim _powerSettingsGate = new(1, 1);
     private readonly FanWatchdogClient _fanWatchdog = new();
+    private readonly HybridAutoGpuManager _hybridAutoGpu = new();
+    private readonly bool _launchedAtStartup;
+    private readonly bool _persistSystemSessionState;
+    private readonly LenovoFnKeyManager _fnKeyManager;
     private MainWindow? _fanRuntime;
     private TemperatureReader? _temperatureReader;
     private ToolkitMainWindow? _window;
@@ -82,34 +86,53 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private GpuModeState? _cachedGpuMode;
     private DateTimeOffset _lastBatteryRefresh;
     private DateTimeOffset _lastGpuRefresh;
+    private DateTimeOffset _nextGpuOverclockRetry;
     private readonly string _bootSessionId;
     private bool _polling;
     private bool _powerSettingsLockBusy;
     private bool _fanPerformanceLinkBusy;
+    private int _fanPerformanceModeChangeGeneration;
     private int _systemSessionEnding;
     private ItsMode _lastFanLinkedPerformanceMode = ItsMode.Unknown;
+    private ItsMode? _confirmedPerformanceModeDuringRefresh;
     private string _lastPowerSettingsLockError = string.Empty;
     private bool _disposed;
     private bool _systemThemeSubscribed;
+    private bool _powerModeSubscribed;
+    private FnKeyNotificationWindow? _fnKeyNotification;
+    private bool? _fnKeyNotificationDark;
 
-    public ToolkitRuntimeService(AppSettings settings)
+    public ToolkitRuntimeService(
+        AppSettings settings,
+        bool launchedAtStartup = false,
+        bool persistSystemSessionState = true)
     {
         Settings = settings;
+        _launchedAtStartup = launchedAtStartup;
+        _persistSystemSessionState = persistSystemSessionState;
+        _fnKeyManager = new LenovoFnKeyManager(this);
         _bootSessionId = GpuModeRestartState.CurrentBootSessionId;
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
         _pollTimer.Tick += async (_, _) => await RefreshAsync();
         _powerSettingsLockTimer.Tick += async (_, _) =>
             await EnforcePowerSettingsLockAsync();
+        _hybridAutoGpu.PresenceChanged += OnDiscreteGpuPresenceChanged;
         SyncPollingInterval();
         SyncSystemThemeSubscription();
     }
 
     public AppSettings Settings { get; }
 
+    internal static TimeSpan PerformanceFanStrategyApplyDelay { get; } =
+        TimeSpan.FromSeconds(2);
+
     internal PowerSettingsLockSelection CurrentPowerSettingsLocks =>
         CurrentPowerModeLock(create: false)?.Locks ??
         new PowerSettingsLockSelection();
+
+    internal PowerSettingsState? CurrentPowerSettingsLockTarget =>
+        CurrentPowerModeLock(create: false)?.Target;
 
     public FeatureAvailabilityReport? Report { get; private set; }
 
@@ -193,6 +216,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public event EventHandler? OverviewLayoutChanged;
 
+    public event EventHandler? FnKeyTakeoverChanged;
+
     public event EventHandler<string>? StatusChanged;
 
     internal void SetReportForTesting(FeatureAvailabilityReport report)
@@ -254,6 +279,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
             $"Feature detection completed: {Report.Items.Count(item => item.Usable)}/{Report.Items.Count} usable.");
         FeatureAvailabilityCache.Current = Report;
 
+        // This must run before MainWindow raises Loaded: the embedded fan
+        // runtime creates its TemperatureReader from that event.
+        await RefreshHybridGpuProtectionAsync(forceGpuModeRefresh: true);
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        _powerModeSubscribed = true;
+
         if (Report.IsAvailable(FeatureIds.FanControl))
         {
             _fanRuntime = new MainWindow(
@@ -279,6 +310,20 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
         AvailabilityChanged?.Invoke(this, EventArgs.Empty);
 
+        await RestoreShutdownPerformanceModeAsync();
+        if (Settings.TakeOverFnKeys)
+        {
+            var error = await _fnKeyManager.StartAsync();
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                Settings.TakeOverFnKeys = false;
+                TrySaveSettingsAfterBackgroundChange(
+                    "Fn-key takeover startup rollback");
+                SetStatus(L(
+                    "Fn 快捷键接管启动失败：",
+                    "Fn-key takeover could not be started: ") + error);
+            }
+        }
         await ApplyPendingGpuModeAsync();
         await RefreshAsync(force: true);
         _ = RefreshWarrantyAsync();
@@ -331,8 +376,21 @@ internal sealed class ToolkitRuntimeService : IDisposable
         ExitRequested = true;
         _pollTimer.Stop();
         _powerSettingsLockTimer.Stop();
+        _hybridAutoGpu.Suspend();
         ToolkitLog.Info(
             $"Windows session is ending ({reason}); stopping background controls.");
+
+        if (_persistSystemSessionState &&
+            ShouldRecordShutdownPerformanceMode(reason))
+            RecordShutdownPerformanceMode();
+        var hotkeysRestoreError =
+            _fnKeyManager.StopAndRestoreSynchronously(startService: false);
+        if (!string.IsNullOrWhiteSpace(hotkeysRestoreError))
+        {
+            ToolkitLog.Error(
+                "Lenovo Hotkeys could not be restored during Windows shutdown.",
+                new InvalidOperationException(hotkeysRestoreError));
+        }
 
         var fansRestored = true;
         if (_fanRuntime is not null &&
@@ -363,6 +421,14 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return;
         _pollTimer.Stop();
         _powerSettingsLockTimer.Stop();
+        var hotkeysRestoreError = await _fnKeyManager.StopAsync(
+            restoreLenovoHotkeys: true);
+        if (!string.IsNullOrWhiteSpace(hotkeysRestoreError))
+        {
+            ToolkitLog.Warning(
+                "Lenovo Hotkeys could not be restored before exit: " +
+                hotkeysRestoreError);
+        }
         if (_fanRuntime is not null)
             await _fanRuntime.RuntimeRestoreFirmwareAutoAsync();
         _fanWatchdog.TryDisarm(out _);
@@ -413,6 +479,117 @@ internal sealed class ToolkitRuntimeService : IDisposable
             _powerSettingsGate.Release();
         }
     }
+
+    public Task<GpuWorkerCommandResponse>
+        QueryDiscreteGpuApplicationsAsync() =>
+        Task.Run(() => _fanRuntime is not null
+            ? _fanRuntime.RuntimeQueryDiscreteGpuApplications()
+            : _temperatureReader?.QueryDiscreteGpuApplications() ??
+              GpuWorkerCommandResponse.Failure(
+                  L("独立显卡监控不可用。", "Discrete GPU monitoring is unavailable.")));
+
+    public async Task<GpuWorkerCommandResponse>
+        KillDiscreteGpuApplicationsAsync()
+    {
+        var result = await Task.Run(() => _fanRuntime is not null
+            ? _fanRuntime.RuntimeKillDiscreteGpuApplications()
+            : _temperatureReader?.KillDiscreteGpuApplications() ??
+              GpuWorkerCommandResponse.Failure(
+                  L("独立显卡监控不可用。", "Discrete GPU monitoring is unavailable.")));
+        if (result.AffectedProcesses > 0)
+            await RefreshAsync(force: true);
+        return result;
+    }
+
+    public async Task<string?> SetGpuOverclockEnabledAsync(bool enabled)
+    {
+        if (Snapshot.Temperatures?.DiscreteGpuState ==
+            DiscreteGpuActivityState.Off)
+        {
+            return L(
+                "独立显卡已关闭，无法更改超频状态。",
+                "The discrete GPU is off, so its overclock state cannot be changed.");
+        }
+
+        var previous = GpuOverclockPolicy.Normalize(Settings.GpuOverclock);
+        var result = enabled
+            ? await ExecuteGpuOverclockAsync(previous, force: true)
+            : await ResetGpuOverclockAsync();
+        if (!result.Success)
+            return result.Error;
+
+        previous.Enabled = enabled;
+        try
+        {
+            Settings.GpuOverclock = previous;
+            CurveProfileStore.SaveSettings(Settings);
+            _nextGpuOverclockRetry = DateTimeOffset.MinValue;
+            return null;
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error("GPU overclock state could not be saved.", ex);
+            return ex.Message;
+        }
+    }
+
+    public async Task<string?> SaveGpuOverclockSettingsAsync(
+        GpuOverclockSettings settings,
+        bool applyEvenIfDisabled = false)
+    {
+        if (!GpuOverclockPolicy.TryValidate(settings, out var error))
+            return error;
+        settings = GpuOverclockPolicy.Normalize(settings);
+
+        var enabled = Settings.GpuOverclock.Enabled;
+        settings.Enabled = enabled;
+        if (enabled || applyEvenIfDisabled)
+        {
+            if (Snapshot.Temperatures?.DiscreteGpuState ==
+                DiscreteGpuActivityState.Off)
+            {
+                return L(
+                    "独立显卡已关闭，当前设置无法应用。",
+                    "The discrete GPU is off, so these settings cannot be applied.");
+            }
+            var result = await ExecuteGpuOverclockAsync(
+                settings,
+                force: true);
+            if (!result.Success)
+                return result.Error;
+        }
+
+        var previous = Settings.GpuOverclock;
+        try
+        {
+            Settings.GpuOverclock = settings;
+            CurveProfileStore.SaveSettings(Settings);
+            _nextGpuOverclockRetry = DateTimeOffset.MinValue;
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Settings.GpuOverclock = previous;
+            ToolkitLog.Error("GPU overclock settings could not be saved.", ex);
+            return ex.Message;
+        }
+    }
+
+    private Task<GpuWorkerCommandResponse> ExecuteGpuOverclockAsync(
+        GpuOverclockSettings settings,
+        bool force = false) =>
+        Task.Run(() => _fanRuntime is not null
+            ? _fanRuntime.RuntimeApplyGpuOverclock(settings, force)
+            : _temperatureReader?.ApplyGpuOverclock(settings, force) ??
+              GpuWorkerCommandResponse.Failure(
+                  L("独立显卡监控不可用。", "Discrete GPU monitoring is unavailable.")));
+
+    private Task<GpuWorkerCommandResponse> ResetGpuOverclockAsync() =>
+        Task.Run(() => _fanRuntime is not null
+            ? _fanRuntime.RuntimeResetGpuOverclock()
+            : _temperatureReader?.ResetGpuOverclock() ??
+              GpuWorkerCommandResponse.Failure(
+                  L("独立显卡监控不可用。", "Discrete GPU monitoring is unavailable.")));
 
     public bool TrySetPowerSettingLock(
         PowerSetting setting,
@@ -512,9 +689,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
         if (_polling || _disposed)
             return;
         ItsMode? modeToLink = null;
+        int? modeToLinkGeneration = null;
         _polling = true;
         try
         {
+            await RefreshHybridGpuProtectionAsync(forceGpuModeRefresh: force);
+
             if (_fanRuntime is not null && force)
                 await _fanRuntime.RuntimeRefreshAsync();
 
@@ -523,6 +703,24 @@ internal sealed class ToolkitRuntimeService : IDisposable
             var fans = performance?.Fans;
             if (temperatures is null && _temperatureReader is not null)
                 temperatures = await Task.Run(_temperatureReader.Read);
+            if (Settings.GpuOverclock.Enabled &&
+                GpuTelemetryControl.Mode == GpuTelemetryMode.Full &&
+                (temperatures?.DiscreteGpuState is
+                    DiscreteGpuActivityState.Active or
+                    DiscreteGpuActivityState.Inactive) &&
+                DateTimeOffset.UtcNow >= _nextGpuOverclockRetry)
+            {
+                var result = await ExecuteGpuOverclockAsync(
+                    Settings.GpuOverclock);
+                if (!result.Success)
+                {
+                    ToolkitLog.Warning(
+                        "Saved GPU overclock settings could not be reapplied: " +
+                        result.Error);
+                    _nextGpuOverclockRetry =
+                        DateTimeOffset.UtcNow.AddSeconds(30);
+                }
+            }
             var now = DateTimeOffset.UtcNow;
             BatteryInformationSnapshot? battery = _cachedBattery;
             if (Report?.IsAvailable(FeatureIds.BatteryInformation) == true)
@@ -549,7 +747,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 }
             }
 
-            var itsMode = performance?.ItsMode ?? ItsMode.Unknown;
+            var itsMode = _confirmedPerformanceModeDuringRefresh ??
+                          performance?.ItsMode ??
+                          ItsMode.Unknown;
             if (Report?.IsAvailable(FeatureIds.PerformanceMode) == true &&
                 itsMode == ItsMode.Unknown)
             {
@@ -561,8 +761,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 _cachedGpuMode?.SupportedModes ?? [];
             if (Report?.IsAvailable(FeatureIds.GpuMode) == true)
             {
-                if (force ||
-                    _cachedGpuMode is null ||
+                if (_cachedGpuMode is null ||
                     now - _lastGpuRefresh >= TimeSpan.FromSeconds(5))
                 {
                     _cachedGpuMode = await Task.Run(GpuModeController.ReadState);
@@ -572,6 +771,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 gpuMode = gpu.CurrentMode;
                 gpuModes = gpu.SupportedModes;
             }
+
+            if (battery is not null)
+                await _hybridAutoGpu.UpdateAsync(gpuMode, battery.IsAcConnected);
+            else
+                await _hybridAutoGpu.ObserveAsync();
 
             Snapshot = new(
                 temperatures,
@@ -600,6 +804,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             {
                 _lastFanLinkedPerformanceMode = itsMode;
                 modeToLink = itsMode;
+                modeToLinkGeneration = ++_fanPerformanceModeChangeGeneration;
             }
         }
         catch (Exception ex)
@@ -617,8 +822,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             _polling = false;
         }
-        if (modeToLink.HasValue)
-            await ApplyFanStrategyForPerformanceModeAsync(modeToLink.Value);
+        if (modeToLink.HasValue && modeToLinkGeneration.HasValue)
+        {
+            _ = ApplyFanStrategyForPerformanceModeAsync(
+                modeToLink.Value,
+                modeToLinkGeneration.Value);
+        }
     }
 
     private async Task RefreshWarrantyAsync()
@@ -639,8 +848,93 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    private async Task RestoreShutdownPerformanceModeAsync()
+    {
+        if (!_launchedAtStartup ||
+            !PerformanceModeCycle.TryParseSelectableMode(
+                Settings.ShutdownPerformanceMode,
+                out var savedMode))
+        {
+            return;
+        }
+
+        var current = await Task.Run(() => new ItsModeDetector().ReadMode());
+        string? error = null;
+        if (current != savedMode)
+            error = await SetItsModeAsync(savedMode);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            ToolkitLog.Warning(
+                $"The shutdown performance mode {savedMode} could not be restored: {error}");
+            return;
+        }
+
+        Settings.ShutdownPerformanceMode = string.Empty;
+        TrySaveSettingsAfterBackgroundChange(
+            "shutdown performance-mode restore");
+        ToolkitLog.Info(
+            $"Restored the shutdown performance mode: {savedMode}.");
+    }
+
+    private void RecordShutdownPerformanceMode()
+    {
+        var mode = Snapshot.ItsMode;
+        if (!PerformanceModeCycle.IsSelectableMode(mode))
+        {
+            try
+            {
+                mode = new ItsModeDetector().ReadMode();
+            }
+            catch (Exception ex)
+            {
+                ToolkitLog.Warning(
+                    "The performance mode could not be read during shutdown: " +
+                    ex.Message);
+            }
+        }
+        if (!PerformanceModeCycle.IsSelectableMode(mode))
+            return;
+        Settings.ShutdownPerformanceMode = mode.ToString();
+        TrySaveSettingsAfterBackgroundChange(
+            "shutdown performance-mode capture");
+        ToolkitLog.Info(
+            $"Recorded the shutdown performance mode: {mode}.");
+    }
+
+    internal static bool ShouldRecordShutdownPerformanceMode(
+        ReasonSessionEnding reason) =>
+        reason == ReasonSessionEnding.Shutdown;
+
+    private void TrySaveSettingsAfterBackgroundChange(string operation)
+    {
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                $"Settings could not be saved after {operation}.",
+                ex);
+        }
+    }
+
     public async Task<string?> SetItsModeAsync(ItsMode mode)
     {
+        var isAcConnected = Snapshot.Battery?.IsAcConnected;
+        if (BatteryInformationReader.TryGetAcConnectionState(
+                out var currentAcState))
+        {
+            isAcConnected = currentAcState;
+        }
+        if (!PerformanceModeAvailability.CanSelect(
+                mode,
+                isAcConnected))
+        {
+            return L(
+                "使用电池时无法选择极客模式",
+                "Geek mode is unavailable while running on battery");
+        }
         try
         {
             await Task.Run(() => ItsModeController.SetMode(mode));
@@ -651,7 +945,20 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 {
                     Snapshot = Snapshot with { ItsMode = mode };
                     SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                    await RefreshAsync(force: true);
+                    _confirmedPerformanceModeDuringRefresh = mode;
+                    _lastFanLinkedPerformanceMode = mode;
+                    var generation = ++_fanPerformanceModeChangeGeneration;
+                    _ = ApplyFanStrategyForPerformanceModeAsync(
+                        mode,
+                        generation);
+                    try
+                    {
+                        await RefreshAsync(force: true);
+                    }
+                    finally
+                    {
+                        _confirmedPerformanceModeDuringRefresh = null;
+                    }
                     SyncPowerSettingsLockTimer();
                     await EnforcePowerSettingsLockAsync();
                     return null;
@@ -666,6 +973,227 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return ex.Message;
         }
     }
+
+    internal async Task TogglePerformanceModeFromFnAsync()
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null &&
+            !dispatcher.HasShutdownStarted &&
+            !dispatcher.CheckAccess())
+        {
+            await dispatcher
+                .InvokeAsync(TogglePerformanceModeFromFnAsync)
+                .Task
+                .Unwrap();
+            return;
+        }
+        var isAcConnected = Snapshot.Battery?.IsAcConnected ?? true;
+        if (BatteryInformationReader.TryGetAcConnectionState(
+                out var currentAcState))
+        {
+            isAcConnected = currentAcState;
+        }
+        var current = Snapshot.ItsMode;
+        if (!PerformanceModeCycle.IsSelectableMode(current))
+            current = await Task.Run(() => new ItsModeDetector().ReadMode());
+        var next = PerformanceModeCycle.Next(
+            Settings.FnPerformanceModeOrder,
+            Settings.FnPerformanceModeEnabled,
+            current,
+            isAcConnected);
+        if (!PerformanceModeCycle.IsSelectableMode(next))
+            return;
+        ShowFnKeyNotification(
+            string.Empty,
+            PerformanceModeDisplayName(next));
+        var error = await SetItsModeAsync(next);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            SetStatus(
+                L("性能模式切换失败：", "Performance-mode switch failed: ") +
+                error);
+        }
+    }
+
+    internal void ShowFnKeyNotification(string title, string detail)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.HasShutdownStarted)
+            return;
+        if (!dispatcher.CheckAccess())
+        {
+            dispatcher.BeginInvoke(new Action(() =>
+                ShowFnKeyNotification(title, detail)));
+            return;
+        }
+        if (_fnKeyNotification is null || _fnKeyNotificationDark != IsDark)
+        {
+            try { _fnKeyNotification?.Close(); } catch { }
+            _fnKeyNotification = new FnKeyNotificationWindow(IsDark);
+            _fnKeyNotificationDark = IsDark;
+        }
+        _fnKeyNotification.ShowTemporarily(title, detail);
+    }
+
+    internal async Task<string?> SetFnKeyTakeoverAsync(bool enabled)
+    {
+        if (enabled == Settings.TakeOverFnKeys &&
+            enabled == _fnKeyManager.IsRunning)
+        {
+            return null;
+        }
+        if (enabled)
+        {
+            var startError = await _fnKeyManager.StartAsync();
+            if (!string.IsNullOrWhiteSpace(startError))
+                return startError;
+            Settings.TakeOverFnKeys = true;
+            try
+            {
+                CurveProfileStore.SaveSettings(Settings);
+            }
+            catch (Exception ex)
+            {
+                Settings.TakeOverFnKeys = false;
+                await _fnKeyManager.StopAsync(restoreLenovoHotkeys: true);
+                return ex.Message;
+            }
+        }
+        else
+        {
+            var stopError = await _fnKeyManager.StopAsync(
+                restoreLenovoHotkeys: true);
+            if (!string.IsNullOrWhiteSpace(stopError))
+                return stopError;
+            Settings.TakeOverFnKeys = false;
+            try
+            {
+                CurveProfileStore.SaveSettings(Settings);
+            }
+            catch (Exception ex)
+            {
+                Settings.TakeOverFnKeys = true;
+                await _fnKeyManager.StartAsync();
+                return ex.Message;
+            }
+        }
+        FnKeyTakeoverChanged?.Invoke(this, EventArgs.Empty);
+        return null;
+    }
+
+    internal bool TrySetPerformanceModeOrder(
+        IReadOnlyList<ItsMode> order,
+        out string? error)
+        => TrySetPerformanceModeConfiguration(
+            order,
+            Settings.FnPerformanceModeEnabled,
+            out error);
+
+    internal bool TrySetPerformanceModeConfiguration(
+        IReadOnlyList<ItsMode> order,
+        IReadOnlyCollection<ItsMode> enabled,
+        out string? error)
+    {
+        if (!enabled.Any(PerformanceModeCycle.IsSelectableMode))
+        {
+            error = L(
+                "至少需要启用一个性能模式。",
+                "At least one performance mode must remain enabled.");
+            return false;
+        }
+        var previousOrder = Settings.FnPerformanceModeOrder;
+        var previousEnabled = Settings.FnPerformanceModeEnabled;
+        Settings.FnPerformanceModeOrder =
+            PerformanceModeCycle.NormalizeOrder(order);
+        Settings.FnPerformanceModeEnabled =
+            PerformanceModeCycle.NormalizeEnabled(enabled);
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.FnPerformanceModeOrder = previousOrder;
+            Settings.FnPerformanceModeEnabled = previousEnabled;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal bool TrySetLockKeyOsd(
+        InputSettingKind kind,
+        bool enabled,
+        out string? error)
+    {
+        if (kind is not InputSettingKind.CapsLockOsd and
+            not InputSettingKind.NumLockOsd)
+        {
+            error = "The requested setting is not a lock-key OSD setting.";
+            return false;
+        }
+        var previous = kind == InputSettingKind.CapsLockOsd
+            ? Settings.ShowCapsLockOsd
+            : Settings.ShowNumLockOsd;
+        if (kind == InputSettingKind.CapsLockOsd)
+            Settings.ShowCapsLockOsd = enabled;
+        else
+            Settings.ShowNumLockOsd = enabled;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (kind == InputSettingKind.CapsLockOsd)
+                Settings.ShowCapsLockOsd = previous;
+            else
+                Settings.ShowNumLockOsd = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal bool TrySetRefreshRateCycle(
+        IEnumerable<uint> rates,
+        out string? error)
+    {
+        var normalized = RefreshRateController.NormalizeConfiguredRates(
+            rates);
+        if (normalized.Count == 0)
+        {
+            error = L(
+                "至少需要启用一个刷新率。",
+                "At least one refresh rate must remain enabled.");
+            return false;
+        }
+        var previous = Settings.RefreshRateCycleHz;
+        Settings.RefreshRateCycleHz = normalized;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.RefreshRateCycleHz = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private string PerformanceModeDisplayName(ItsMode mode) => mode switch
+    {
+        ItsMode.PowerSaving => L("省电模式", "Cool"),
+        ItsMode.Intelligent => L("智能模式", "Auto"),
+        ItsMode.Performance => L("性能模式", "Performance"),
+        ItsMode.Geek => L("极客模式", "Geek"),
+        _ => L("未知", "Unknown")
+    };
 
     public async Task<string?> SetGpuModeAsync(GpuWorkingMode target)
     {
@@ -735,11 +1263,29 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return L("风扇功能不可用", "Fan controls are unavailable");
         try
         {
-            await _fanRuntime.RuntimeSetControlEnabledAsync(enabled);
-            await RefreshAsync(force: true);
-            return enabled
-                ? await ApplyPerformanceModeForFanControlAsync()
-                : null;
+            async Task<string?> ApplyAsync()
+            {
+                await _fanRuntime.RuntimeSetControlEnabledAsync(enabled);
+                await RefreshAsync(force: true);
+                return null;
+            }
+
+            if (!enabled)
+                return await ApplyAsync();
+
+            var state = _fanRuntime.RuntimeSnapshot();
+            var mode = state.Strategy switch
+            {
+                ControlStrategy.FanCurve => FanControlMode.FanCurve,
+                ControlStrategy.AdvancedCurve =>
+                    FanControlMode.AdvancedCurve,
+                _ => FanControlMode.FixedRpm
+            };
+            return await RunFanActionAfterLinkedPerformanceModeAsync(
+                _fanRuntime.RuntimeWouldUseFanControl(
+                    mode,
+                    Snapshot.ItsMode),
+                ApplyAsync);
         }
         catch (Exception ex)
         {
@@ -755,10 +1301,21 @@ internal sealed class ToolkitRuntimeService : IDisposable
         if (mode == FanControlMode.FirmwareAutomatic)
             return await RestoreFirmwareAutoAsync();
 
+        return await RunFanActionAfterLinkedPerformanceModeAsync(
+            _fanRuntime.RuntimeWouldUseFanControl(mode, Snapshot.ItsMode),
+            () => ApplyFanModeCoreAsync(mode));
+    }
+
+    private async Task<string?> ApplyFanModeCoreAsync(FanControlMode mode)
+    {
+        var fanRuntime = _fanRuntime;
+        if (fanRuntime is null)
+            return L("风扇功能不可用", "Fan controls are unavailable");
+
         try
         {
             if (Snapshot.FanControlRunning || Snapshot.FullSpeed)
-                await _fanRuntime.RuntimeRestoreFirmwareAutoAsync();
+                await fanRuntime.RuntimeRestoreFirmwareAutoAsync();
 
             var strategy = mode switch
             {
@@ -766,7 +1323,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 FanControlMode.AdvancedCurve => ControlStrategy.AdvancedCurve,
                 _ => ControlStrategy.FixedRpm
             };
-            if (!_fanRuntime.RuntimeSetStrategy(strategy))
+            if (!fanRuntime.RuntimeSetStrategy(strategy))
             {
                 return L(
                     "后台未接受新的控制策略。",
@@ -777,9 +1334,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 strategy is ControlStrategy.FanCurve or
                     ControlStrategy.AdvancedCurve;
             CurveProfileStore.SaveSettings(Settings);
-            await _fanRuntime.RuntimeSetControlEnabledAsync(true);
+            await fanRuntime.RuntimeSetControlEnabledAsync(true);
             await RefreshAsync(force: true);
-            return await ApplyPerformanceModeForFanControlAsync();
+            return null;
         }
         catch (Exception ex)
         {
@@ -883,11 +1440,18 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return L("风扇功能不可用", "Fan controls are unavailable");
         try
         {
-            await _fanRuntime.RuntimeSetFullSpeedAsync(enabled);
-            await RefreshAsync(force: true);
+            async Task<string?> ApplyAsync()
+            {
+                await _fanRuntime.RuntimeSetFullSpeedAsync(enabled);
+                await RefreshAsync(force: true);
+                return null;
+            }
+
             return enabled
-                ? await ApplyPerformanceModeForFanControlAsync()
-                : null;
+                ? await RunFanActionAfterLinkedPerformanceModeAsync(
+                    willUseFanControl: true,
+                    ApplyAsync)
+                : await ApplyAsync();
         }
         catch (Exception ex)
         {
@@ -895,14 +1459,26 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
-    public bool TrySetStartWithWindows(bool value, out string? error)
+    internal StartupLaunchMode CurrentStartupMode =>
+        !Settings.StartWithWindows
+            ? StartupLaunchMode.Disabled
+            : Settings.DelayStartup
+                ? StartupLaunchMode.Delayed
+                : StartupLaunchMode.Enabled;
+
+    public bool TrySetStartupMode(
+        StartupLaunchMode value,
+        out string? error)
     {
-        var old = Settings.StartWithWindows;
-        Settings.StartWithWindows = value;
+        var oldEnabled = Settings.StartWithWindows;
+        var oldDelayed = Settings.DelayStartup;
+        Settings.StartWithWindows = value != StartupLaunchMode.Disabled;
+        Settings.DelayStartup = value == StartupLaunchMode.Delayed;
         error = MainWindow.ApplyStartupTaskSetting(Settings);
         if (!string.IsNullOrWhiteSpace(error))
         {
-            Settings.StartWithWindows = old;
+            Settings.StartWithWindows = oldEnabled;
+            Settings.DelayStartup = oldDelayed;
             var rollbackError = MainWindow.ApplyStartupTaskSetting(Settings);
             if (!string.IsNullOrWhiteSpace(rollbackError))
                 error += L("；系统任务回滚失败：", "; scheduled-task rollback failed: ") + rollbackError;
@@ -915,7 +1491,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         catch (Exception ex)
         {
-            Settings.StartWithWindows = old;
+            Settings.StartWithWindows = oldEnabled;
+            Settings.DelayStartup = oldDelayed;
             var rollbackError = MainWindow.ApplyStartupTaskSetting(Settings);
             error = ex.Message + (string.IsNullOrWhiteSpace(rollbackError)
                 ? string.Empty
@@ -923,6 +1500,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return false;
         }
     }
+
+    public bool TrySetStartWithWindows(bool value, out string? error) =>
+        TrySetStartupMode(
+            value ? StartupLaunchMode.Enabled : StartupLaunchMode.Disabled,
+            out error);
 
     public bool TrySetStartToTray(bool value, out string? error)
     {
@@ -1049,12 +1631,32 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
-    private async Task ApplyFanStrategyForPerformanceModeAsync(ItsMode mode)
+    private async Task ApplyFanStrategyForPerformanceModeAsync(
+        ItsMode mode,
+        int generation)
     {
-        var link = PerformanceFanLinkDefaults.Normalize(
+        try
+        {
+            await ApplyFanStrategyForPerformanceModeCoreAsync(
+                mode,
+                generation);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                "Delayed performance-mode fan linkage failed.",
+                ex);
+        }
+    }
+
+    private async Task ApplyFanStrategyForPerformanceModeCoreAsync(
+        ItsMode mode,
+        int generation)
+    {
+        var initialLink = PerformanceFanLinkDefaults.Normalize(
             Settings.PerformanceFanLink);
         if (_fanPerformanceLinkBusy ||
-            !link.SwitchFanStrategyWithPerformanceMode ||
+            !initialLink.SwitchFanStrategyWithPerformanceMode ||
             Array.IndexOf(
                 PerformanceFanLinkDefaults.SupportedModes,
                 mode) < 0 ||
@@ -1062,6 +1664,27 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             return;
         }
+
+        ToolkitLog.Info(
+            $"Performance mode {mode} was detected; delaying its linked fan strategy by {PerformanceFanStrategyApplyDelay.TotalSeconds:0} seconds.");
+        await Task.Delay(PerformanceFanStrategyApplyDelay);
+        if (_disposed ||
+            generation != _fanPerformanceModeChangeGeneration ||
+            _fanPerformanceLinkBusy)
+        {
+            return;
+        }
+        if (!await IsPerformanceModeConfirmedAsync(mode))
+        {
+            ToolkitLog.Warning(
+                $"Linked fan strategy for {mode} was cancelled because the performance mode was no longer confirmed after the delay.");
+            return;
+        }
+
+        var link = PerformanceFanLinkDefaults.Normalize(
+            Settings.PerformanceFanLink);
+        if (!link.SwitchFanStrategyWithPerformanceMode)
+            return;
 
         var selection = PerformanceFanLinkDefaults.SelectionFor(link, mode);
         _fanPerformanceLinkBusy = true;
@@ -1079,7 +1702,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     return;
                 }
             }
-            var error = await SetFanModeAsync(selection.Mode);
+            var error = selection.Mode == FanControlMode.FirmwareAutomatic
+                ? await RestoreFirmwareAutoAsync()
+                : await ApplyFanModeCoreAsync(selection.Mode);
             if (!string.IsNullOrWhiteSpace(error))
             {
                 ToolkitLog.Warning(
@@ -1095,34 +1720,78 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
-    private async Task<string?> ApplyPerformanceModeForFanControlAsync()
+    private async Task<string?> RunFanActionAfterLinkedPerformanceModeAsync(
+        bool willUseFanControl,
+        Func<Task<string?>> applyFanAction)
     {
         var link = PerformanceFanLinkDefaults.Normalize(
             Settings.PerformanceFanLink);
-        if (_fanPerformanceLinkBusy ||
-            link.FanControlTargetMode == ItsMode.Unknown ||
-            !IsUsingFanControl())
+        if (link.FanControlTargetMode == ItsMode.Unknown ||
+            !willUseFanControl)
         {
-            return null;
+            return await applyFanAction();
         }
 
         var current = Snapshot.ItsMode;
         if (PerformanceFanLinkDefaults.IsNoSwitchMode(link, current))
-            return null;
+            return await applyFanAction();
+
+        if (_fanPerformanceLinkBusy)
+        {
+            return L(
+                "另一个性能模式与风扇联动操作正在进行，请稍候。",
+                "Another performance-mode and fan linkage operation is in progress.");
+        }
 
         _fanPerformanceLinkBusy = true;
         try
         {
             var error = await SetItsModeAsync(link.FanControlTargetMode);
-            return string.IsNullOrWhiteSpace(error)
-                ? null
-                : L(
-                    "风扇策略已切换，但关联的性能模式未能应用：",
-                    "The fan strategy changed, but its linked performance mode could not be applied: ") + error;
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                return L(
+                    "关联的性能模式未能应用，风扇设置未更改：",
+                    "The linked performance mode could not be applied, so the fan setting was not changed: ") + error;
+            }
+
+            ToolkitLog.Info(
+                $"Linked performance mode {link.FanControlTargetMode} was confirmed; delaying the requested fan action by {PerformanceFanStrategyApplyDelay.TotalSeconds:0} seconds.");
+            await Task.Delay(PerformanceFanStrategyApplyDelay);
+            var currentLink = PerformanceFanLinkDefaults.Normalize(
+                Settings.PerformanceFanLink);
+            if (_disposed ||
+                currentLink.FanControlTargetMode !=
+                    link.FanControlTargetMode ||
+                !await IsPerformanceModeConfirmedAsync(
+                    link.FanControlTargetMode))
+            {
+                return L(
+                    "等待期间性能模式发生变化，风扇设置未更改。",
+                    "The performance mode changed during the delay, so the fan setting was not changed.");
+            }
+
+            return await applyFanAction();
         }
         finally
         {
             _fanPerformanceLinkBusy = false;
+        }
+    }
+
+    private static async Task<bool> IsPerformanceModeConfirmedAsync(
+        ItsMode expectedMode)
+    {
+        try
+        {
+            return await Task.Run(
+                       () => new ItsModeDetector().ReadMode()) ==
+                   expectedMode;
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning(
+                $"Performance mode could not be confirmed before applying a linked fan action: {ex.Message}");
+            return false;
         }
     }
 
@@ -1165,6 +1834,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             _cachedPowerSettings = null;
             _lastBatteryRefresh = DateTimeOffset.MinValue;
             _lastGpuRefresh = DateTimeOffset.MinValue;
+            _nextGpuOverclockRetry = DateTimeOffset.MinValue;
             await RefreshAsync(force: true);
             ToolkitLog.Info("Data readers were restarted by the user.");
             return null;
@@ -1435,6 +2105,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     current,
                     target!,
                     selection));
+                var restored = PowerSettingsController.ApplyLockedValues(
+                    current,
+                    target!,
+                    selection);
+                _cachedPowerSettings = restored;
+                Snapshot = Snapshot with { PowerSettings = restored };
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
             }
             _lastPowerSettingsLockError = string.Empty;
         }
@@ -1523,6 +2200,110 @@ internal sealed class ToolkitRuntimeService : IDisposable
         else
             SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _systemThemeSubscribed = shouldSubscribe;
+    }
+
+    private async Task RefreshHybridGpuProtectionAsync(
+        bool forceGpuModeRefresh)
+    {
+        GpuWorkingMode? mode = _cachedGpuMode?.CurrentMode;
+        var now = DateTimeOffset.UtcNow;
+        if (Report?.IsAvailable(FeatureIds.GpuMode) == true &&
+            (forceGpuModeRefresh ||
+             _cachedGpuMode is null ||
+             now - _lastGpuRefresh >= TimeSpan.FromSeconds(5)))
+        {
+            try
+            {
+                _cachedGpuMode = await Task.Run(GpuModeController.ReadState);
+                _lastGpuRefresh = now;
+                mode = _cachedGpuMode.CurrentMode;
+            }
+            catch (Exception ex)
+            {
+                ToolkitLog.Warning(
+                    "GPU working mode could not be refreshed for hybrid GPU protection: " +
+                    ex.Message);
+            }
+        }
+
+        var isAcConnected = _cachedBattery?.IsAcConnected ?? true;
+        if (BatteryInformationReader.TryGetAcConnectionState(
+                out var currentAcState))
+        {
+            isAcConnected = currentAcState;
+        }
+
+        await _hybridAutoGpu.UpdateAsync(mode, isAcConnected);
+    }
+
+    private void OnPowerModeChanged(
+        object sender,
+        PowerModeChangedEventArgs args)
+    {
+        if (_disposed)
+            return;
+
+        if (args.Mode == PowerModes.Suspend)
+        {
+            ToolkitLog.Info(
+                "Windows suspend event received; pausing GPU telemetry.");
+            _hybridAutoGpu.Suspend();
+            return;
+        }
+
+        if (args.Mode is not (PowerModes.StatusChange or PowerModes.Resume))
+            return;
+
+        ToolkitLog.Info("Windows power event received: " + args.Mode + ".");
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.HasShutdownStarted)
+            return;
+        dispatcher.BeginInvoke(
+            DispatcherPriority.Send,
+            new Action(() =>
+            {
+                _ = HandlePowerModeChangedAsync();
+            }));
+    }
+
+    private async Task HandlePowerModeChangedAsync()
+    {
+        try
+        {
+            await RefreshHybridGpuProtectionAsync(
+                forceGpuModeRefresh: true);
+            await RefreshAsync(force: true);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                "Hybrid GPU power-event handling failed.",
+                ex);
+        }
+    }
+
+    private void OnDiscreteGpuPresenceChanged(
+        object? sender,
+        bool connected)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.HasShutdownStarted)
+            return;
+
+        dispatcher.BeginInvoke(
+            DispatcherPriority.Normal,
+            new Action(() =>
+            {
+                var message = connected
+                    ? L("独立显卡已连接", "The discrete GPU is connected")
+                    : L("独立显卡已断开连接", "The discrete GPU is disconnected");
+                SetStatus(message);
+                _trayIcon?.ShowBalloonTip(
+                    3000,
+                    "ThinkBook Toolkit",
+                    message,
+                    Forms.ToolTipIcon.Info);
+            }));
     }
 
     private void OnUserPreferenceChanged(
@@ -1692,7 +2473,18 @@ internal sealed class ToolkitRuntimeService : IDisposable
             SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             _systemThemeSubscribed = false;
         }
+        if (_powerModeSubscribed)
+        {
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            _powerModeSubscribed = false;
+        }
+        _hybridAutoGpu.PresenceChanged -= OnDiscreteGpuPresenceChanged;
+        _fnKeyManager.Dispose();
+        try { _fnKeyNotification?.Close(); } catch { }
+        _fnKeyNotification = null;
+        _fnKeyNotificationDark = null;
         _temperatureReader?.Dispose();
+        _hybridAutoGpu.Dispose();
         try { _fanRuntime?.Close(); } catch { }
         _fanRuntime = null;
         if (_trayIcon is not null)

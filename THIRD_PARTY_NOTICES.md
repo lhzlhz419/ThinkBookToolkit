@@ -9,17 +9,19 @@ and does not replace or modify those terms.
 
 | Component | Resolved version | License | Source |
 | --- | ---: | --- | --- |
-| LibreHardwareMonitorLib | 0.9.6 | MPL-2.0 | <https://github.com/LibreHardwareMonitor/LibreHardwareMonitor> |
-| DiskInfoToolkit | 2.1.0 | MPL-2.0 | <https://github.com/Blacktempel/DiskInfoToolkit> |
-| RAMSPDToolkit-NDD | 1.5.0 | MPL-2.0 | <https://github.com/Blacktempel/RAMSPDToolkit> |
-| BlackSharp.Core | 1.0.12 | MPL-2.0 | <https://github.com/Blacktempel/BlackSharp> |
+| LibreHardwareMonitorLib | 0.9.7-pre717 | MPL-2.0 | <https://github.com/LibreHardwareMonitor/LibreHardwareMonitor> |
+| DiskInfoToolkit | 2.1.2 | MPL-2.0 | <https://github.com/Blacktempel/DiskInfoToolkit> |
+| RAMSPDToolkit-NDD | 1.6.0 | MPL-2.0 | <https://github.com/Blacktempel/RAMSPDToolkit> |
+| BlackSharp.Core | 1.1.4 | MPL-2.0 | <https://github.com/Blacktempel/BlackSharp> |
 | HidSharp | 2.6.4 | Apache-2.0 | <https://www.zer7.com/software/hidsharp> |
+| LLT.NvAPIWrapper.Net | 1.0.0-pre8 | LGPL-3.0 | <https://github.com/LenovoLegionToolkit-Team/NvAPIWrapper> |
+| NAudio.Wasapi / NAudio.Core | 2.2.1 | MIT | <https://github.com/naudio/NAudio> |
 | Mono.Posix.NETStandard | 1.0.0 | MIT | <https://github.com/mono/mono> |
-| System.IO.Ports | 10.0.7 | MIT | <https://github.com/dotnet/dotnet> |
-| System.Management | 10.0.7 | MIT | <https://github.com/dotnet/dotnet> |
+| System.IO.Ports | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| System.Management | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
 | System.ServiceProcess.ServiceController | 10.0.7 | MIT | <https://github.com/dotnet/dotnet> |
-| System.Threading.AccessControl | 10.0.7 | MIT | <https://github.com/dotnet/dotnet> |
-| System.CodeDom | 10.0.7 | MIT | <https://github.com/dotnet/dotnet> |
+| System.Threading.AccessControl | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| System.CodeDom | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
 | System.Diagnostics.EventLog | 10.0.7 | MIT | <https://github.com/dotnet/dotnet> |
 
 Platform runtime packages resolved transitively from the Microsoft `System.*`
@@ -30,11 +32,13 @@ complete resolved graph can be inspected with:
 dotnet list .\src\ThinkBookToolkit\ThinkBookToolkit.csproj package --include-transitive
 ```
 
-The complete MPL-2.0 text is included in [LICENSE](LICENSE). The Apache-2.0 and
-MIT license texts are available from the respective package archives and the
-following canonical locations:
+The complete MPL-2.0 text is included in [LICENSE](LICENSE). The Apache-2.0,
+LGPL-3.0, and MIT license texts are available from the respective package
+archives and the following canonical locations:
 
 - Apache-2.0: <https://www.apache.org/licenses/LICENSE-2.0>
+- LGPL-2.1: <https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html>
+- LGPL-3.0: <https://www.gnu.org/licenses/lgpl-3.0.html>
 - MIT: <https://opensource.org/license/mit>
 
 LibreHardwareMonitor also contains material under additional licenses. Its
@@ -44,7 +48,7 @@ upstream attributions and license texts are maintained in
 ## PawnIO
 
 [PawnIO](https://github.com/namazso/PawnIO) provides the system-level access
-used by LibreHardwareMonitor to obtain CPU temperature telemetry on the device
+used to obtain CPU temperature telemetry on the device
 on which ThinkBook Toolkit was tested. PawnIO must be installed separately; its
 driver and utilities are not stored in this repository or in the
 `ThinkBookToolkit.Dependencies` directory.
