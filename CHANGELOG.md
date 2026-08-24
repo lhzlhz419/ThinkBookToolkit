@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Show the current Lenovo performance mode on systems where it is readable but
+  keep mode controls read-only when Toolkit's service-control switching
+  interface is unavailable.
+
 ## [0.2.7] - 2026-08-12
 
 ### Added

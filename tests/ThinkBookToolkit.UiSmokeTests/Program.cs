@@ -57,6 +57,7 @@ internal static class Program
         VerifyAdaptiveUniformPanelCollapsedItems();
         VerifySystemShutdownPreparation();
         VerifyPerformanceFanLinkSettings();
+        VerifyReadOnlyPerformanceMode();
         VerifyPerformanceModeAvailability();
         VerifyPerformanceModeCycleAndStartupTask();
         VerifyRefreshRatePreferences();
@@ -2757,6 +2758,30 @@ internal static class Program
                        mode,
                        false)),
             "Geek mode is not limited to AC power without affecting the other performance modes.");
+    }
+
+    private static void VerifyReadOnlyPerformanceMode()
+    {
+        var feature = FeatureAvailabilityService.CreatePerformanceModeAvailability(
+            ItsMode.Intelligent,
+            switchSupported: false);
+        var report = new FeatureAvailabilityReport([feature]);
+        using var runtime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark"
+        });
+        runtime.SetReportForTesting(report);
+
+        Assert(report.IsAvailable(FeatureIds.PerformanceMode) &&
+               report.IsPartiallyAvailable(FeatureIds.PerformanceMode) &&
+               !report.IsFullyAvailable(FeatureIds.PerformanceMode) &&
+               !runtime.CanSwitchItsMode,
+            "A readable performance mode is not exposed as read-only.");
+        Assert(runtime.SetItsModeAsync(ItsMode.Performance)
+                   .GetAwaiter()
+                   .GetResult() is not null,
+            "The runtime does not reject writes to a read-only performance mode.");
     }
 
     private static void VerifyPerformanceModeCycleAndStartupTask()

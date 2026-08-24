@@ -1118,6 +1118,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.TemperatureMonitoring => L("部分温度或功耗数据暂时不可用。", "Some temperature or power readings are unavailable."),
             FeatureIds.FanControl => L("部分风扇功能暂时不可用。", "Some fan functions are unavailable."),
             FeatureIds.SleepFanControl => L("睡眠期间的风扇控制仅部分可用。", "Fan handling during sleep is only partially available."),
+            FeatureIds.PerformanceMode => L(
+                "可以查看当前性能模式，但此设备不支持通过 Toolkit 切换。",
+                "The current performance mode is visible, but Toolkit cannot switch it on this device."),
             FeatureIds.PowerSettings when feature.PartiallyAvailable =>
                 PowerSettingsController.CurrentProfile.Writable
                     ? L("可读取并调整已检测到的功耗参数。", "Detected power values can be read and adjusted.")

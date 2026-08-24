@@ -468,7 +468,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
                 }
                 : FanControlMode.FirmwareAutomatic);
         _itsMode.IsEnabled = !_modeWriteBusy &&
-                             Runtime.Report?.IsAvailable(FeatureIds.PerformanceMode) == true;
+                             Runtime.CanSwitchItsMode;
         _gpuMode.IsEnabled = !_modeWriteBusy &&
                              Runtime.Report?.IsAvailable(FeatureIds.GpuMode) == true &&
                              snapshot.SupportedGpuModes.Count > 0;

@@ -136,6 +136,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public FeatureAvailabilityReport? Report { get; private set; }
 
+    internal bool CanSwitchItsMode =>
+        Report?.IsFullyAvailable(FeatureIds.PerformanceMode) == true;
+
     public ToolkitRuntimeSnapshot Snapshot { get; private set; }
 
     public MainWindow? FanRuntime => _fanRuntime;
@@ -921,6 +924,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public async Task<string?> SetItsModeAsync(ItsMode mode)
     {
+        if (!CanSwitchItsMode)
+        {
+            return L(
+                "当前设备只能读取性能模式，无法通过 Toolkit 切换",
+                "This device exposes performance mode as read-only to Toolkit");
+        }
         var isAcConnected = Snapshot.Battery?.IsAcConnected;
         if (BatteryInformationReader.TryGetAcConnectionState(
                 out var currentAcState))
@@ -987,6 +996,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 .Unwrap();
             return;
         }
+        if (!CanSwitchItsMode)
+            return;
         var isAcConnected = Snapshot.Battery?.IsAcConnected ?? true;
         if (BatteryInformationReader.TryGetAcConnectionState(
                 out var currentAcState))

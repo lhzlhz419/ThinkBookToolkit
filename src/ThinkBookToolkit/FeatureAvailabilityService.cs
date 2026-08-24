@@ -141,13 +141,22 @@ internal static class FeatureAvailabilityService
                     ? "当前风扇控制方式支持"
                     : "当前风扇控制方式不支持"));
 
-        Probe(result, FeatureIds.PerformanceMode, "性能", "性能模式切换", () =>
+        try
         {
             var detector = new ItsModeDetector();
-            if (!detector.IsModeSwitchSupported())
-                throw new NotSupportedException("Lenovo 性能模式切换接口不可用");
-            return $"当前模式：{detector.ReadMode()}";
-        });
+            result.Add(CreatePerformanceModeAvailability(
+                detector.ReadMode(),
+                detector.IsModeSwitchSupported()));
+        }
+        catch (Exception ex)
+        {
+            result.Add(new(
+                FeatureIds.PerformanceMode,
+                "性能",
+                "性能模式",
+                false,
+                ex.Message));
+        }
 
         Probe(result, FeatureIds.GpuMode, "性能", "GPU 工作模式", () =>
         {
@@ -448,6 +457,35 @@ internal static class FeatureAvailabilityService
             "通过 GitHub Releases 检查最新正式版本");
 
         return new FeatureAvailabilityReport(result);
+    }
+
+    internal static FeatureAvailability CreatePerformanceModeAvailability(
+        ItsMode currentMode,
+        bool switchSupported)
+    {
+        if (currentMode == ItsMode.Unknown)
+        {
+            return new(
+                FeatureIds.PerformanceMode,
+                "性能",
+                "性能模式",
+                false,
+                "无法读取当前性能模式",
+                EnglishDetail: "The current performance mode could not be read");
+        }
+
+        return new(
+            FeatureIds.PerformanceMode,
+            "性能",
+            "性能模式",
+            switchSupported,
+            switchSupported
+                ? $"当前模式：{currentMode}"
+                : $"当前模式：{currentMode}；切换接口不可用",
+            PartiallyAvailable: !switchSupported,
+            EnglishDetail: switchSupported
+                ? $"Current mode: {currentMode}"
+                : $"Current mode: {currentMode}; switching is unavailable");
     }
 
     private static bool HasNvidiaDisplayAdapter()

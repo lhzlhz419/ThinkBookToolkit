@@ -2243,9 +2243,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
 
     private void SetModeControls(bool value)
     {
-        _itsMode.IsEnabled = value && Runtime.Report?.IsAvailable(FeatureIds.PerformanceMode) != false;
+        _itsMode.IsEnabled = value && Runtime.CanSwitchItsMode;
         _performanceModeOrderSettings.IsEnabled =
-            value && Runtime.Settings.TakeOverFnKeys;
+            value && Runtime.Settings.TakeOverFnKeys && Runtime.CanSwitchItsMode;
         _gpuMode.IsEnabled = value && Runtime.Report?.IsAvailable(FeatureIds.GpuMode) != false;
     }
 
