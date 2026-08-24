@@ -139,6 +139,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
     internal bool CanSwitchItsMode =>
         Report?.IsFullyAvailable(FeatureIds.PerformanceMode) == true;
 
+    internal bool IsItsModeSupported(ItsMode mode) =>
+        new ItsModeDetector().IsModeSupported(mode);
+
     public ToolkitRuntimeSnapshot Snapshot { get; private set; }
 
     public MainWindow? FanRuntime => _fanRuntime;
@@ -751,13 +754,14 @@ internal sealed class ToolkitRuntimeService : IDisposable
             }
 
             var itsMode = _confirmedPerformanceModeDuringRefresh ??
-                          performance?.ItsMode ??
                           ItsMode.Unknown;
-            if (Report?.IsAvailable(FeatureIds.PerformanceMode) == true &&
-                itsMode == ItsMode.Unknown)
+            if (!_confirmedPerformanceModeDuringRefresh.HasValue &&
+                Report?.IsAvailable(FeatureIds.PerformanceMode) == true)
             {
                 itsMode = await Task.Run(() => new ItsModeDetector().ReadMode());
             }
+            if (itsMode == ItsMode.Unknown)
+                itsMode = performance?.ItsMode ?? ItsMode.Unknown;
 
             GpuWorkingMode? gpuMode = performance?.GpuMode;
             IReadOnlyList<GpuWorkingMode> gpuModes =
@@ -930,6 +934,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 "当前设备只能读取性能模式，无法通过 Toolkit 切换",
                 "This device exposes performance mode as read-only to Toolkit");
         }
+        if (!IsItsModeSupported(mode))
+        {
+            return L(
+                "当前性能模式接口不支持所选模式",
+                "The selected mode is unsupported by the active performance-mode interface");
+        }
         var isAcConnected = Snapshot.Battery?.IsAcConnected;
         if (BatteryInformationReader.TryGetAcConnectionState(
                 out var currentAcState))
@@ -970,6 +980,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     }
                     SyncPowerSettingsLockTimer();
                     await EnforcePowerSettingsLockAsync();
+                    ToolkitLog.Info(
+                        $"Performance mode switch confirmed: {mode} via " +
+                        $"{new ItsModeDetector().DetectSwitchBackend()}.");
                     return null;
                 }
                 await Task.Delay(200);
@@ -1008,8 +1021,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         if (!PerformanceModeCycle.IsSelectableMode(current))
             current = await Task.Run(() => new ItsModeDetector().ReadMode());
         var next = PerformanceModeCycle.Next(
-            Settings.FnPerformanceModeOrder,
-            Settings.FnPerformanceModeEnabled,
+            Settings.FnPerformanceModeOrder.Where(IsItsModeSupported),
+            Settings.FnPerformanceModeEnabled.Where(IsItsModeSupported),
             current,
             isAcConnected);
         if (!PerformanceModeCycle.IsSelectableMode(next))

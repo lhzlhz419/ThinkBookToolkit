@@ -57,6 +57,7 @@ internal static class Program
         VerifyAdaptiveUniformPanelCollapsedItems();
         VerifySystemShutdownPreparation();
         VerifyPerformanceFanLinkSettings();
+        VerifyItsModeBackends();
         VerifyReadOnlyPerformanceMode();
         VerifyPerformanceModeAvailability();
         VerifyPerformanceModeCycleAndStartupTask();
@@ -2782,6 +2783,29 @@ internal static class Program
                    .GetAwaiter()
                    .GetResult() is not null,
             "The runtime does not reject writes to a read-only performance mode.");
+    }
+
+    private static void VerifyItsModeBackends()
+    {
+        Assert(ItsModeDetector.LegacySupportedModes(0xA).SequenceEqual(
+               [
+                   ItsMode.Intelligent,
+                   ItsMode.PowerSaving,
+                   ItsMode.Performance
+               ]) &&
+               ItsModeController.TryResolveCommand(
+                   ItsModeBackend.LegacyItsService,
+                   ItsMode.PowerSaving,
+                   out var serviceName,
+                   out var command) &&
+               serviceName == "LITSSVC" &&
+               command == 0x92 &&
+               !ItsModeController.TryResolveCommand(
+                   ItsModeBackend.LegacyItsService,
+                   ItsMode.Geek,
+                   out _,
+                   out _),
+            "The legacy ITS capability or service-control mapping is incorrect.");
     }
 
     private static void VerifyPerformanceModeCycleAndStartupTask()

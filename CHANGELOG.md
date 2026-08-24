@@ -9,9 +9,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Show the current Lenovo performance mode on systems where it is readable but
-  keep mode controls read-only when Toolkit's service-control switching
-  interface is unavailable.
+- Detect and control performance modes through the compatible LITSSVC backend
+  when LenovoProcessManagement exposes only its older, non-switching contract.
+- Hide modes, such as Geek on ThinkBook 16p Gen 4, when the active backend does
+  not expose a verified switching command for them.
 
 ## [0.2.7] - 2026-08-12
 

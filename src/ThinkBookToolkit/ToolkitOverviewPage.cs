@@ -426,6 +426,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
         foreach (var item in _itsMode.Items.OfType<ComboBoxItem>())
         {
             item.Visibility = item.Tag is ItsMode mode &&
+                              Runtime.IsItsModeSupported(mode) &&
                               PerformanceModeAvailability.CanSelect(
                                   mode,
                                   isAcConnected)
@@ -435,7 +436,8 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
         if (snapshot.ItsMode != ItsMode.Unknown &&
             PerformanceModeAvailability.CanSelect(
                 snapshot.ItsMode,
-                isAcConnected))
+                isAcConnected) &&
+            Runtime.IsItsModeSupported(snapshot.ItsMode))
             Select(_itsMode, snapshot.ItsMode);
         else
             _itsMode.SelectedItem = null;
