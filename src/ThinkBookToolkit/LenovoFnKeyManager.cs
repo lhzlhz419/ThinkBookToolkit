@@ -1,6 +1,7 @@
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Management;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -59,6 +60,10 @@ internal sealed class LenovoFnKeyManager : IDisposable
     private long _lastMicrophoneDriverTick;
     private long _lastRefreshRateEventTick;
     private int _hotkeysDisabledByToolkit;
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>>
+        _pendingPresses = new(StringComparer.OrdinalIgnoreCase);
+    internal static readonly TimeSpan DoublePressInterval =
+        TimeSpan.FromMilliseconds(300);
 
     internal LenovoFnKeyManager(ToolkitRuntimeService runtime)
     {
@@ -66,6 +71,7 @@ internal sealed class LenovoFnKeyManager : IDisposable
     }
 
     internal bool IsRunning => _running;
+    internal bool DiscoveryMode { get; set; }
 
     internal async Task<string?> StartAsync()
     {
@@ -161,7 +167,17 @@ internal sealed class LenovoFnKeyManager : IDisposable
         {
             var raw = Convert.ToInt32(
                 args.NewEvent.Properties["PressTypeDataVal"]?.Value);
-            _ = HandleSpecialKeyAsync((LenovoSpecialKey)raw);
+            PublishDiscovery(
+                raw,
+                "WMI",
+                Enum.IsDefined(typeof(LenovoSpecialKey), raw)
+                    ? ((LenovoSpecialKey)raw).ToString()
+                    : $"Fn + 0x{raw:X}");
+            if (DiscoveryMode)
+                return;
+            _ = HandleSpecialKeyAsync(
+                (LenovoSpecialKey)raw,
+                FnAutomationKeyIds.FromDiscovered("WMI", raw));
         }
         catch (Exception ex)
         {
@@ -173,10 +189,33 @@ internal sealed class LenovoFnKeyManager : IDisposable
 
     private async Task HandleDriverKeysAsync(uint rawValue)
     {
+        PublishDiscovery(
+            unchecked((int)rawValue),
+            "IOCTL",
+            Enum.IsDefined(typeof(LenovoDriverKey), rawValue)
+                ? ((LenovoDriverKey)rawValue).ToString()
+                : $"Fn + 0x{rawValue:X} (Driver)");
+        if (DiscoveryMode)
+            return;
         var value = (LenovoDriverKey)rawValue;
+        if (value.HasFlag(LenovoDriverKey.FnF4))
+        {
+            _ = IsMirroredMicrophoneEvent(
+                LenovoFnKeyEventSource.EnergyDriver);
+        }
+        if (await TryRunCustomFnAsync(
+                FnAutomationKeyIds.FromDiscovered(
+                    "IOCTL",
+                    unchecked((int)rawValue))))
+        {
+            return;
+        }
         foreach (LenovoDriverKey key in Enum.GetValues<LenovoDriverKey>())
         {
             if (!value.HasFlag(key))
+                continue;
+            var keyId = DriverKeyBindingId(key);
+            if (keyId.Length > 0 && await TryRunCustomFnAsync(keyId))
                 continue;
             switch (key)
             {
@@ -196,11 +235,47 @@ internal sealed class LenovoFnKeyManager : IDisposable
                     ToggleAirplaneMode();
                     break;
             }
+            _runtime.NotifyControlStateChanged();
         }
     }
 
-    private async Task HandleSpecialKeyAsync(LenovoSpecialKey key)
+    private void PublishDiscovery(int code, string channel, string name)
     {
+        if (!DiscoveryMode)
+            return;
+        _runtime.PublishFnKeyDiscovered(new(
+            code,
+            channel,
+            name,
+            DateTimeOffset.Now));
+    }
+
+    private async Task HandleSpecialKeyAsync(
+        LenovoSpecialKey key,
+        string discoveredKeyId)
+    {
+        if (key == LenovoSpecialKey.FnF4)
+        {
+            await Task.Delay(120).ConfigureAwait(false);
+            if (IsMirroredMicrophoneEvent(
+                    LenovoFnKeyEventSource.UtilityEvent))
+                return;
+            if (await TryRunCustomFnAsync(discoveredKeyId))
+                return;
+            if (await TryRunCustomFnAsync(FnAutomationKeyIds.FnF4))
+                return;
+            ToggleMicrophone(LenovoFnKeyEventSource.UtilityEvent);
+            _runtime.NotifyControlStateChanged();
+            return;
+        }
+
+        if (await TryRunCustomFnAsync(discoveredKeyId))
+            return;
+
+        var keyId = SpecialKeyBindingId(key);
+        if (keyId.Length > 0 && await TryRunCustomFnAsync(keyId))
+            return;
+
         switch (key)
         {
             case LenovoSpecialKey.FnLockOn:
@@ -252,12 +327,95 @@ internal sealed class LenovoFnKeyManager : IDisposable
             case LenovoSpecialKey.FnR2:
                 await ToggleRefreshRateAsync();
                 break;
-            case LenovoSpecialKey.FnF4:
-                await ToggleMicrophoneFromUtilityEventAsync();
-                break;
             case LenovoSpecialKey.FnF8:
                 ToggleAirplaneMode();
                 break;
+            case LenovoSpecialKey.FnN:
+                _runtime.ShowMainWindow();
+                break;
+        }
+        _runtime.NotifyControlStateChanged();
+    }
+
+    internal static string DriverKeyBindingId(LenovoDriverKey key) => key switch
+    {
+        LenovoDriverKey.FnQ => FnAutomationKeyIds.FnQ,
+        LenovoDriverKey.FnSpace => FnAutomationKeyIds.FnSpace,
+        LenovoDriverKey.FnF10 => FnAutomationKeyIds.FnF10,
+        LenovoDriverKey.FnF4 => FnAutomationKeyIds.FnF4,
+        LenovoDriverKey.FnF8 => FnAutomationKeyIds.FnF8,
+        _ => string.Empty
+    };
+
+    internal static string SpecialKeyBindingId(LenovoSpecialKey key) =>
+        key switch
+        {
+            LenovoSpecialKey.FnLockOn or LenovoSpecialKey.FnLockOff =>
+                FnAutomationKeyIds.FnLock,
+            LenovoSpecialKey.FnPrtSc or LenovoSpecialKey.FnPrtSc2 =>
+                FnAutomationKeyIds.PrintScreen,
+            LenovoSpecialKey.FnF8ThinkBook => FnAutomationKeyIds.Touchpad,
+            LenovoSpecialKey.FnR or LenovoSpecialKey.FnR2 =>
+                FnAutomationKeyIds.RefreshRate,
+            LenovoSpecialKey.FnF9 => FnAutomationKeyIds.FnF9,
+            LenovoSpecialKey.FnN => FnAutomationKeyIds.FnN,
+            LenovoSpecialKey.FnF8 => FnAutomationKeyIds.FnF8,
+            _ => string.Empty
+        };
+
+    private async Task<bool> TryRunCustomFnAsync(string keyId)
+    {
+        if (!_runtime.HasFnAutomationBinding(keyId))
+            return false;
+        if (!_runtime.HasFnAutomationBinding(keyId, doublePress: true))
+            return await _runtime.TryRunFnAutomationAsync(keyId);
+
+        if (_pendingPresses.TryGetValue(keyId, out var pending))
+        {
+            pending.TrySetResult(true);
+            return true;
+        }
+
+        var completion = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pendingPresses.TryAdd(keyId, completion))
+            return true;
+        _ = ResolvePendingFnPressAsync(keyId, completion);
+        return true;
+    }
+
+    private async Task ResolvePendingFnPressAsync(
+        string keyId,
+        TaskCompletionSource<bool> completion)
+    {
+        try
+        {
+            var delay = Task.Delay(DoublePressInterval);
+            var completed = await Task.WhenAny(
+                completion.Task,
+                delay).ConfigureAwait(false);
+            _pendingPresses.TryRemove(keyId, out _);
+            if (completed == delay)
+            {
+                if (_runtime.HasFnAutomationBinding(
+                        keyId,
+                        doublePress: false))
+                {
+                    await _runtime.TryRunFnAutomationAsync(keyId)
+                        .ConfigureAwait(false);
+                }
+                return;
+            }
+            await _runtime.TryRunFnAutomationAsync(
+                    keyId,
+                    doublePress: true)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                $"The custom Fn-key action for '{keyId}' failed.",
+                ex);
         }
     }
 
@@ -323,15 +481,6 @@ internal sealed class LenovoFnKeyManager : IDisposable
         }
     }
 
-    private async Task ToggleMicrophoneFromUtilityEventAsync()
-    {
-        // EnergyDrv normally arrives first on ThinkBook. Give it a short
-        // head start so the duplicate WMI utility event can be discarded,
-        // while machines that only emit the WMI event still remain usable.
-        await Task.Delay(120).ConfigureAwait(false);
-        ToggleMicrophone(LenovoFnKeyEventSource.UtilityEvent);
-    }
-
     private async Task ToggleRefreshRateAsync()
     {
         lock (_mirrorGate)
@@ -345,6 +494,7 @@ internal sealed class LenovoFnKeyManager : IDisposable
         {
             var success = RefreshRateController.TryCycleInternalDisplay(
                 _runtime.Settings.RefreshRateCycleHz,
+                _runtime.Settings.IncludeDynamicRefreshRateInCycle,
                 out var refreshRate,
                 out var error);
             return (success, refreshRate, error);
@@ -353,7 +503,7 @@ internal sealed class LenovoFnKeyManager : IDisposable
         {
             _runtime.ShowFnKeyNotification(
                 string.Empty,
-                $"{result.refreshRate} Hz");
+                result.refreshRate.DisplayName);
         }
         else
         {

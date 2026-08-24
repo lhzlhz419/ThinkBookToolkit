@@ -148,6 +148,10 @@ public static class CurveProfileStore
                 : (loaded.ManualGameMode ? FixedGameModeOverride.GameUntilGamesEnd : FixedGameModeOverride.None);
             defaults.FixedModeHotkey = NormalizeHotkey(loaded.FixedModeHotkey);
             defaults.AutoDetectGames = !settingsJson.Contains(nameof(AppSettings.AutoDetectGames), StringComparison.OrdinalIgnoreCase) || loaded.AutoDetectGames;
+            defaults.IncludedGamePaths = NormalizeApplicationPaths(
+                loaded.IncludedGamePaths);
+            defaults.ExcludedGamePaths = NormalizeApplicationPaths(
+                loaded.ExcludedGamePaths);
             defaults.FixedSyncFanSpeeds = !settingsJson.Contains(nameof(AppSettings.FixedSyncFanSpeeds), StringComparison.OrdinalIgnoreCase) || loaded.FixedSyncFanSpeeds;
             defaults.FanRpmLimitsCustomized =
                 settingsJson.Contains(
@@ -183,6 +187,8 @@ public static class CurveProfileStore
             defaults.RefreshRateCycleHz =
                 RefreshRateController.NormalizeConfiguredRates(
                     loaded.RefreshRateCycleHz);
+            defaults.IncludeDynamicRefreshRateInCycle =
+                loaded.IncludeDynamicRefreshRateInCycle;
             defaults.FnPerformanceModeOrder =
                 PerformanceModeCycle.NormalizeOrder(
                     loaded.FnPerformanceModeOrder);
@@ -221,6 +227,8 @@ public static class CurveProfileStore
                     StringComparison.OrdinalIgnoreCase)
                 ? loaded.UseAlternativeFullSpeedMethod
                 : DeviceModelDetector.UsesAlternativeFullSpeedByDefault();
+            defaults.AlternativeFullSpeedMethodInitialized =
+                loaded.AlternativeFullSpeedMethodInitialized;
             defaults.ContinuouslyWriteFanTargets =
                 loaded.ContinuouslyWriteFanTargets;
             defaults.OverviewPageMode = Enum.IsDefined(
@@ -265,6 +273,26 @@ public static class CurveProfileStore
                 loaded.PowerSettingsLocksByMode);
             defaults.GpuOverclock = GpuOverclockPolicy.Normalize(
                 loaded.GpuOverclock);
+            defaults.Automations = AutomationSettingsDefaults.Normalize(
+                loaded.Automations);
+            defaults.AutomationEnabled = loaded.AutomationEnabled;
+            defaults.Macros = KeyboardMacroDefaults.Normalize(loaded.Macros);
+            defaults.MacroEnabled = loaded.MacroEnabled;
+            defaults.CustomFnKeyNames =
+                AutomationSettingsDefaults.NormalizeCustomFnKeyNames(
+                    loaded.CustomFnKeyNames);
+            defaults.FnKeyAutomationBindings =
+                AutomationSettingsDefaults.NormalizeFnBindings(
+                    loaded.FnKeyAutomationBindings,
+                    defaults.Automations,
+                    defaults.CustomFnKeyNames);
+            defaults.FnKeyDoublePressAutomationBindings =
+                AutomationSettingsDefaults.NormalizeFnBindings(
+                    loaded.FnKeyDoublePressAutomationBindings,
+                    defaults.Automations,
+                    defaults.CustomFnKeyNames);
+            defaults.AcceptedDisclaimerVersion =
+                loaded.AcceptedDisclaimerVersion ?? string.Empty;
             defaults.LastFanBackendIdentity =
                 loaded.LastFanBackendIdentity ?? string.Empty;
             defaults.SuppressedFanBackendStartupNoticeIdentity =
@@ -309,6 +337,10 @@ public static class CurveProfileStore
     public static void SaveSettings(AppSettings settings)
     {
         settings.ConfigurationVersion = CurrentConfigurationVersion;
+        settings.IncludedGamePaths = NormalizeApplicationPaths(
+            settings.IncludedGamePaths);
+        settings.ExcludedGamePaths = NormalizeApplicationPaths(
+            settings.ExcludedGamePaths);
         if (!PowerSettingsController.IsSupportedLockInterval(
                 settings.PowerSettingsLockIntervalSeconds))
         {
@@ -328,6 +360,22 @@ public static class CurveProfileStore
             settings.PowerSettingsLocksByMode);
         settings.GpuOverclock = GpuOverclockPolicy.Normalize(
             settings.GpuOverclock);
+        settings.Automations = AutomationSettingsDefaults.Normalize(
+            settings.Automations);
+        settings.Macros = KeyboardMacroDefaults.Normalize(settings.Macros);
+        settings.CustomFnKeyNames =
+            AutomationSettingsDefaults.NormalizeCustomFnKeyNames(
+                settings.CustomFnKeyNames);
+        settings.FnKeyAutomationBindings =
+            AutomationSettingsDefaults.NormalizeFnBindings(
+                settings.FnKeyAutomationBindings,
+                settings.Automations,
+                settings.CustomFnKeyNames);
+        settings.FnKeyDoublePressAutomationBindings =
+            AutomationSettingsDefaults.NormalizeFnBindings(
+                settings.FnKeyDoublePressAutomationBindings,
+                settings.Automations,
+                settings.CustomFnKeyNames);
         settings.FnPerformanceModeOrder =
             PerformanceModeCycle.NormalizeOrder(
                 settings.FnPerformanceModeOrder);
@@ -926,6 +974,18 @@ public static class CurveProfileStore
     {
         return string.IsNullOrWhiteSpace(value) ? "" : value.Trim();
     }
+
+    internal static List<string> NormalizeApplicationPaths(
+        IEnumerable<string>? paths) =>
+        (paths ?? [])
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path =>
+            {
+                try { return Path.GetFullPath(path.Trim()); }
+                catch { return path.Trim(); }
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private static List<int> CurveFromAnchors(int[] temps, IReadOnlyList<(int Temp, int Rpm)> anchors)
     {

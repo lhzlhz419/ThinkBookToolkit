@@ -7,7 +7,8 @@ using System.Windows.Data;
 
 namespace ThinkBookToolkit;
 
-internal sealed class ToolkitSoundPage : ToolkitPageBase
+internal sealed class ToolkitSoundPage : ToolkitPageBase,
+    IControlStateRefreshable
 {
     private readonly SoundViewModel _viewModel;
     private readonly CheckBox _dolbyEnabled = new();
@@ -142,6 +143,8 @@ internal sealed class ToolkitSoundPage : ToolkitPageBase
             await _viewModel.LoadAsync();
         SyncControls();
     }
+
+    public Task RefreshControlStateAsync() => LoadAsync();
 
     private async Task RunAsync(Func<Task> action)
     {

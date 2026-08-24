@@ -7,7 +7,8 @@ using System.Windows.Controls;
 
 namespace ThinkBookToolkit;
 
-internal sealed class ToolkitBatteryPage : ToolkitPageBase
+internal sealed class ToolkitBatteryPage : ToolkitPageBase,
+    IControlStateRefreshable
 {
     private readonly BatteryViewModel _viewModel;
     private readonly ComboBox _chargeMode = new() { MinWidth = 180 };
@@ -149,6 +150,8 @@ internal sealed class ToolkitBatteryPage : ToolkitPageBase
         await _viewModel.LoadAsync();
         SyncControls();
     }
+
+    public Task RefreshControlStateAsync() => LoadAsync();
 
     private async Task WriteAsync(Func<Task> action)
     {

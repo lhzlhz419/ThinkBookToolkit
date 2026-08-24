@@ -84,6 +84,16 @@ public sealed record FanBackendControlSemantics(
     FanFullSpeedControlSemantics FullSpeed);
 
 /// <summary>
+/// Optional, backward-compatible capability probe. Backends that can verify
+/// full-speed support without changing the current fan state should implement
+/// this interface. Older backends continue to use their declared semantics.
+/// </summary>
+public interface IFanBackendCapabilityProbe
+{
+    bool TryProbeFullSpeedControl(out string detail);
+}
+
+/// <summary>
 /// Stable contract implemented by the replaceable fan backend DLL.
 /// </summary>
 public interface IFanBackend

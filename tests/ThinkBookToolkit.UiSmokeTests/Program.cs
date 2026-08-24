@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using ThinkBookToolkit;
 using ThinkBookToolkit.FanBackend;
 using ThinkBookToolkit.Guardian;
@@ -42,6 +43,9 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        PowerSettingsController.SetProfileForTesting(
+            PowerSettingsController.ResolveProfile(
+                DeviceModelDetector.ThinkBook16pG6Iax));
         VerifyGpuModeRestartState();
         VerifyLenovoDependencyDirectory();
         VerifyFanBackendStartupNotice();
@@ -58,9 +62,15 @@ internal static class Program
         VerifySystemShutdownPreparation();
         VerifyPerformanceFanLinkSettings();
         VerifyPerformanceModeAvailability();
+        VerifyItsModeControlPaths();
         VerifyPerformanceModeCycleAndStartupTask();
         VerifyRefreshRatePreferences();
         VerifyApplicationUpdateService();
+        VerifyApplicationDisclaimer();
+        VerifyAutomationContracts();
+        VerifyFeatureAvailabilityDiagnostics();
+        VerifyDriverUpdateContracts();
+        VerifyBiosIoContracts();
         VerifyApplicationIconTransparency();
         VerifyPerformancePageWithoutFanControl();
         VerifyUserFacingExceptionText();
@@ -79,7 +89,7 @@ internal static class Program
         using var runtime = new ToolkitRuntimeService(settings);
         ModernTheme.Apply(Application.Current, runtime.IsDark);
         var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false);
-        Assert(window.Title == "ThinkBook Toolkit v0.2.7",
+        Assert(window.Title == "ThinkBook Toolkit v1.0.0",
             "The native title bar does not show the current application version.");
         runtime.SetReportForTesting(CreateReport(_ => true));
         runtime.SetSnapshotForTesting(runtime.Snapshot with
@@ -176,9 +186,10 @@ internal static class Program
         using (var versionSettingsPage = new ToolkitSettingsPage(runtime))
         {
             Assert(ContainsText(versionSettingsPage, "当前版本") &&
-                   ContainsText(versionSettingsPage, "v0.2.7") &&
+                   ContainsText(versionSettingsPage, "v1.0.0") &&
                    ContainsButtonText(versionSettingsPage, "检查更新") &&
-                   ContainsText(versionSettingsPage, "软件更新检查"),
+                   ContainsText(versionSettingsPage, "软件更新检查") &&
+                   ContainsText(versionSettingsPage, "自定义游戏检测路径"),
                 "The settings page does not expose the current version and update check.");
             var applyUpdateResult = typeof(ToolkitSettingsPage).GetMethod(
                 "ApplyUpdateResult",
@@ -187,12 +198,12 @@ internal static class Program
                     nameof(ToolkitSettingsPage),
                     "ApplyUpdateResult");
             var newerRelease = ApplicationUpdateService.ParseReleaseJson(
-                "{\"tag_name\":\"v0.3.0\",\"html_url\":" +
-                "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v0.3.0\"}");
+                "{\"tag_name\":\"v1.1.0\",\"html_url\":" +
+                "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.1.0\"}");
             applyUpdateResult.Invoke(versionSettingsPage, [newerRelease]);
             Assert(GetPrivateField<TextBlock>(
                        versionSettingsPage,
-                       "_updateStatus").Text == "最新版 v0.3.0" &&
+                       "_updateStatus").Text == "最新版 v1.1.0" &&
                    GetPrivateField<Button>(
                        versionSettingsPage,
                        "_downloadUpdate").Visibility == Visibility.Visible,
@@ -200,10 +211,10 @@ internal static class Program
             applyUpdateResult.Invoke(versionSettingsPage,
             [
                 new ApplicationRelease(
-                    new Version(0, 2, 7),
-                    "v0.2.7",
+                    new Version(1, 0, 0),
+                    "v1.0.0",
                     new Uri(
-                        "https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v0.2.7"))
+                        "https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.0.0"))
             ]);
             Assert(GetPrivateField<TextBlock>(
                        versionSettingsPage,
@@ -226,7 +237,9 @@ internal static class Program
             ["display"] = typeof(ToolkitDisplayPage),
             ["sound"] = typeof(ToolkitSoundPage),
             ["input"] = typeof(ToolkitInputPage),
+            ["automation"] = typeof(ToolkitAutomationPage),
             ["device"] = typeof(ToolkitDevicePage),
+            ["driver-update"] = typeof(ToolkitDriverUpdatePage),
             ["advanced"] = typeof(ToolkitAdvancedPage),
             ["settings"] = typeof(ToolkitSettingsPage)
         };
@@ -253,6 +266,41 @@ internal static class Program
             Assert(page.DesiredSize.Width <= 621,
                 $"Page {expected.Key} forces narrow-window overflow ({page.DesiredSize.Width:0.0}px). ");
         }
+
+        window.NavigateForTesting("driver-update");
+        Assert(ContainsText(window.CurrentPage!, "Lenovo 驱动更新") &&
+               ContainsButtonText(window.CurrentPage!, "扫描更新") &&
+               ContainsButtonText(window.CurrentPage!, "安装所有更新"),
+            "The driver-update page does not expose scan and install actions.");
+        window.NavigateForTesting("advanced");
+        Assert(ContainsText(window.CurrentPage!, "IO控制（重启后生效）"),
+            "The advanced tools page does not place BIOS I/O controls below the boot tools.");
+        var ioGrid = GetPrivateField<AdaptiveUniformPanel>(
+            window.CurrentPage!,
+            "_ioRows");
+        Assert(Equals(ioGrid.Tag, "BiosIoResponsiveGrid") &&
+               ioGrid.MaximumColumns == 3 &&
+               ioGrid.MinimumItemWidth >= 300,
+            "BIOS I/O controls are not configured as a responsive grid capped at three columns.");
+
+        var navigationSurface = GetPrivateField<Border>(
+            window,
+            "_navigationSurface");
+        Assert(navigationSurface.Child is Grid navigationShell &&
+               navigationShell.RowDefinitions.Count == 3 &&
+               navigationShell.Children.OfType<ScrollViewer>().Any(scroller =>
+                   Grid.GetRow(scroller) == 1 &&
+                   scroller.VerticalScrollBarVisibility == ScrollBarVisibility.Auto) &&
+               navigationShell.Children.OfType<StackPanel>().Any(panel =>
+                   Grid.GetRow(panel) == 2),
+            "The sidebar does not keep Settings fixed below a separately scrollable navigation list.");
+        var navigationButtons = GetPrivateField<Dictionary<string, Button>>(
+            window,
+            "_navigation");
+        Assert(navigationButtons.ContainsKey("driver-update") &&
+               navigationButtons.ContainsKey("settings") &&
+               navigationButtons.Values.All(button => button.MinHeight <= 42),
+            "The new driver-update navigation item is missing or sidebar item spacing was not reduced.");
 
         window.NavigateForTesting("settings");
         Assert(ContainsText(window.CurrentPage!, "编辑概览页") &&
@@ -283,6 +331,22 @@ internal static class Program
                refreshLayout.ColumnDefinitions[1].Width.IsAuto &&
                Grid.GetColumn(refreshSettings) == 1,
             "Display refresh-rate selector and settings action are missing or not laid out in one row.");
+        var displayChangeTimer = GetPrivateField<DispatcherTimer>(
+            displayPage,
+            "_displayChangeTimer");
+        var displayChangeHandler = typeof(ToolkitDisplayPage).GetMethod(
+            "OnDisplaySettingsChanged",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(
+                nameof(ToolkitDisplayPage),
+                "OnDisplaySettingsChanged");
+        displayChangeHandler.Invoke(
+            displayPage,
+            [null, EventArgs.Empty]);
+        Assert(displayChangeTimer.IsEnabled &&
+               displayChangeTimer.Interval == TimeSpan.FromMilliseconds(500),
+            "Windows display changes do not schedule a debounced refresh-rate selector reload.");
+        displayChangeTimer.Stop();
 
         window.NavigateForTesting("overview");
         Assert(ContainsText(window.CurrentPage!, "性能模式") &&
@@ -431,11 +495,18 @@ internal static class Program
                {
                    Tag: GpuWorkingMode.HybridAuto
                } &&
-               window.CurrentPage!.DataContext?.GetType()
+                window.CurrentPage!.DataContext?.GetType()
                    .GetProperty("PendingRestart")
-                   ?.GetValue(window.CurrentPage.DataContext)
-                   ?.ToString() ==
-               "需要重启",
+                    ?.GetValue(window.CurrentPage.DataContext)
+                    ?.ToString() ==
+                "需要" &&
+               GetPrivateField<Button>(
+                   window.CurrentPage!,
+                   "_restartNow") is
+               {
+                   Visibility: Visibility.Visible,
+                   Content: "重启"
+               },
             "Overview does not show the pending GPU target and concise restart state.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
@@ -1056,7 +1127,7 @@ internal static class Program
             border.Measure(new Size(400, double.PositiveInfinity));
             border.Arrange(new Rect(0, 0, 400, border.DesiredSize.Height));
         }
-        Assert(settingSwitchRows.Length >= 7 && settingSwitchRows.All(border =>
+        Assert(settingSwitchRows.Length >= 6 && settingSwitchRows.All(border =>
             border.Child is Grid grid &&
             grid.Children.OfType<CheckBox>().All(toggle =>
                 Grid.GetRow(toggle) == 0 &&
@@ -1069,6 +1140,23 @@ internal static class Program
                    settingsPage,
                    "禁用 Lenovo Hotkeys 并接管 Fn 快捷键"),
             "Settings is missing the Lenovo Hotkeys/Fn-key takeover option.");
+        var customizeFnKeys = GetPrivateField<Button>(
+            settingsPage,
+            "_customizeFnKeys");
+        var discoverFnKeys = GetPrivateField<Button>(
+            settingsPage,
+            "_discoverFnKeys");
+        var takeOverFnKeys = GetPrivateField<CheckBox>(
+            settingsPage,
+            "_takeOverFnKeys");
+        Assert(LogicalTreeHelper.GetParent(customizeFnKeys) is StackPanel
+               {
+                   Children: var fnControls
+               } &&
+               fnControls.IndexOf(discoverFnKeys) == 0 &&
+               fnControls.IndexOf(customizeFnKeys) == 1 &&
+               fnControls.IndexOf(takeOverFnKeys) == 2,
+            "The Fn-key customization button is not immediately to the left of the takeover switch.");
         var startupMode = GetPrivateField<ComboBox>(
             settingsPage,
             "_startupMode");
@@ -1286,9 +1374,9 @@ internal static class Program
             enableHardwareDetection: true);
         Assert(startupWindow.CurrentPage is ToolkitOverviewPage &&
                Descendants(startupWindow).OfType<Button>()
-                   .Where(button => button.Tag is string)
-                   .Select(button => button.Tag?.ToString())
-                   .All(id => id is "overview" or "settings"),
+                    .Where(button => button.Tag is string)
+                    .Select(button => button.Tag?.ToString())
+                    .All(id => id is "overview" or "automation" or "settings"),
             "Startup does not render Overview first or creates hardware pages before detection.");
         startupWindow.Close();
 
@@ -1311,12 +1399,29 @@ internal static class Program
                 "性能",
                 "功耗设置",
                 false,
-                "仅支持 ThinkBook 16p G6 IAX")
+                "仅支持 ThinkBook 16p G6 IAX"),
+            new FeatureAvailability(
+                FeatureIds.DriverUpdate,
+                "驱动更新",
+                "Lenovo 驱动与固件更新",
+                true,
+                "不应显示的扫描器路径"),
+            new FeatureAvailability(
+                FeatureIds.BiosIoControl,
+                "高级工具",
+                "IO 控制",
+                true,
+                "不应显示的 BIOS 类名")
         ]));
         using var englishSettings = new ToolkitSettingsPage(englishRuntime);
         Assert(ContainsText(englishSettings, "Complete feature availability") &&
                ContainsText(englishSettings, "Power values cannot be viewed or changed") &&
+               ContainsText(englishSettings, "Driver updates") &&
+               ContainsText(englishSettings, "Lenovo driver and firmware updates") &&
+               ContainsText(englishSettings, "I/O controls") &&
                !ContainsText(englishSettings, "Private backend implementation detail") &&
+               !ContainsText(englishSettings, "不应显示的扫描器路径") &&
+               !ContainsText(englishSettings, "不应显示的 BIOS 类名") &&
                !ContainsText(englishSettings, "不应显示的内部实现信息") &&
                !ContainsText(englishSettings, "仅支持"),
             "Availability results expose implementation details or untranslated detection text.");
@@ -1612,6 +1717,73 @@ internal static class Program
                !DeviceModelDetector.UsesAlternativeFullSpeedByDefault(
                    "ThinkBook 16p G6 IAX"),
             "Model-specific full-speed and fan-limit defaults are incorrect.");
+        var unavailableFullSpeedBackend =
+            new UnavailableFullSpeedBackend();
+        Assert(!FanController.ProbeFullSpeedControl(
+                   unavailableFullSpeedBackend,
+                   out var fullSpeedDetail) &&
+               fullSpeedDetail.Contains(
+                   "test full-speed interface is unavailable",
+                   StringComparison.Ordinal),
+            "Fan control and native full-speed capability cannot be probed independently.");
+        var fanControlOnlyReport = new FeatureAvailabilityReport([
+            new FeatureAvailability(
+                FeatureIds.FanControl,
+                "散热",
+                "风扇监控与控制",
+                true,
+                "test backend connected"),
+            new FeatureAvailability(
+                FeatureIds.FanFullSpeed,
+                "散热",
+                "风扇拉满",
+                false,
+                "test full-speed interface is unavailable")
+        ]);
+        var uninitializedAlternative = new AppSettings();
+        Assert(ToolkitRuntimeService.ShouldInitializeAlternativeFullSpeedMethod(
+                   fanControlOnlyReport,
+                   uninitializedAlternative) &&
+               !ToolkitRuntimeService.ShouldInitializeAlternativeFullSpeedMethod(
+                   fanControlOnlyReport,
+                   new AppSettings
+                   {
+                       AlternativeFullSpeedMethodInitialized = true
+                   }),
+            "Unavailable native full speed does not initialize the alternative method exactly once.");
+        using (var unavailableRuntime = new ToolkitRuntimeService(
+                   new AppSettings
+                   {
+                       Language = "zh-CN",
+                       Theme = "light",
+                       UseAlternativeFullSpeedMethod = false,
+                       AlternativeFullSpeedMethodInitialized = true
+                   }))
+        {
+            unavailableRuntime.SetReportForTesting(fanControlOnlyReport);
+            using var coolingWithoutAlternative = new ToolkitPerformancePage(
+                unavailableRuntime,
+                coolingOnly: true);
+            Assert(GetPrivateField<Border>(
+                       coolingWithoutAlternative,
+                       "_fullSpeedRow").Visibility == Visibility.Collapsed,
+                "The full-speed switch remains visible when neither native nor alternative full speed is available.");
+
+            unavailableRuntime.Settings.UseAlternativeFullSpeedMethod = true;
+            using var coolingWithAlternative = new ToolkitPerformancePage(
+                unavailableRuntime,
+                coolingOnly: true);
+            Assert(GetPrivateField<Border>(
+                       coolingWithAlternative,
+                       "_fullSpeedRow").Visibility == Visibility.Visible,
+                "The full-speed switch is hidden while the alternative full-speed method is enabled.");
+            using var unavailableSettings = new ToolkitSettingsPage(
+                unavailableRuntime);
+            Assert(ContainsText(
+                       unavailableSettings,
+                       "若关闭此项，则无法使用风扇满转功能"),
+                "The alternative full-speed setting does not explain the consequence of disabling it.");
+        }
         Assert(MainWindow.EffectiveRampDownRate(0, 20) == 20 &&
                MainWindow.EffectiveRampDownRate(50, 0) == 50 &&
                MainWindow.EffectiveRampDownRate(50, 20) == 20,
@@ -1628,6 +1800,14 @@ internal static class Program
         {
         }
         limitsWindow.Close();
+
+        window.NavigateForTesting("overview");
+        var visiblePageBeforeFnRefresh = window.CurrentPage;
+        runtime.NotifyControlStateChanged();
+        Assert(ReferenceEquals(
+                   visiblePageBeforeFnRefresh,
+                   window.CurrentPage),
+            "Fn-key state refresh recreates the visible page and causes a flash.");
 
         window.Close();
     }
@@ -1783,8 +1963,29 @@ internal static class Program
         var fields = typeof(TemperatureReader).GetFields(
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert(fields.Any(field => field.FieldType == typeof(GpuMonitorWorkerClient)) &&
+               fields.Any(field => field.Name == "_gpuReadTask") &&
+               fields.Any(field => field.Name == "_storageInitialization") &&
                fields.All(field => field.FieldType != typeof(NvidiaPrivateTelemetryReader)),
-            "TemperatureReader must keep native NVIDIA polling outside the Toolkit process.");
+            "TemperatureReader must keep native NVIDIA polling outside the Toolkit process and initialize slow GPU/storage readers without blocking base readings.");
+        Assert(!GuardianNvidiaStateReader.ShouldLogActivityTransition(
+                   new NvidiaActivitySnapshot(
+                       "GPU",
+                       DiscreteGpuActivityState.Active,
+                       "P0"),
+                   new NvidiaActivitySnapshot(
+                       "GPU",
+                       DiscreteGpuActivityState.Active,
+                       "P1")) &&
+               GuardianNvidiaStateReader.ShouldLogActivityTransition(
+                   new NvidiaActivitySnapshot(
+                       "GPU",
+                       DiscreteGpuActivityState.Active,
+                       "P0"),
+                   new NvidiaActivitySnapshot(
+                       "GPU",
+                       DiscreteGpuActivityState.Inactive,
+                       "P0")),
+            "GPU worker logging still treats P-state changes as activity-state transitions.");
         Assert(GpuMonitorWorker.ReadCommand == "READ" &&
                GpuMonitorWorker.ReadQuiescingCommand == "READ_QUIESCING" &&
                GpuMonitorWorker.ReadNonNvidiaCommand == "READ_NON_NVIDIA" &&
@@ -1812,11 +2013,20 @@ internal static class Program
             CoreFrequencyOffsetMhz = 500,
             MemoryFrequencyOffsetMhz = -1000,
             MinimumCoreFrequencyMhz = 0,
-            MaximumCoreFrequencyMhz = 3500
+            MaximumCoreFrequencyMhz = 3500,
+            MinimumMemoryFrequencyMhz = 6000,
+            MaximumMemoryFrequencyMhz = 12000
         };
         Assert(GpuOverclockPolicy.TryValidate(valid, out _) &&
                !GpuOverclockPolicy.IsDefault(valid),
             "Valid GPU overclock boundary values were rejected.");
+        var defaults = new GpuOverclockSettings();
+        Assert(defaults.CoreFrequencyOffsetEnabled &&
+               defaults.MemoryFrequencyOffsetEnabled &&
+               defaults.CoreFrequencyLimitEnabled &&
+               defaults.MemoryFrequencyLimitEnabled &&
+               GpuOverclockPolicy.IsDefault(defaults),
+            "GPU overclock options must all be enabled by default.");
         Assert(!GpuOverclockPolicy.TryValidate(
                    new GpuOverclockSettings
                    {
@@ -1841,21 +2051,63 @@ internal static class Program
                        MinimumCoreFrequencyMhz = 2000,
                        MaximumCoreFrequencyMhz = 1000
                    },
+                   out _) &&
+               !GpuOverclockPolicy.TryValidate(
+                   new GpuOverclockSettings
+                   {
+                       MinimumMemoryFrequencyMhz = 6000
+                   },
+                   out _) &&
+               !GpuOverclockPolicy.TryValidate(
+                   new GpuOverclockSettings
+                   {
+                       MinimumMemoryFrequencyMhz = 0,
+                       MaximumMemoryFrequencyMhz = 12000
+                   },
+                   out _) &&
+               !GpuOverclockPolicy.TryValidate(
+                   new GpuOverclockSettings
+                   {
+                       MinimumMemoryFrequencyMhz = 12000,
+                       MaximumMemoryFrequencyMhz = 6000
+                   },
                    out _),
-            "Invalid GPU offsets or core-frequency limits were accepted.");
+            "Invalid GPU offsets or clock limits were accepted.");
         var normalized = GpuOverclockPolicy.Normalize(
             new GpuOverclockSettings
             {
                 CoreFrequencyOffsetMhz = 800,
                 MemoryFrequencyOffsetMhz = -4000,
                 MinimumCoreFrequencyMhz = 2000,
-                MaximumCoreFrequencyMhz = 1000
+                MaximumCoreFrequencyMhz = 1000,
+                MinimumMemoryFrequencyMhz = 12000,
+                MaximumMemoryFrequencyMhz = 6000
             });
         Assert(normalized.CoreFrequencyOffsetMhz == 500 &&
                normalized.MemoryFrequencyOffsetMhz == -1000 &&
                normalized.MinimumCoreFrequencyMhz is null &&
-               normalized.MaximumCoreFrequencyMhz is null,
+               normalized.MaximumCoreFrequencyMhz is null &&
+               normalized.MinimumMemoryFrequencyMhz is null &&
+               normalized.MaximumMemoryFrequencyMhz is null,
             "Legacy invalid GPU overclock settings are not normalized safely on load.");
+        Assert(GpuOverclockPolicy.Signature(valid) !=
+               GpuOverclockPolicy.Signature(new GpuOverclockSettings
+               {
+                   Enabled = true,
+                   CoreFrequencyOffsetMhz = 500,
+                   MemoryFrequencyOffsetMhz = -1000,
+                   MinimumCoreFrequencyMhz = 0,
+                   MaximumCoreFrequencyMhz = 3500,
+                   MinimumMemoryFrequencyMhz = 6000,
+                   MaximumMemoryFrequencyMhz = 11999
+               }),
+            "GPU-overclock command deduplication ignores memory clock limits.");
+        Assert(GpuOverclockPolicy.Signature(defaults) !=
+               GpuOverclockPolicy.Signature(new GpuOverclockSettings
+               {
+                   MemoryFrequencyOffsetEnabled = false
+               }),
+            "GPU-overclock command deduplication ignores per-option switches.");
         Assert(DiscreteGpuStatusFormatter.Format(
                    DiscreteGpuActivityState.Active,
                    "P0",
@@ -1894,11 +2146,37 @@ internal static class Program
         var memorySlider = (Slider)memoryEditor.GetType()
             .GetProperty("Slider")!
             .GetValue(memoryEditor)!;
+        GetPrivateField<TextBox>(overclockWindow, "_minimumMemoryClock")
+            .Text = "6000";
+        GetPrivateField<TextBox>(overclockWindow, "_maximumMemoryClock")
+            .Text = "12000";
+        GetPrivateField<CheckBox>(overclockWindow, "_memoryLimitEnabled")
+            .IsChecked = false;
+        var collectArguments = new object?[] { null, null };
+        var collected = (bool)(typeof(GpuOverclockWindow).GetMethod(
+            "TryCollect",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(overclockWindow, collectArguments) ?? false);
+        var collectedSettings = collectArguments[0] as GpuOverclockSettings;
         Assert(coreSlider.Minimum == -500 && coreSlider.Maximum == 500 &&
                memorySlider.Minimum == -1000 &&
                memorySlider.Maximum == 3000 &&
+               collected &&
+               collectedSettings?.MinimumMemoryFrequencyMhz == 6000 &&
+               collectedSettings.MaximumMemoryFrequencyMhz == 12000 &&
+               !collectedSettings.MemoryFrequencyLimitEnabled &&
+               Descendants(overclockWindow).OfType<CheckBox>().Count() == 4 &&
+               Descendants(overclockWindow).OfType<CheckBox>()
+                   .Count(toggle => toggle.IsChecked == true) == 3 &&
                ContainsText(overclockWindow, "不要与其它超频软件一起使用") &&
                ContainsText(overclockWindow, "限制核心频率") &&
+               ContainsText(overclockWindow, "限制显存频率") &&
+               typeof(NvidiaLockedClockApi).GetMethod(
+                   "NvmlDeviceSetMemoryLockedClocks",
+                   BindingFlags.NonPublic | BindingFlags.Static) is not null &&
+               typeof(NvidiaLockedClockApi).GetMethod(
+                   "NvmlDeviceResetMemoryLockedClocks",
+                   BindingFlags.NonPublic | BindingFlags.Static) is not null &&
                GetPrivateField<Button>(overclockWindow, "_restore")
                    .HorizontalAlignment == HorizontalAlignment.Left &&
                Descendants(overclockWindow).OfType<Button>()
@@ -2217,6 +2495,27 @@ internal static class Program
         Assert(maximum.Index == points.Count - 1 &&
                maximum.Target == new FanTargets(5000, 5000),
             "Advanced curve cannot reach its highest point.");
+        var cpuOnlyRaised = AdvancedFanCurve.Evaluate(points, 0, 80, null);
+        Assert(cpuOnlyRaised.Index > 0,
+            "Advanced curve does not ramp up from CPU temperature when GPU temperature is unavailable.");
+        var cpuOnlyLowered = AdvancedFanCurve.Evaluate(points, cpuOnlyRaised.Index, 40, null);
+        Assert(cpuOnlyLowered.Index == 0 &&
+               cpuOnlyLowered.Target == new FanTargets(1500, 1500),
+            "Advanced curve does not ramp down from CPU temperature when GPU temperature is unavailable.");
+
+        Assert(MainWindow.SmoothTemperature(70, null, 3) is null,
+            "A missing GPU reading must clear its smoothed value instead of retaining a stale temperature.");
+        var cpuOnlyFanTarget = Math.Max(
+            CurveProfileStore.Interpolate(
+                CurveProfileStore.CpuTemps,
+                Enumerable.Repeat(2600, CurveProfileStore.CpuTemps.Length).ToArray(),
+                60),
+            CurveProfileStore.Interpolate(
+                CurveProfileStore.GpuTemps,
+                Enumerable.Repeat(5000, CurveProfileStore.GpuTemps.Length).ToArray(),
+                null));
+        Assert(cpuOnlyFanTarget == 2600,
+            "The regular fan curve does not ignore the GPU curve when GPU temperature is unavailable.");
 
         var invalid = points.Select(AdvancedFanCurve.Clone).ToList();
         invalid[1].Fan1Rpm = 1850;
@@ -2504,25 +2803,883 @@ internal static class Program
     {
         FeatureIds.DiscreteGpuManagement => "独立显卡状态与占用应用",
         FeatureIds.GpuOverclock => "独立显卡超频",
+        FeatureIds.FanFullSpeed => "风扇拉满",
         FeatureIds.DisplayRefreshRate => "笔记本屏幕刷新率切换",
         FeatureIds.FnKeyTakeover => "Fn 快捷键接管",
         FeatureIds.CapsLockOsd => "CapsLock OSD",
         FeatureIds.NumLockOsd => "NumLock OSD",
+        FeatureIds.BiosIoControl => "IO 控制",
+        FeatureIds.DriverUpdate => "Lenovo 驱动与固件更新",
+        FeatureIds.Automation => "自动化与 Fn 快捷键映射",
+        FeatureIds.KeyboardMacros => "键盘宏",
         FeatureIds.UpdateCheck => "软件更新检查",
         _ => id
     };
 
+    private static void VerifyItsModeControlPaths()
+    {
+        Assert(ItsModeDetector.ResolveControlPath(8192, true) ==
+                   ItsModeControlPath.ModernDispatcher &&
+               ItsModeDetector.ResolveControlPath(8191, true) ==
+                   ItsModeControlPath.LegacyLitssvc &&
+               ItsModeDetector.ResolveControlPath(0, false) ==
+                   ItsModeControlPath.Unavailable &&
+               ItsModeController.ServiceNameForPath(
+                   ItsModeControlPath.ModernDispatcher) ==
+                   "LenovoProcessManagement" &&
+               ItsModeController.ServiceNameForPath(
+                   ItsModeControlPath.LegacyLitssvc) == "LITSSVC" &&
+               ItsModeController.CommandForMode(
+                   ItsMode.Intelligent,
+                   ItsModeControlPath.LegacyLitssvc) == 135 &&
+               ItsModeController.CommandForMode(
+                   ItsMode.PowerSaving,
+                   ItsModeControlPath.LegacyLitssvc) == 146 &&
+               ItsModeController.CommandForMode(
+                   ItsMode.Performance,
+                   ItsModeControlPath.LegacyLitssvc) == 148 &&
+               ItsModeDetector.IsModeSupported(
+                   ItsMode.Performance,
+                   ItsModeControlPath.LegacyLitssvc) &&
+               !ItsModeDetector.IsModeSupported(
+                   ItsMode.Geek,
+                   ItsModeControlPath.LegacyLitssvc),
+            "Modern and legacy ITS control paths or commands are incorrect.");
+        try
+        {
+            _ = ItsModeController.CommandForMode(
+                ItsMode.Geek,
+                ItsModeControlPath.LegacyLitssvc);
+            throw new InvalidOperationException(
+                "Legacy LITSSVC unexpectedly accepted Geek mode.");
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+        }
+        Assert(PerformanceModeCycle.Next(
+                   PerformanceModeCycle.DefaultOrder,
+                   PerformanceModeCycle.DefaultOrder,
+                   ItsMode.Performance,
+                   isAcConnected: true,
+                   mode => ItsModeDetector.IsModeSupported(
+                       mode,
+                       ItsModeControlPath.LegacyLitssvc)) ==
+               ItsMode.PowerSaving,
+            "Fn+Q does not skip modes unsupported by legacy LITSSVC.");
+    }
+
     private static void VerifyApplicationUpdateService()
     {
-        Assert(ApplicationUpdateService.CurrentVersionText == "0.2.7",
+        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.0",
             "The application version is not the expected release version.");
         var release = ApplicationUpdateService.ParseReleaseJson(
-            "{\"tag_name\":\"v0.3.0\",\"html_url\":" +
-            "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v0.3.0\"}");
-        Assert(release.Version == new Version(0, 3, 0) &&
-               release.TagName == "v0.3.0" &&
+            "{\"tag_name\":\"v1.1.0\",\"html_url\":" +
+            "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.1.0\"}");
+        Assert(release.Version == new Version(1, 1, 0) &&
+               release.TagName == "v1.1.0" &&
                ApplicationUpdateService.IsNewer(release),
             "The GitHub Release response is not parsed or compared correctly.");
+    }
+
+    private static void VerifyAutomationContracts()
+    {
+        Assert(AutomationStepCatalog.Items.Select(item => item.Kind)
+                   .Distinct()
+                   .Count() == Enum.GetValues<AutomationStepKind>().Length &&
+               AutomationStepCatalog.Items
+                   .Select(item => item.CategoryChinese)
+                   .Distinct()
+                   .SequenceEqual([
+                       "性能",
+                       "散热",
+                       "电源",
+                       "显示",
+                       "声音",
+                       "输入",
+                       "应用",
+                       "延迟",
+                       "宏"
+                   ]) &&
+               (int)AutomationStepKind.Delay == 30 &&
+               (int)AutomationStepKind.RunMacro == 31,
+            "The automation step catalog is incomplete or not grouped in the required second-level order.");
+        using var catalogRuntime = new ToolkitRuntimeService(new AppSettings());
+        Assert(!catalogRuntime.Settings.AutomationEnabled &&
+               !catalogRuntime.Settings.MacroEnabled &&
+               AutomationStepCatalog.Options(
+                       AutomationStepKind.GpuOverclockEnabled,
+                       catalogRuntime)
+                   .Any(option => option.Value == "toggle") &&
+               AutomationStepCatalog.Metadata(
+                       AutomationStepKind.ShowToolkitWindow)
+                   .NameChinese.Contains("ThinkBook Toolkit") &&
+               AutomationStepCatalog.Metadata(
+                       AutomationStepKind.ToggleToolkitWindow)
+                   .NameChinese == "唤出或最小化 ThinkBook Toolkit",
+            "Automation defaults, toggle values, or Toolkit window actions are incomplete.");
+
+        var automation = new AutomationDefinition
+        {
+            Name = "Test automation",
+            Triggers = [AutomationTriggerKind.AcAdapterConnected],
+            Steps =
+            [
+                new AutomationStep
+                {
+                    Kind = AutomationStepKind.Delay,
+                    Value = "0"
+                },
+                new AutomationStep
+                {
+                    Kind = AutomationStepKind.ShowToolkitWindow
+                }
+            ]
+        };
+        var normalized = AutomationSettingsDefaults.Normalize([
+            automation,
+            automation
+        ]);
+        Assert(normalized.Count == 2 &&
+               normalized.Select(item => item.Id).Distinct().Count() == 2 &&
+               normalized.Select(item => item.Name).SequenceEqual([
+                   "Test automation",
+                   "Test automation2"
+               ]) &&
+               normalized.All(item => item.Steps.Count == 2) &&
+               normalized.All(item => item.Triggers.SequenceEqual([
+                   AutomationTriggerKind.AcAdapterConnected
+               ])),
+            "Automation normalization loses order or does not repair duplicate IDs.");
+        Assert(UniqueDefinitionNames.Create(
+                   "新自动化",
+                   ["新自动化", "新自动化2"]) == "新自动化3" &&
+               UniqueDefinitionNames.Create(
+                   "新宏",
+                   ["新宏"]) == "新宏2" &&
+               UniqueDefinitionNames.HasDuplicates([
+                   "Example",
+                   " example "
+               ]),
+            "Unique automation and macro default names are not generated correctly.");
+        var migrationMacroId = Guid.NewGuid().ToString("D");
+        var migratedKinds = AutomationSettingsDefaults.Normalize([
+            new AutomationDefinition
+            {
+                Name = "Migration",
+                Steps =
+                [
+                    new AutomationStep
+                    {
+                        Kind = AutomationStepKind.RunMacro,
+                        Value = "0.5"
+                    },
+                    new AutomationStep
+                    {
+                        Kind = AutomationStepKind.Delay,
+                        Value = migrationMacroId
+                    }
+                ]
+            }
+        ])[0].Steps;
+        Assert(migratedKinds[0].Kind == AutomationStepKind.Delay &&
+               migratedKinds[0].Value == "0.5" &&
+               migratedKinds[1].Kind == AutomationStepKind.RunMacro &&
+               migratedKinds[1].Value == migrationMacroId,
+            "Automation migration cannot distinguish numeric delays from macro identifiers.");
+        var bindings = AutomationSettingsDefaults.NormalizeFnBindings(
+            new Dictionary<string, string>
+            {
+                [FnAutomationKeyIds.FnQ] = normalized[0].Id,
+                ["invalid-key"] = normalized[0].Id,
+                [FnAutomationKeyIds.RefreshRate] = Guid.NewGuid().ToString("D")
+            },
+            normalized);
+        Assert(bindings.Count == 1 &&
+               bindings[FnAutomationKeyIds.FnQ] == normalized[0].Id &&
+               FnAutomationKeyIds.All.Count == 11 &&
+               LenovoFnKeyManager.DriverKeyBindingId(
+                   LenovoDriverKey.FnQ) == FnAutomationKeyIds.FnQ &&
+               LenovoFnKeyManager.DriverKeyBindingId(
+                   LenovoDriverKey.FnF4) == FnAutomationKeyIds.FnF4 &&
+               LenovoFnKeyManager.SpecialKeyBindingId(
+                   LenovoSpecialKey.FnF8ThinkBook) ==
+                   FnAutomationKeyIds.Touchpad &&
+               LenovoFnKeyManager.SpecialKeyBindingId(
+                   LenovoSpecialKey.FnR) ==
+                   FnAutomationKeyIds.RefreshRate &&
+               LenovoFnKeyManager.SpecialKeyBindingId(
+                   LenovoSpecialKey.CameraOn) == string.Empty &&
+               LenovoFnKeyManager.DoublePressInterval ==
+                   TimeSpan.FromMilliseconds(300),
+            "Fn-key automation bindings do not preserve defaults or reject stale mappings.");
+        var discoveredWmi = new FnKeyDiscoveredInfo(
+            0x1234,
+            "WMI",
+            "Fn + Test",
+            DateTimeOffset.Now);
+        var discoveredDriver = discoveredWmi with { Channel = "IOCTL" };
+        var customNames = AutomationSettingsDefaults.NormalizeCustomFnKeyNames(
+            new Dictionary<string, string>
+            {
+                [discoveredWmi.BindingId] = discoveredWmi.Name,
+                ["invalid-custom-key"] = "Invalid"
+            });
+        var customBindings = AutomationSettingsDefaults.NormalizeFnBindings(
+            new Dictionary<string, string>
+            {
+                [discoveredWmi.BindingId] = normalized[0].Id
+            },
+            normalized,
+            customNames);
+        Assert(discoveredWmi.BindingId != discoveredDriver.BindingId &&
+               FnAutomationKeyIds.IsCustom(discoveredWmi.BindingId) &&
+               customNames.Count == 1 &&
+               customBindings.TryGetValue(
+                   discoveredWmi.BindingId,
+                   out var customAutomationId) &&
+               customAutomationId == normalized[0].Id,
+            "Discovered Fn keys are not stored distinctly by event source or accepted by automation bindings.");
+
+        using var runtime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "light",
+            Automations = [automation],
+            CustomFnKeyNames = customNames
+        });
+        var result = runtime.RunAutomationAsync(automation.Id)
+            .GetAwaiter()
+            .GetResult();
+        Assert(result.Success,
+            "A valid ordered automation cannot be executed.");
+        Assert(ToolkitRuntimeService.ResolveAutomationTransitions(
+                   previousAcConnected: true,
+                   acConnected: false,
+                   previousGamesRunning: false,
+                   gamesRunning: true)
+               .SequenceEqual([
+                   AutomationTriggerKind.AcAdapterDisconnected,
+                   AutomationTriggerKind.GameStarted
+               ]) &&
+               ToolkitRuntimeService.ResolveAutomationTransitions(
+                   null,
+                   true,
+                   null,
+                   false).Count == 0,
+            "Power and shared game-state transitions do not resolve to automation triggers correctly.");
+        Assert(typeof(GameProcessDetector).GetInterfaces()
+                   .Contains(typeof(IDisposable)) &&
+               typeof(GameProcessDetector).GetField(
+                   "_effectiveGameMode",
+                   BindingFlags.Instance | BindingFlags.NonPublic) is not null &&
+               typeof(PerformanceRuntimeSnapshot).GetProperty(
+                   "GamesRunning") is not null,
+            "Game automation does not share the enhanced fixed-RPM game detector state.");
+        using var page = new ToolkitAutomationPage(runtime);
+        var categorySelector = GetPrivateField<ComboBox>(
+            page,
+            "_category");
+        var automationEnabled = GetPrivateField<CheckBox>(
+            page,
+            "_automationEnabled");
+        Assert(ContainsText(page, "新建自动化") &&
+               ContainsText(page, "新建宏") &&
+               ContainsText(page, "Test automation") &&
+               !ContainsText(page, "已定义的自动化") &&
+               automationEnabled.IsChecked == false &&
+               categorySelector.Items.Cast<string>().SequenceEqual([
+                   "性能",
+                   "散热",
+                   "电源",
+                   "显示",
+                   "声音",
+                   "输入",
+                   "应用",
+                   "延迟"
+               ]),
+            "The automation page does not expose management and second-level step categories.");
+        var automationDetails = GetPrivateField<StackPanel>(
+            page,
+            "_automationDetails");
+        var macroPanel = GetPrivateField<KeyboardMacroPanel>(
+            page,
+            "_macroPanel");
+        var macroDetails = GetPrivateField<StackPanel>(
+            macroPanel,
+            "_details");
+        var macroEditorHost = GetPrivateField<Border>(
+            macroPanel,
+            "_editorHost");
+        var automationCreate = Descendants(page)
+            .OfType<Button>()
+            .First(button => Equals(button.Content, "新建自动化"));
+        var macroCreate = Descendants(page)
+            .OfType<Button>()
+            .First(button => Equals(button.Content, "新建宏"));
+        Assert(automationDetails.Visibility == Visibility.Collapsed &&
+               macroDetails.Visibility == Visibility.Collapsed &&
+               macroPanel.Visibility == Visibility.Collapsed &&
+               macroEditorHost.Visibility == Visibility.Collapsed &&
+               automationCreate.Parent is StackPanel automationHeader &&
+               Grid.GetColumn(automationHeader) == 2 &&
+               Grid.GetColumn(macroPanel.HeaderActions) == 2 &&
+               automationHeader.Children[1] is CheckBox &&
+               macroPanel.HeaderActions is StackPanel macroHeader &&
+               macroHeader.Children[1] is CheckBox &&
+               automationCreate.MinWidth == macroCreate.MinWidth &&
+               automationCreate.MinHeight == macroCreate.MinHeight &&
+               automationCreate.Padding == macroCreate.Padding,
+            "Automation and macro cards are not collapsed by default.");
+        var beginEdit = typeof(ToolkitAutomationPage).GetMethod(
+            "BeginEdit",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var addStep = typeof(ToolkitAutomationPage).GetMethod(
+            "AddStep",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        beginEdit.Invoke(page, [null]);
+        Assert(automationDetails.Visibility == Visibility.Visible,
+            "Creating an automation does not expand its card.");
+        addStep.Invoke(page, null);
+        addStep.Invoke(page, null);
+        var draft = GetPrivateField<AutomationDefinition>(page, "_draft");
+        var triggerToggles = GetPrivateField<Dictionary<AutomationTriggerKind, CheckBox>>(
+            page,
+            "_triggerToggles");
+        Assert(draft.Steps.Count == 3 &&
+               draft.Steps[1] is
+               {
+                   Kind: AutomationStepKind.Delay,
+                   Value: "0.5"
+               } &&
+               triggerToggles.Count == 4,
+            "Adding a second automation step does not insert an editable 0.5-second delay.");
+        var beginStepEdit = typeof(ToolkitAutomationPage).GetMethod(
+            "BeginStepEdit",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        beginStepEdit.Invoke(page, [1]);
+        GetPrivateField<TextBox>(page, "_value").Text = "1.25";
+        addStep.Invoke(page, null);
+        Assert(draft.Steps[1].Value == "1.25",
+            "The automatically inserted delay cannot be adjusted.");
+
+        var macroWithInvalidEvent = new KeyboardMacroDefinition
+        {
+            Name = "Macro A",
+            TriggerVirtualKey = 0x61,
+            Events =
+            [
+                new KeyboardMacroEvent
+                {
+                    VirtualKey = 0x41,
+                    Direction = KeyboardMacroDirection.Down,
+                    DelayMilliseconds = 50
+                },
+                new KeyboardMacroEvent
+                {
+                    VirtualKey = 0,
+                    Direction = KeyboardMacroDirection.Up,
+                    DelayMilliseconds = -1
+                }
+            ]
+        };
+        var normalizedMacros = KeyboardMacroDefaults.Normalize(
+        [
+            macroWithInvalidEvent,
+            macroWithInvalidEvent with { Name = "Macro B" }
+        ]);
+        Assert(normalizedMacros.Count == 2 &&
+               normalizedMacros[0].Events.Count == 1 &&
+               normalizedMacros[0].TriggerVirtualKey == 0x61 &&
+               normalizedMacros[1].TriggerVirtualKey is null &&
+               KeyboardMacroKeyNames.TryParse("A", out var keyA) &&
+               keyA == 0x41 &&
+               KeyboardMacroKeyNames.TryParse("0x62", out var keyNumpad2) &&
+               keyNumpad2 == 0x62,
+            "Keyboard macro normalization, duplicate binding cleanup, or key parsing is incorrect.");
+        Assert(!runtime.TrySaveAutomations(
+                   [
+                       new AutomationDefinition { Name = "Duplicate" },
+                       new AutomationDefinition { Name = " duplicate " }
+                   ],
+                   out var duplicateAutomationError) &&
+               !string.IsNullOrWhiteSpace(duplicateAutomationError) &&
+               !runtime.TrySaveMacros(
+                   [
+                       new KeyboardMacroDefinition { Name = "Macro" },
+                       new KeyboardMacroDefinition { Name = "macro" }
+                   ],
+                   out var duplicateMacroError) &&
+               !string.IsNullOrWhiteSpace(duplicateMacroError),
+            "Duplicate automation or macro names are accepted by the runtime save boundary.");
+        runtime.Settings.Macros = [normalizedMacros[0]];
+        var macroOptions = AutomationStepCatalog.Options(
+            AutomationStepKind.RunMacro,
+            runtime);
+        Assert(macroOptions.Count == 1 &&
+               macroOptions[0].Value == normalizedMacros[0].Id &&
+               macroOptions[0].Chinese == "Macro A",
+            "Defined keyboard macros are not exposed as automation-step options.");
+        var privateApplicationStep = new AutomationStep
+        {
+            Kind = AutomationStepKind.OpenApplication,
+            Value = @"C:\Private\Application.exe",
+            SecondaryValue = "--secret"
+        };
+        var applicationLog = AutomationRunner.StepLogDescription(
+            privateApplicationStep,
+            runtime);
+        var macroLog = AutomationRunner.StepLogDescription(
+            new AutomationStep
+            {
+                Kind = AutomationStepKind.RunMacro,
+                Value = normalizedMacros[0].Id
+            },
+            runtime);
+        var eventLog = KeyboardMacroService.FormatEventForLog(
+            normalizedMacros[0].Events[0]);
+        Assert(applicationLog.Contains("<redacted>") &&
+               !applicationLog.Contains("Private") &&
+               !applicationLog.Contains("secret") &&
+               macroLog.Contains("Macro A") &&
+               eventLog.Contains("A (0x41)") &&
+               eventLog.Contains("direction=Down") &&
+               eventLog.Contains("delay=50 ms"),
+            "Automation or macro execution logging is incomplete or exposes application arguments.");
+        typeof(ToolkitAutomationPage).GetMethod(
+                "OnMacroChanged",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(page, [null, EventArgs.Empty]);
+        Assert(categorySelector.Items.Cast<string>().TakeLast(2)
+                   .SequenceEqual(["延迟", "宏"]),
+            "The Macro automation-step category is not added after the first macro is defined.");
+        typeof(KeyboardMacroPanel).GetMethod(
+                "BeginEdit",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(macroPanel, [normalizedMacros[0]]);
+        Assert(macroDetails.Visibility == Visibility.Visible &&
+               macroPanel.Visibility == Visibility.Visible &&
+               macroEditorHost.Visibility == Visibility.Visible &&
+               ContainsText(macroPanel, "仅可通过“停止录制”按钮结束") &&
+               Descendants(macroPanel).OfType<Button>().Any(button =>
+                   Equals(
+                       button.Content,
+                       KeyboardMacroKeyNames.Format(0x41))) &&
+               !Descendants(macroPanel).OfType<TextBox>().Any(box =>
+                   box.Text == KeyboardMacroKeyNames.Format(0x41)) &&
+               macroEditorHost.CornerRadius ==
+                   GetPrivateField<Border>(page, "_editorCard").CornerRadius &&
+               macroEditorHost.Padding ==
+                   GetPrivateField<Border>(page, "_editorCard").Padding,
+            "Creating a keyboard macro does not expand its card.");
+        var fnWindow = new FnAutomationSettingsWindow(runtime);
+        try
+        {
+            var selectors = GetPrivateField<Dictionary<string, ComboBox>>(
+                fnWindow,
+                "_selectors");
+            var doubleSelectors = GetPrivateField<Dictionary<string, ComboBox>>(
+                fnWindow,
+                "_doubleSelectors");
+            Assert(selectors.Count == FnAutomationKeyIds.All.Count + 1 &&
+                   doubleSelectors.Count == FnAutomationKeyIds.All.Count + 1 &&
+                   selectors.Values.All(selector =>
+                       selector.SelectedItem is ComboBoxItem
+                       {
+                           Tag: ""
+                       }) &&
+                   doubleSelectors.Values.All(selector =>
+                       selector.SelectedItem is ComboBoxItem
+                       {
+                           Tag: ""
+                       }) &&
+                   ContainsText(fnWindow, "单击") &&
+                   ContainsText(fnWindow, "双击") &&
+                   ContainsText(fnWindow, "Fn + Test") &&
+                   !ContainsText(fnWindow, "摄像头键"),
+                "Fn-key customization does not default every supported key to its default function.");
+        }
+        finally
+        {
+            fnWindow.Close();
+        }
+        var discoveryWindow = new FnKeyDiscoveryWindow(runtime);
+        try
+        {
+            var discoveryHandler = typeof(FnKeyDiscoveryWindow).GetMethod(
+                "OnDiscovered",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            discoveryHandler.Invoke(discoveryWindow, [null, discoveredWmi]);
+            discoveryHandler.Invoke(discoveryWindow,
+            [
+                null,
+                new FnKeyDiscoveredInfo(
+                    0x5678,
+                    "IOCTL",
+                    "Fn + Other",
+                    DateTimeOffset.Now)
+            ]);
+            Assert(ContainsText(discoveryWindow, "发现 Fn 按键") &&
+                   ContainsText(discoveryWindow, "原始代码") &&
+                   ContainsText(discoveryWindow, "已添加") &&
+                   ContainsText(
+                       discoveryWindow,
+                       "添加到自定义 Fn 快捷键"),
+                "Fn-key discovery UI is missing.");
+        }
+        finally
+        {
+            discoveryWindow.Close();
+        }
+    }
+
+    private static void VerifyApplicationDisclaimer()
+    {
+        var settings = new AppSettings();
+        Assert(ApplicationDisclaimerPreference.RequiresConfirmation(settings) &&
+               ApplicationDisclaimerPreference.ChineseConfirmation ==
+               "我了解风险，并自行承担全部后果，同时会在售后前卸载此软件。",
+            "The per-version application disclaimer does not require the exact acknowledgement text.");
+        settings.AcceptedDisclaimerVersion =
+            ApplicationDisclaimerPreference.CurrentVersion;
+        Assert(!ApplicationDisclaimerPreference.RequiresConfirmation(settings),
+            "The application disclaimer is shown again for the same version.");
+        settings.AcceptedDisclaimerVersion = "0.0.0";
+        Assert(ApplicationDisclaimerPreference.RequiresConfirmation(settings),
+            "Updating the application does not require a new disclaimer acknowledgement.");
+
+        var window = new ApplicationDisclaimerWindow("zh-CN", isDark: false);
+        try
+        {
+            var confirmation = GetPrivateField<TextBox>(window, "_confirmation");
+            var continueButton = GetPrivateField<Button>(window, "_continue");
+            var language = GetPrivateField<ComboBox>(window, "_language");
+            Assert(!continueButton.IsEnabled &&
+                   language.Width == 130 &&
+                   language.HorizontalAlignment == HorizontalAlignment.Left &&
+                   ContainsText(window, "去售后前") &&
+                   ContainsText(window, "退出软件"),
+                "The startup disclaimer does not block continuation or show the service warning.");
+            confirmation.Text =
+                ApplicationDisclaimerPreference.ChineseConfirmation;
+            Assert(continueButton.IsEnabled,
+                "Typing the exact acknowledgement does not enable continuation.");
+        }
+        finally
+        {
+            window.Close();
+        }
+
+        var normalizedPaths = CurveProfileStore.NormalizeApplicationPaths(
+        [
+            @"C:\Games\Example\game.exe",
+            @"c:\games\example\GAME.exe",
+            " "
+        ]);
+        Assert(normalizedPaths.Count == 1,
+            "Custom game detection paths are not normalized case-insensitively.");
+        var gameSettings = new AppSettings
+        {
+            IncludedGamePaths = [@"C:\Games\Example\game.exe"]
+        };
+        using (var detector = new GameProcessDetector(gameSettings))
+        {
+            var matcher = typeof(GameProcessDetector).GetMethod(
+                "IsGameProcess",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var included = (bool)matcher.Invoke(detector,
+            [
+                1,
+                0,
+                "game.exe",
+                @"C:\Games\Example\game.exe",
+                null
+            ])!;
+            gameSettings.ExcludedGamePaths =
+                [@"C:\Games\Example\game.exe"];
+            var excluded = (bool)matcher.Invoke(detector,
+            [
+                1,
+                0,
+                "game.exe",
+                @"C:\Games\Example\game.exe",
+                null
+            ])!;
+            Assert(included && !excluded,
+                "Custom game exclusions do not override inclusions.");
+        }
+        using var runtime = new ToolkitRuntimeService(new AppSettings());
+        var gameWindow = new GameDetectionSettingsWindow(runtime);
+        try
+        {
+            var includedList = GetPrivateField<ListBox>(gameWindow, "_included");
+            Assert(ContainsText(gameWindow, "包含应用") &&
+                   ContainsText(gameWindow, "排除应用") &&
+                   includedList.Background is SolidColorBrush listBrush &&
+                   listBrush.Color != Colors.White,
+                "The custom game detection include/exclude editor is missing.");
+        }
+        finally
+        {
+            gameWindow.Close();
+        }
+    }
+
+    private static void VerifyDriverUpdateContracts()
+    {
+        const string catalogXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <packages count="1">
+              <package>
+                <location>https://download.lenovo.com/consumer/mobiles/example.xml</location>
+                <category>Software and Utilities</category>
+                <checksum type="sha256">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA</checksum>
+              </package>
+            </packages>
+            """;
+        const string descriptorXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <Package name="INTERNAL_NAME" id="example_driver" version="2.0.0" hide="False">
+              <Title default="EN"><Desc id="EN">Example Lenovo Driver</Desc></Title>
+              <Severity type="2" />
+              <ReleaseDate>2026-08-01</ReleaseDate>
+              <Reboot type="3" />
+              <Install rc="0,3010" type="cmd" default="EN">
+                <Cmdline id="EN">%PACKAGEPATH%\example.exe /silent /DIR=%PACKAGEPATH%\TMP</Cmdline>
+              </Install>
+              <DetectInstall>
+                <_Driver>
+                  <HardwareID>PCI\VEN_1234&amp;DEV_5678</HardwareID>
+                  <Version>2.0.0^</Version>
+                </_Driver>
+              </DetectInstall>
+              <Dependencies>
+                <And>
+                  <_OS><OS>WIN11</OS></_OS>
+                  <_WindowsBuildVersion><Version>26200</Version></_WindowsBuildVersion>
+                  <_PnPID>PCI\VEN_1234&amp;DEV_5678</_PnPID>
+                </And>
+              </Dependencies>
+              <Files><Installer><File>
+                <Name>example.exe</Name>
+                <CRC>BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB</CRC>
+                <Size>1048576</Size>
+              </File></Installer></Files>
+            </Package>
+            """;
+        var entries = LenovoDriverCatalogService.ParseCatalog(catalogXml);
+        var oldSnapshot = new DriverSystemSnapshot(
+            26200,
+            "R2CN57WW",
+            [new InstalledDriverSnapshot(
+                ["PCI\\VEN_1234&DEV_5678&SUBSYS_0001"],
+                "1.0.0",
+                null)]);
+        var available = LenovoDriverCatalogService.ParseDescriptor(
+            descriptorXml,
+            entries[0].DescriptorUri,
+            entries[0].Category,
+            oldSnapshot,
+            "zh-CN")!;
+        var current = LenovoDriverCatalogService.ParseDescriptor(
+            descriptorXml,
+            entries[0].DescriptorUri,
+            entries[0].Category,
+            oldSnapshot with
+            {
+                Drivers = [new InstalledDriverSnapshot(
+                    ["PCI\\VEN_1234&DEV_5678"],
+                    "2.0.0",
+                    null)]
+            },
+            "en-US")!;
+        Assert(entries.Count == 1 &&
+               available.PackageId == "example_driver" &&
+               available.Name == "Example Lenovo Driver" &&
+               available.Category == "Software and Utilities" &&
+               available.CurrentVersion == "1.0.0" &&
+               available.IsUpdateRequired &&
+               available.InstallPlan is
+               {
+                   FileName: "example.exe",
+                   Arguments: "/silent /DIR=%PACKAGEPATH%\\TMP"
+               } &&
+               !current.IsUpdateRequired &&
+               LenovoDriverCatalogService.CompareVersions(
+                   "32.0.15.9186",
+                   "32.0.15.9000") > 0 &&
+               LenovoDriverCatalogService.HardwareIdMatches(
+                   "PCI\\VEN_1234&DEV_5678&SUBSYS_0001",
+                   "PCI\\VEN_1234&DEV_5678") &&
+               DriverUpdateController.FormatRebootType(
+                   available.RebootType,
+                   chinese: true) == "需要重启" &&
+               DriverUpdateController.FormatSize(available.SizeBytes) ==
+                   "1.0 MB",
+            "The independent Lenovo catalog, descriptor, applicability, or " +
+            "installation-plan parser is incorrect.");
+
+        using (var runtime = new ToolkitRuntimeService(new AppSettings
+               {
+                   Language = "zh-CN",
+                   Theme = "light"
+               }))
+        {
+            runtime.SetReportForTesting(CreateReport(id =>
+                id == FeatureIds.DriverUpdate));
+            using var page = new ToolkitDriverUpdatePage(runtime);
+            var render = typeof(ToolkitDriverUpdatePage).GetMethod(
+                "RenderUpdates",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new MissingMethodException(
+                    nameof(ToolkitDriverUpdatePage),
+                    "RenderUpdates");
+            render.Invoke(page, [new DriverUpdateItem[]
+            {
+                available,
+                current
+            }]);
+            var panel = GetPrivateField<StackPanel>(page, "_updates");
+            var rows = panel.Children.OfType<Border>().ToArray();
+            var firstLabels = Descendants(rows[0])
+                .OfType<TextBlock>()
+                .Select(block => block.Text)
+                .ToArray();
+            var downloadButtons = Descendants(panel)
+                .OfType<Button>()
+                .ToArray();
+            var setBusy = typeof(ToolkitDriverUpdatePage).GetMethod(
+                "SetDownloadBusy",
+                BindingFlags.Static | BindingFlags.NonPublic)
+                ?? throw new MissingMethodException(
+                    nameof(ToolkitDriverUpdatePage),
+                    "SetDownloadBusy");
+            setBusy.Invoke(null, [downloadButtons[0], true]);
+            var busyVisual = downloadButtons[0].Content as TextBlock;
+            var hasSpinner = busyVisual?.RenderTransform is RotateTransform;
+            setBusy.Invoke(null, [downloadButtons[0], false]);
+            Assert(rows.Length == 2 &&
+                   firstLabels.Length >= 3 &&
+                   firstLabels[0] == "Software and Utilities" &&
+                   firstLabels[1] == "Example Lenovo Driver" &&
+                   firstLabels.Contains("需要更新") &&
+                   ContainsText(rows[1], "无需更新") &&
+                   !ContainsText(panel, "类别：") &&
+                   !Descendants(panel).OfType<CheckBox>().Any() &&
+                   downloadButtons.Length == 2 &&
+                   hasSpinner &&
+                   downloadButtons.All(button =>
+                       Equals(button.Content, "\uE896")),
+                "Driver update rows do not place the raw category above the " +
+                "name or expose per-item icon installation actions.");
+            var installedIds = new HashSet<string>(
+                [available.PackageId],
+                StringComparer.OrdinalIgnoreCase);
+            Assert(ToolkitDriverUpdatePage.ApplySuccessfulInstallations(
+                       [available],
+                       installedIds,
+                       keepAsUpToDate: false)
+                   .Count == 0 &&
+                   ToolkitDriverUpdatePage.ApplySuccessfulInstallations(
+                       [available],
+                       installedIds,
+                       keepAsUpToDate: true) is
+                   [
+                       {
+                           IsUpdateRequired: false,
+                           CurrentVersion: "2.0.0"
+                       }
+                   ],
+                "Successfully installed updates are not removed or retained as up to date according to the display option.");
+            var olderRequired = available with
+            {
+                PackageId = "required-old",
+                ReleaseDate = "2025-01-01"
+            };
+            var newerCurrent = current with
+            {
+                PackageId = "current-new",
+                ReleaseDate = "2027-01-01"
+            };
+            var newerRequired = available with
+            {
+                PackageId = "required-new",
+                ReleaseDate = "2026-01-01"
+            };
+            Assert(ToolkitDriverUpdatePage.SortUpdatesForDisplay(
+                       [newerCurrent, olderRequired, newerRequired],
+                       includeUpToDate: true)
+                   .Select(update => update.PackageId)
+                   .SequenceEqual(
+                       ["required-new", "required-old", "current-new"]),
+                "Driver updates are not ordered by required status and then descending release date.");
+        }
+    }
+
+    private static void VerifyFeatureAvailabilityDiagnostics()
+    {
+        var report = new FeatureAvailabilityReport(
+        [
+            new FeatureAvailability(
+                "feature.available",
+                "测试",
+                "完整功能",
+                true,
+                "正常"),
+            new FeatureAvailability(
+                "feature.partial",
+                "性能",
+                "部分功能",
+                false,
+                "缺少接口 A\r\n缺少接口 B",
+                PartiallyAvailable: true),
+            new FeatureAvailability(
+                "feature.unavailable",
+                "显示",
+                "不可用功能",
+                false,
+                "驱动未安装")
+        ]);
+        var messages = FeatureAvailabilityDiagnostics.DescribeIssues(report);
+        Assert(messages.Count == 2 &&
+               messages[0].Contains(
+                   "Feature partially available: [性能] 部分功能 " +
+                   "(feature.partial)",
+                   StringComparison.Ordinal) &&
+               messages[0].Contains(
+                   "reason: 缺少接口 A 缺少接口 B",
+                   StringComparison.Ordinal) &&
+               messages[1].Contains(
+                   "Feature unavailable: [显示] 不可用功能 " +
+                   "(feature.unavailable); reason: 驱动未安装",
+                   StringComparison.Ordinal) &&
+               messages.All(message =>
+                   !message.Contains("完整功能", StringComparison.Ordinal)),
+            "Feature detection does not log concrete reasons for partial and unavailable results.");
+    }
+
+    private static void VerifyBiosIoContracts()
+    {
+        var expectedIds = new[]
+        {
+            "USBPort",
+            "Bluetooth",
+            "IntegratedCamera",
+            "FingerprintReader",
+            "MemoryCardSlot",
+            "Microphone",
+            "Thunderbolt(TM)",
+            "WirelessLAN",
+            "Intel(R)VirtualizationTechnology",
+            "Intel(R)VT-dFeature"
+        };
+        Assert(BiosIoController.Definitions.Select(definition => definition.Id)
+                   .SequenceEqual(expectedIds),
+            "BIOS I/O controls do not use the documented exact Lenovo item names.");
+        Assert(BiosIoController.ParseSelections("Enable, Disable;Enable")
+                   .SequenceEqual(["Enable", "Disable"]) &&
+               BiosIoController.SupportsToggle(["Disable", "Enable"]) &&
+               !BiosIoController.SupportsToggle(["Enable"]),
+            "BIOS I/O selection parsing does not require both documented switch values.");
     }
 
     private static void VerifyPerformancePageWithoutFanControl()
@@ -2837,13 +3994,38 @@ internal static class Program
         };
         Assert(settings.ShowCapsLockOsd &&
                settings.ShowNumLockOsd &&
-               settings.RefreshRateCycleHz.Count == 0,
+               settings.RefreshRateCycleHz.Count == 0 &&
+               !settings.IncludeDynamicRefreshRateInCycle,
             "Toolkit lock-key OSD or refresh-rate defaults are incorrect.");
         using var runtime = new ToolkitRuntimeService(settings);
         var state = new DisplayRefreshRateState(
             "DISPLAY1",
             120,
-            [60, 120, 165]);
+            [60, 120, 240],
+            DynamicSupported: true,
+            DynamicActive: false,
+            DynamicMaximumHz: 240);
+        var fixedModes = RefreshRateController.EffectiveCycleModes(
+            state,
+            settings.RefreshRateCycleHz,
+            includeDynamic: false);
+        var dynamicModes = RefreshRateController.EffectiveCycleModes(
+            state,
+            settings.RefreshRateCycleHz,
+            includeDynamic: true);
+        Assert(fixedModes.SequenceEqual(
+                   [new DisplayRefreshRateMode(60),
+                    new DisplayRefreshRateMode(240)]) &&
+               dynamicModes.SequenceEqual(
+                   [new DisplayRefreshRateMode(60),
+                    new DisplayRefreshRateMode(240),
+                    new DisplayRefreshRateMode(240, true)]) &&
+               dynamicModes[^1].DisplayName == "Dynamic (240 Hz)" &&
+               RefreshRateController.SelectNextRefreshRate(
+                   dynamicModes,
+                   new DisplayRefreshRateMode(240, true)) ==
+               new DisplayRefreshRateMode(60),
+            "Dynamic Refresh Rate is not represented or cycled independently from fixed refresh rates.");
         var window = new RefreshRateSettingsWindow(
             null,
             runtime,
@@ -2856,11 +4038,12 @@ internal static class Program
                 toggle => toggle.Content?.ToString() ?? string.Empty,
                 toggle => toggle.IsChecked == true,
                 StringComparer.Ordinal);
-        Assert(toggles.Count == 3 &&
+        Assert(toggles.Count == 4 &&
                toggles["60 Hz"] &&
                !toggles["120 Hz"] &&
-               toggles["165 Hz"],
-            "Refresh-rate editor does not default to 60 Hz and the panel maximum.");
+               toggles["240 Hz"] &&
+               !toggles["Dynamic (240 Hz)"],
+            "Refresh-rate editor does not default to fixed 60 Hz and the panel maximum with Dynamic disabled.");
         window.Close();
     }
 
@@ -2945,6 +4128,25 @@ internal static class Program
                !SameRow(items[0], items[7]) &&
                Math.Abs(sixthVisible.X - first.X) < 1,
             "Collapsed adaptive-panel items still reserve grid positions.");
+
+        var cappedPanel = new AdaptiveUniformPanel
+        {
+            MinimumItemWidth = 180,
+            MaximumColumns = 3,
+            Spacing = 8
+        };
+        var cappedItems = Enumerable.Range(0, 7)
+            .Select(_ => new Border { Height = 80 })
+            .ToArray();
+        foreach (var item in cappedItems)
+            cappedPanel.Children.Add(item);
+
+        ArrangePanel(cappedPanel, 1200);
+        Assert(SameRow(cappedItems[0], cappedItems[2]) &&
+               !SameRow(cappedItems[0], cappedItems[3]) &&
+               SameRow(cappedItems[3], cappedItems[5]) &&
+               !SameRow(cappedItems[3], cappedItems[6]),
+            "Adaptive panels do not honor their maximum column count.");
     }
 
     private static void VerifySystemShutdownPreparation()
@@ -2993,13 +4195,16 @@ internal static class Program
 
     private static string Category(string id)
     {
-        if (id is FeatureIds.FanControl or FeatureIds.SleepFanControl) return "散热";
+        if (id is FeatureIds.FanControl or FeatureIds.FanFullSpeed or
+            FeatureIds.SleepFanControl) return "散热";
         if (id.StartsWith("performance.", StringComparison.Ordinal)) return "性能";
         if (id.StartsWith("battery.", StringComparison.Ordinal)) return "电池与电源";
         if (id.StartsWith("display.", StringComparison.Ordinal)) return "显示";
         if (id.StartsWith("sound.", StringComparison.Ordinal)) return "声音";
         if (id.StartsWith("input.", StringComparison.Ordinal)) return "输入设备";
         if (id.StartsWith("device.", StringComparison.Ordinal)) return "设备";
+        if (id.StartsWith("driver-update.", StringComparison.Ordinal)) return "驱动更新";
+        if (id.StartsWith("automation.", StringComparison.Ordinal)) return "自动化";
         if (id.StartsWith("advanced.", StringComparison.Ordinal)) return "高级工具";
         if (id.StartsWith("settings.", StringComparison.Ordinal)) return "设置";
         return "监控";
@@ -3123,6 +4328,43 @@ internal static class Program
         public void RestoreAuto() =>
             throw new NotSupportedException();
 
+        public void SetFullSpeed(bool enabled) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class UnavailableFullSpeedBackend :
+        IFanBackend,
+        IFanBackendCapabilityProbe
+    {
+        public Version ApiVersion => FanBackendContract.CurrentVersion;
+        public string Name => "Test backend";
+        public string Transport => "Test";
+        public FanBackendStartupNotice? StartupNotice => null;
+        public bool SupportsDisableControlOnSleep => false;
+        public TimeSpan MinimumReadInterval => TimeSpan.FromSeconds(0.5);
+        public TimeSpan MinimumWriteInterval => TimeSpan.FromSeconds(0.5);
+        public FanBackendControlSemantics ControlSemantics { get; } = new(
+            FanTargetZeroBehavior.ReleaseFanToFirmwareControl,
+            FanAutomaticControlRestoreMechanism.WriteZeroToBothTargets,
+            "test restore",
+            new(
+                FanFullSpeedControlMechanism.FeatureToggle,
+                "test full speed on",
+                "test full speed off"));
+
+        public bool TryProbeFullSpeedControl(out string detail)
+        {
+            detail = "test full-speed interface is unavailable";
+            return false;
+        }
+
+        public FanBackendSnapshot ReadSnapshot() => new(
+            DateTimeOffset.UtcNow,
+            0,
+            0,
+            new Dictionary<string, FanBackendRange>());
+        public void Apply(int fan1Rpm, int fan2Rpm) { }
+        public void RestoreAuto() { }
         public void SetFullSpeed(bool enabled) =>
             throw new NotSupportedException();
     }

@@ -69,6 +69,7 @@ internal sealed record PowerDeviceProfile(
 internal static class PowerSettingsController
 {
     private static readonly object IoSync = new();
+    private static PowerDeviceProfile? _profileForTesting;
 
     private const uint CpuPl1Id = 0x01020000;
     private const uint CpuPl2Id = 0x01010000;
@@ -103,7 +104,11 @@ internal static class PowerSettingsController
 
     public static IReadOnlyList<int> LockIntervals { get; } = [1, 2, 3, 5, 10];
 
-    public static PowerDeviceProfile CurrentProfile => DetectedProfile.Value;
+    public static PowerDeviceProfile CurrentProfile =>
+        _profileForTesting ?? DetectedProfile.Value;
+
+    internal static void SetProfileForTesting(PowerDeviceProfile? profile) =>
+        _profileForTesting = profile;
 
     internal static PowerDeviceProfile ResolveProfile(
         string model,

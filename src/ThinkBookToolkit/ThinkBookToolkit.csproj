@@ -63,6 +63,7 @@
     <PackageReference Include="DiskInfoToolkit" Version="2.1.2" />
     <PackageReference Include="HidSharp" Version="2.6.4" />
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre717" />
+    <PackageReference Include="LLT.WindowsDisplayAPI" Version="1.3.2-pre17" />
     <PackageReference Include="LLT.NvAPIWrapper.Net" Version="1.0.0-pre8" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="Mono.Posix.NETStandard" Version="1.0.0" />

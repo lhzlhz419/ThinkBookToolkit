@@ -6,10 +6,13 @@ using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
+using Microsoft.Win32;
 
 namespace ThinkBookToolkit;
 
-internal sealed class ToolkitDisplayPage : ToolkitPageBase
+internal sealed class ToolkitDisplayPage : ToolkitPageBase,
+    IControlStateRefreshable
 {
     private readonly DisplayViewModel _viewModel;
     private readonly ComboBox _refreshRate = new() { MinWidth = 150 };
@@ -31,7 +34,14 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
     private readonly TextBox _normalDefault = new() { Width = 90 };
     private readonly TextBox _eyeDefault = new() { Width = 90 };
     private readonly TextBlock _status;
+    private readonly DispatcherTimer _displayChangeTimer = new()
+    {
+        Interval = TimeSpan.FromMilliseconds(500)
+    };
     private bool _syncing;
+    private bool _loadedOnce;
+    private bool _displayEventsSubscribed;
+    private bool _refreshRateReloading;
 
     public ToolkitDisplayPage(ToolkitRuntimeService runtime) : base(runtime)
     {
@@ -40,7 +50,9 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
         DataContext = _viewModel;
         _status = StatusText();
         Content = BuildLayout();
-        Loaded += async (_, _) => await LoadAsync();
+        _displayChangeTimer.Tick += OnDisplayChangeTimerTick;
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
 
     private UIElement BuildLayout()
@@ -214,7 +226,8 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
     {
         _refreshRate.SelectionChanged += async (_, _) =>
         {
-            if (!_syncing && Selected<uint>(_refreshRate) is { } value)
+            if (!_syncing &&
+                Selected<DisplayRefreshRateMode>(_refreshRate) is { } value)
                 await RunAsync(() => _viewModel.SetRefreshRateAsync(value));
         };
         _refreshRateSettings.Click += async (_, _) =>
@@ -278,9 +291,111 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
 
     private async Task LoadAsync()
     {
-        if (_viewModel.State is null)
+        if (!_loadedOnce)
+        {
+            _loadedOnce = true;
             await _viewModel.LoadAsync();
+        }
+        else if (Runtime.Report?.IsAvailable(
+                     FeatureIds.DisplayRefreshRate) != false)
+        {
+            await _viewModel.ReloadRefreshRateAsync();
+        }
         SyncControls();
+    }
+
+    public async Task RefreshControlStateAsync()
+    {
+        if (_refreshRateReloading || !IsLoaded)
+            return;
+        _refreshRateReloading = true;
+        try
+        {
+            await _viewModel.LoadAsync();
+            SyncControls();
+        }
+        finally
+        {
+            _refreshRateReloading = false;
+        }
+    }
+
+    private async void OnLoaded(object sender, RoutedEventArgs args)
+    {
+        SubscribeToDisplayChanges();
+        await LoadAsync();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs args)
+    {
+        _displayChangeTimer.Stop();
+        UnsubscribeFromDisplayChanges();
+    }
+
+    private void SubscribeToDisplayChanges()
+    {
+        if (_displayEventsSubscribed ||
+            Runtime.Report?.IsAvailable(
+                FeatureIds.DisplayRefreshRate) == false)
+            return;
+        try
+        {
+            SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+            _displayEventsSubscribed = true;
+        }
+        catch
+        {
+            _displayEventsSubscribed = false;
+        }
+    }
+
+    private void UnsubscribeFromDisplayChanges()
+    {
+        if (!_displayEventsSubscribed)
+            return;
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        _displayEventsSubscribed = false;
+    }
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs args)
+    {
+        if (Dispatcher.CheckAccess())
+        {
+            ScheduleDisplayStateReload();
+            return;
+        }
+        _ = Dispatcher.BeginInvoke(ScheduleDisplayStateReload);
+    }
+
+    private void ScheduleDisplayStateReload()
+    {
+        _displayChangeTimer.Stop();
+        _displayChangeTimer.Start();
+    }
+
+    private async void OnDisplayChangeTimerTick(
+        object? sender,
+        EventArgs args)
+    {
+        _displayChangeTimer.Stop();
+        if (!IsLoaded)
+            return;
+        if (_refreshRateReloading)
+        {
+            _displayChangeTimer.Start();
+            return;
+        }
+
+        _refreshRateReloading = true;
+        try
+        {
+            await _viewModel.ReloadRefreshRateAsync();
+            SyncControls();
+        }
+        finally
+        {
+            _refreshRateReloading = false;
+        }
     }
 
     private async Task RunAsync(Func<Task> action)
@@ -335,21 +450,22 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
         _refreshRate.Items.Clear();
         if (state is null)
             return;
-        var enabled = RefreshRateController.EffectiveCycleRates(
-            state.AvailableHz,
-            Runtime.Settings.RefreshRateCycleHz);
-        foreach (var rate in enabled)
-            AddChoice(_refreshRate, $"{rate} Hz", rate);
-        if (!enabled.Contains(state.CurrentHz))
+        var enabled = RefreshRateController.EffectiveCycleModes(
+            state,
+            Runtime.Settings.RefreshRateCycleHz,
+            Runtime.Settings.IncludeDynamicRefreshRateInCycle);
+        foreach (var mode in enabled)
+            AddChoice(_refreshRate, mode.DisplayName, mode);
+        if (!enabled.Contains(state.CurrentMode))
         {
             _refreshRate.Items.Add(new ComboBoxItem
             {
-                Content = $"{state.CurrentHz} Hz",
-                Tag = state.CurrentHz,
+                Content = state.CurrentMode.DisplayName,
+                Tag = state.CurrentMode,
                 IsEnabled = false
             });
         }
-        Select(_refreshRate, state.CurrentHz);
+        Select(_refreshRate, state.CurrentMode);
     }
 
     private void RefreshColorModes(ColorManagementState state)
@@ -377,9 +493,9 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
         _pcTemperature.IsEnabled = value && state?.PcManagerEyeCare is { Available: true, Enabled: false };
         _colorMode.IsEnabled = value && state?.ColorManagement.Available == true;
         _refreshRate.IsEnabled = value &&
-            _viewModel.RefreshRate?.AvailableHz.Count > 0;
+            _viewModel.RefreshRate?.AvailableModes.Count > 0;
         _refreshRateSettings.IsEnabled = value &&
-            _viewModel.RefreshRate?.AvailableHz.Count > 0;
+            _viewModel.RefreshRate?.AvailableModes.Count > 0;
     }
 
     private static void AddChoice<T>(ComboBox combo, string label, T value) =>
@@ -488,7 +604,7 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase
             }
         }
 
-        public async Task SetRefreshRateAsync(uint value)
+        public async Task SetRefreshRateAsync(DisplayRefreshRateMode value)
         {
             IsBusy = true;
             var result = await Task.Run(() =>

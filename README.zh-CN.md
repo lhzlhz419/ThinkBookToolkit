@@ -6,6 +6,8 @@ ThinkBook Toolkit 是独立开发的实验性项目，与联想公司无关，�
 
 本软件会读取并写入硬件和固件设置。不正确或不兼容的设置可能影响散热、性能、稳定性、硬件寿命、保修状态或数据安全。使用者须自行判断并承担全部风险和后果。如果您不了解或不接受这些风险，请勿安装或使用本软件。
 
+去售后前，请把 ThinkBook Toolkit 软件卸载或者拔掉安装该软件的硬盘，避免不必要的麻烦。每个软件版本首次启动时，必须在程序内手动输入风险确认文字后才能继续使用。
+
 **所有功能仅在 ThinkBook 16p G6 IAX、BIOS R2CN57WW 上进行过测试。不保证任何功能在其它机型或 BIOS 版本上可用或安全。功能检测只决定界面显示哪些项目，不代表兼容性或安全性已经得到验证。**
 
 [English](README.md)
@@ -19,12 +21,15 @@ ThinkBook Toolkit 是面向部分 Lenovo ThinkBook 设备的 Windows 原生控�
 目前包括以下功能：
 
 - 性能模式、GPU 工作模式、温度与功耗监控、风扇控制；
-- 固定转速、CPU/GPU 风扇曲线、可增减点并带迟滞阈值的高级曲线、配置方案、游戏检测和风扇拉满；
+- 固定转速、CPU/GPU 风扇曲线、可增减点并带迟滞阈值的高级曲线、配置方案、带包含/排除名单的游戏检测和风扇拉满；
 - 充电模式、隔夜充电、持续 USB 供电、开盖启动和完整电池信息；
-- 护眼、色彩模式、Dolby、扬声器/麦克风降噪、键盘、功能键、OSD 和触摸板设置；
+- 固定/动态屏幕刷新率、护眼、色彩模式、Dolby、扬声器/麦克风降噪、键盘、功能键、OSD 和触摸板设置；
 - 设备、固件、存储和联想保修信息；
 - 功耗参数查看、受支持设备上的参数调整，以及按参数独立启用的功耗锁定；
-- BIOS 启动操作和开机 Logo 更换；
+- 直接读取 Lenovo 公共目录，独立扫描并安装适用于当前设备的驱动、固件与 BIOS 更新；此功能不依赖 Lenovo System Update DLL；
+- BIOS 启动操作、开机 Logo 更换，以及由 BIOS 实际能力决定是否显示的 I/O 与虚拟化开关；
+- 可按任意顺序组合设备控制、应用启动、键盘宏和延迟的自动化，支持电源/游戏事件触发，以及 Fn 快捷键单击、双击绑定和按键发现；发现到的任意 WMI/驱动按键均可加入自定义列表；
+- 可录制、逐项编辑并绑定普通按键的键盘宏；宏录制内容包括按键、按下/释放状态和事件间隔；
 - 深浅色主题、中英文、托盘控制和开机自启。
 
 不可用的功能不会出现在对应调控页面中；设置页可以查看完整的功能可用性汇总。
@@ -184,6 +189,8 @@ ThinkBookToolkit.Dependencies/
 `-- VantageAddins/
     |-- LenovoProductivitySystemAddin/
     |   `-- 1.0.0.138/                 # BIOS 工具、元数据和声明文件
+    |-- LenovoSystemUpdateAddin/
+    |   `-- 1.0.34.37/                 # 联想官方驱动与固件更新引擎
     |-- MultimediaAddin/
     |   `-- 1.1.4.10/                  # Dolby 支持和原生运行库
     |-- SmartColorAddin/
@@ -204,6 +211,7 @@ ThinkBookToolkit.Dependencies/
 
 - [Lenovo Legion Toolkit（LLT）](https://github.com/LenovoLegionToolkit-Team/LenovoLegionToolkit) 为面向联想设备的专用工具结构和交互设计提供了参考；
 - [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) 提供硬件传感器访问；
+- [WindowsDisplayAPI](https://github.com/LenovoLegionToolkit-Team/WindowsDisplayAPI) 提供 Windows 显示路径与动态刷新率访问；
 - [NAudio](https://github.com/naudio/NAudio) 提供接管 Fn 快捷键时所需的 Windows 音频端点状态和麦克风静音控制；
 - [PawnIO](https://github.com/namazso/PawnIO) 提供 LibreHardwareMonitor 读取 CPU 温度所需的系统级访问；
 - 部分功能会与 [Lenovo Vantage](https://apps.microsoft.com/detail/9wzdncrfj4mv) 和 [联想电脑管家](https://guanjia.lenovo.com.cn/) 的组件协作。

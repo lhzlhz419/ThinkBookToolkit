@@ -4,7 +4,7 @@ using ThinkBookToolkit.FanBackend;
 
 namespace ThinkBookToolkit.FanBackend.Wmi;
 
-public sealed class WmiFanBackend : IFanBackend
+public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
 {
     private const string NamespacePath = @"root\wmi";
     private const uint FullSpeedId = 0x04020000;
@@ -57,6 +57,23 @@ public sealed class WmiFanBackend : IFanBackend
     {
         using var other = GetActiveOtherMethod();
         SetFeatureValue(other, FullSpeedId, enabled ? 1 : 0);
+    }
+
+    public bool TryProbeFullSpeedControl(out string detail)
+    {
+        try
+        {
+            using var other = GetActiveOtherMethod();
+            _ = ReadFeatureValue(other, FullSpeedId);
+            detail = "Lenovo WMI full-speed feature 0x04020000 is readable.";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            detail = "Lenovo WMI full-speed feature 0x04020000 is unavailable: " +
+                     DescribeException(ex);
+            return false;
+        }
     }
 
     private static ManagementObject GetActiveOtherMethod()

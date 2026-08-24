@@ -1,7 +1,10 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
+using LibreHardwareMonitor.Hardware;
 using ThinkBookToolkit.FanBackend;
 
 namespace ThinkBookToolkit;
@@ -47,6 +50,7 @@ internal static class FeatureIds
 {
     public const string TemperatureMonitoring = "monitor.temperature";
     public const string FanControl = "performance.fan";
+    public const string FanFullSpeed = "performance.fan.full-speed";
     public const string SleepFanControl = "performance.fan.sleep";
     public const string PerformanceMode = "performance.its";
     public const string GpuMode = "performance.gpu";
@@ -80,12 +84,51 @@ internal static class FeatureIds
     public const string BiosSetup = "advanced.bios-setup";
     public const string StartupInterrupt = "advanced.startup-interrupt";
     public const string SecureWipe = "advanced.secure-wipe";
+    public const string BiosIoControl = "advanced.io-control";
+    public const string DriverUpdate = "driver-update.system-update";
+    public const string Automation = "automation.editor";
+    public const string KeyboardMacros = "automation.keyboard-macros";
     public const string UpdateCheck = "settings.update-check";
 }
 
 internal static class FeatureAvailabilityCache
 {
     public static FeatureAvailabilityReport? Current { get; set; }
+}
+
+internal static class FeatureAvailabilityDiagnostics
+{
+    public static IReadOnlyList<string> DescribeIssues(
+        FeatureAvailabilityReport report) =>
+        report.Items
+            .Where(feature =>
+                feature.PartiallyAvailable || !feature.Available)
+            .Select(feature =>
+            {
+                var status = feature.PartiallyAvailable
+                    ? "partially available"
+                    : "unavailable";
+                var reason = Normalize(feature.Detail);
+                if (reason.Length == 0)
+                    reason = "The feature probe returned no reason.";
+                return $"Feature {status}: [{feature.Category}] " +
+                       $"{feature.Name} ({feature.Id}); reason: {reason}";
+            })
+            .ToArray();
+
+    public static void LogIssues(FeatureAvailabilityReport report)
+    {
+        foreach (var message in DescribeIssues(report))
+            ToolkitLog.Warning(message);
+    }
+
+    private static string Normalize(string? value) =>
+        string.Join(
+            " ",
+            (value ?? string.Empty).Split(
+                ['\r', '\n', '\t'],
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries));
 }
 
 internal static class FeatureAvailabilityService
@@ -95,16 +138,17 @@ internal static class FeatureAvailabilityService
 
     private static FeatureAvailabilityReport Detect()
     {
-        var result = new List<FeatureAvailability>();
+        ToolkitLog.Info("Feature detection started.");
+        var result = new FeatureDetectionCollector();
 
         Probe(result, FeatureIds.TemperatureMonitoring, "监控", "温度与功耗监控", () =>
         {
-            // CPU and memory probing is sufficient here. Starting the GPU
-            // worker before Hybrid Auto protection is initialized could keep
-            // the discrete adapter connected during an unplug transition.
-            using var reader = new TemperatureReader(enableGpuTelemetry: false);
-            _ = reader.Read();
-            return "LibreHardwareMonitor 可用";
+            // Opening LibreHardwareMonitor is expensive and the real reader is
+            // initialized immediately after the overview becomes available.
+            // Loading the assembly here verifies the dependency without doing
+            // the same full hardware enumeration twice during startup.
+            _ = typeof(Computer).Assembly.GetName();
+            return "LibreHardwareMonitor 组件已加载";
         });
 
         FanController? fanController = null;
@@ -127,7 +171,42 @@ internal static class FeatureAvailabilityService
                 "散热",
                 "风扇监控与控制",
                 false,
-                ex.Message));
+                ExceptionDetail(ex)));
+        }
+
+        if (fanController is null)
+        {
+            result.Add(new(
+                FeatureIds.FanFullSpeed,
+                "散热",
+                "风扇拉满",
+                false,
+                "风扇后端不可用",
+                EnglishDetail: "The fan backend is unavailable"));
+        }
+        else
+        {
+            try
+            {
+                var fullSpeedAvailable =
+                    fanController.TryProbeFullSpeedControl(out var detail);
+                result.Add(new(
+                    FeatureIds.FanFullSpeed,
+                    "散热",
+                    "风扇拉满",
+                    fullSpeedAvailable,
+                    detail,
+                    EnglishDetail: detail));
+            }
+            catch (Exception ex)
+            {
+                result.Add(new(
+                    FeatureIds.FanFullSpeed,
+                    "散热",
+                    "风扇拉满",
+                    false,
+                    ExceptionDetail(ex)));
+            }
         }
 
         result.Add(new(
@@ -188,14 +267,27 @@ internal static class FeatureAvailabilityService
             var fullyWritable = profile.Writable &&
                 (power.AvailableSettings & required) == required;
             var atppAvailable = power.IsAvailable(PowerSetting.Atpp);
+            var missingRequired = Enum.GetValues<PowerSetting>()
+                .Where(setting =>
+                    (required & PowerSettingsController.Flag(setting)) != 0 &&
+                    !power.IsAvailable(setting))
+                .ToArray();
+            var powerDetail = fullyWritable
+                ? atppAvailable
+                    ? "功耗设置可用，ATPP 可调整。"
+                    : "功耗设置可用。"
+                : readableCount == 0
+                    ? "没有功耗参数可读取。"
+                    : !profile.Writable
+                        ? $"{readableCount} 项功耗参数可读取，但当前设备配置不支持写入。"
+                        : $"{readableCount} 项功耗参数可读取；缺少必需接口：" +
+                          string.Join(", ", missingRequired);
             result.Add(new(
                 FeatureIds.PowerSettings,
                 "性能",
                 "功耗设置",
                 fullyWritable,
-                fullyWritable
-                    ? atppAvailable ? "功耗设置可用，ATPP 可调整。" : "功耗设置可用。"
-                    : $"{readableCount} 项功耗参数可读取。",
+                powerDetail,
                 PartiallyAvailable: readableCount > 0 && !fullyWritable,
                 EnglishDetail: fullyWritable && atppAvailable
                     ? "ATPP is adjustable."
@@ -208,7 +300,7 @@ internal static class FeatureAvailabilityService
                 "性能",
                 "功耗设置",
                 false,
-                ex.Message));
+                ExceptionDetail(ex)));
         }
 
         try
@@ -229,7 +321,12 @@ internal static class FeatureAvailabilityService
                          (FeatureIds.FlipToStart, "开盖启动")
                      })
             {
-                result.Add(new(id, "电池与电源", name, false, ex.Message));
+                result.Add(new(
+                    id,
+                    "电池与电源",
+                    name,
+                    false,
+                    ExceptionDetail(ex)));
             }
         }
 
@@ -251,7 +348,7 @@ internal static class FeatureAvailabilityService
         }
         catch (Exception ex)
         {
-            AddFailureGroup(result, "显示", ex.Message,
+            AddFailureGroup(result, "显示", ExceptionDetail(ex),
                 (FeatureIds.VantageEyeCare, "Vantage 护眼模式"),
                 (FeatureIds.PcManagerEyeCare, "电脑管家护眼模式"),
                 (FeatureIds.ColorManagement, "色彩管理"));
@@ -271,9 +368,9 @@ internal static class FeatureAvailabilityService
                 FeatureIds.DisplayRefreshRate,
                 "显示",
                 "笔记本屏幕刷新率切换",
-                refreshRate.AvailableHz.Count > 1,
-                refreshRate.AvailableHz.Count > 1
-                    ? $"支持 {refreshRate.AvailableHz.Count} 种刷新率"
+                refreshRate.AvailableModes.Count > 1,
+                refreshRate.AvailableModes.Count > 1
+                    ? $"支持 {refreshRate.AvailableModes.Count} 种刷新率"
                     : "当前显示模式只有一种刷新率");
         }
         else
@@ -296,7 +393,7 @@ internal static class FeatureAvailabilityService
         }
         catch (Exception ex)
         {
-            AddFailureGroup(result, "声音", ex.Message,
+            AddFailureGroup(result, "声音", ExceptionDetail(ex),
                 (FeatureIds.DolbyAtmos, "Dolby Atmos"),
                 (FeatureIds.SpeakerNoiseCancellation, "扬声器降噪"),
                 (FeatureIds.MicrophoneNoiseCancellation, "麦克风降噪"));
@@ -326,8 +423,9 @@ internal static class FeatureAvailabilityService
         }
         catch (Exception ex)
         {
-            result.Add(new(FeatureIds.KeyboardBacklight, "输入设备", "键盘背光", false, ex.Message));
-            result.Add(new(FeatureIds.KeyboardBacklightAutoOff, "输入设备", "键盘背光自动关闭", false, ex.Message));
+            var detail = ExceptionDetail(ex);
+            result.Add(new(FeatureIds.KeyboardBacklight, "输入设备", "键盘背光", false, detail));
+            result.Add(new(FeatureIds.KeyboardBacklightAutoOff, "输入设备", "键盘背光自动关闭", false, detail));
         }
 
         var fnKeyTakeoverAvailable = false;
@@ -351,7 +449,7 @@ internal static class FeatureAvailabilityService
                 "输入设备",
                 "Fn 快捷键接管",
                 false,
-                ex.Message);
+                ExceptionDetail(ex));
         }
 
         try
@@ -385,7 +483,8 @@ internal static class FeatureAvailabilityService
         }
         catch (Exception ex)
         {
-            AddFailureGroup(result, "输入设备", ex.Message,
+            var detail = ExceptionDetail(ex);
+            AddFailureGroup(result, "输入设备", detail,
                 (FeatureIds.FunctionLock, "功能锁定"),
                 (FeatureIds.FnCtrlSwap, "Fn/Ctrl 互换"),
                 (FeatureIds.Touchpad, "触摸板"));
@@ -397,7 +496,7 @@ internal static class FeatureAvailabilityService
                 fnKeyTakeoverAvailable,
                 fnKeyTakeoverAvailable
                     ? "可由 Toolkit 快捷键接管提供"
-                    : ex.Message);
+                    : detail);
             AddState(
                 result,
                 FeatureIds.NumLockOsd,
@@ -406,18 +505,26 @@ internal static class FeatureAvailabilityService
                 fnKeyTakeoverAvailable,
                 fnKeyTakeoverAvailable
                     ? "可由 Toolkit 快捷键接管提供"
-                    : ex.Message);
+                    : detail);
         }
 
         try
         {
             var identity = DeviceInformationService.ReadIdentity();
-            AddState(result, FeatureIds.DeviceInformation, "设备", "设备详细信息", !string.IsNullOrWhiteSpace(identity.Model), identity.Model);
+            AddState(
+                result,
+                FeatureIds.DeviceInformation,
+                "设备",
+                "设备详细信息",
+                !string.IsNullOrWhiteSpace(identity.Model),
+                string.IsNullOrWhiteSpace(identity.Model)
+                    ? "未能从系统读取设备型号"
+                    : identity.Model);
             AddState(result, FeatureIds.WarrantyInformation, "设备", "保修信息", !string.IsNullOrWhiteSpace(identity.SerialNumber), "需要设备序列号及联网查询");
         }
         catch (Exception ex)
         {
-            AddFailureGroup(result, "设备", ex.Message,
+            AddFailureGroup(result, "设备", ExceptionDetail(ex),
                 (FeatureIds.DeviceInformation, "设备详细信息"),
                 (FeatureIds.WarrantyInformation, "保修信息"));
         }
@@ -425,19 +532,66 @@ internal static class FeatureAvailabilityService
         try
         {
             var bios = BiosAdvancedController.ReadSupport();
-            AddState(result, FeatureIds.BootLogo, "高级工具", "开机画面自定义", bios.LogoDiy, "固件能力");
-            AddState(result, FeatureIds.BiosSetup, "高级工具", "进入 BIOS", bios.SetupUtility, "固件能力");
-            AddState(result, FeatureIds.StartupInterrupt, "高级工具", "启动中断菜单", bios.InterruptMenu, "固件能力");
-            AddState(result, FeatureIds.SecureWipe, "高级工具", "安全擦除", bios.SecureWipe, "固件能力");
+            AddState(result, FeatureIds.BootLogo, "高级工具", "开机画面自定义", bios.LogoDiy,
+                bios.LogoDiy ? "固件接口可用" : "固件未提供开机画面自定义接口");
+            AddState(result, FeatureIds.BiosSetup, "高级工具", "进入 BIOS", bios.SetupUtility,
+                bios.SetupUtility ? "固件接口可用" : "固件未提供进入 BIOS 接口");
+            AddState(result, FeatureIds.StartupInterrupt, "高级工具", "启动中断菜单", bios.InterruptMenu,
+                bios.InterruptMenu ? "固件接口可用" : "固件未提供启动中断菜单接口");
+            AddState(result, FeatureIds.SecureWipe, "高级工具", "安全擦除", bios.SecureWipe,
+                bios.SecureWipe ? "固件接口可用" : "固件未提供安全擦除接口");
         }
         catch (Exception ex)
         {
-            AddFailureGroup(result, "高级工具", ex.Message,
+            AddFailureGroup(result, "高级工具", ExceptionDetail(ex),
                 (FeatureIds.BootLogo, "开机画面自定义"),
                 (FeatureIds.BiosSetup, "进入 BIOS"),
                 (FeatureIds.StartupInterrupt, "启动中断菜单"),
                 (FeatureIds.SecureWipe, "安全擦除"));
         }
+
+        try
+        {
+            var states = BiosIoController.ReadSupportedStates();
+            var total = BiosIoController.Definitions.Count;
+            var availableIds = states
+                .Select(state => state.Definition.Id)
+                .ToHashSet(StringComparer.Ordinal);
+            var missingIds = BiosIoController.Definitions
+                .Where(definition => !availableIds.Contains(definition.Id))
+                .Select(definition => definition.Id)
+                .ToArray();
+            result.Add(new(
+                FeatureIds.BiosIoControl,
+                "高级工具",
+                "IO 控制",
+                states.Count == total,
+                states.Count == total
+                    ? $"BIOS 已提供全部 {total} 项可调设置"
+                    : $"BIOS 已提供 {states.Count}/{total} 项可调设置；未提供：" +
+                      string.Join(", ", missingIds),
+                states.Count > 0 && states.Count < total,
+                $"BIOS exposes {states.Count}/{total} configurable settings"));
+        }
+        catch (Exception ex)
+        {
+            result.Add(new(
+                FeatureIds.BiosIoControl,
+                "高级工具",
+                "IO 控制",
+                false,
+                ExceptionDetail(ex)));
+        }
+
+        var driverUpdatesAvailable = DriverUpdateController.IsAvailable(
+            out var driverUpdateDetail);
+        AddState(
+            result,
+            FeatureIds.DriverUpdate,
+            "驱动更新",
+            "Lenovo 驱动与固件更新",
+            driverUpdatesAvailable,
+            driverUpdateDetail);
 
         AddState(
             result,
@@ -447,7 +601,67 @@ internal static class FeatureAvailabilityService
             true,
             "通过 GitHub Releases 检查最新正式版本");
 
-        return new FeatureAvailabilityReport(result);
+        AddState(
+            result,
+            FeatureIds.Automation,
+            "自动化",
+            "自动化与 Fn 快捷键映射",
+            true,
+            "内置有序步骤执行器可用");
+
+        AddState(
+            result,
+            FeatureIds.KeyboardMacros,
+            "自动化",
+            "键盘宏",
+            true,
+            "内置低级键盘录制与 SendInput 播放器可用");
+
+        ToolkitLog.Info(
+            $"Feature detection finished in {result.Elapsed.TotalMilliseconds:0} ms.");
+        return new FeatureAvailabilityReport(result.Items);
+    }
+
+    private sealed class FeatureDetectionCollector :
+        ICollection<FeatureAvailability>
+    {
+        private readonly List<FeatureAvailability> _items = [];
+        private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
+        private TimeSpan _lastCompletion;
+
+        public IReadOnlyList<FeatureAvailability> Items => _items;
+        public TimeSpan Elapsed => _stopwatch.Elapsed;
+        public int Count => _items.Count;
+        public bool IsReadOnly => false;
+
+        public void Add(FeatureAvailability item)
+        {
+            _items.Add(item);
+            var elapsed = _stopwatch.Elapsed;
+            var duration = elapsed - _lastCompletion;
+            _lastCompletion = elapsed;
+            var state = item.PartiallyAvailable
+                ? "partially available"
+                : item.Available
+                    ? "available"
+                    : "unavailable";
+            ToolkitLog.Info(
+                "Feature detection item completed: " +
+                $"[{item.Category}] {item.Name} ({item.Id}); " +
+                $"state={state}; step={duration.TotalMilliseconds:0} ms; " +
+                $"total={elapsed.TotalMilliseconds:0} ms.");
+        }
+
+        public void Clear() => _items.Clear();
+        public bool Contains(FeatureAvailability item) =>
+            _items.Contains(item);
+        public void CopyTo(FeatureAvailability[] array, int arrayIndex) =>
+            _items.CopyTo(array, arrayIndex);
+        public bool Remove(FeatureAvailability item) =>
+            _items.Remove(item);
+        public IEnumerator<FeatureAvailability> GetEnumerator() =>
+            _items.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private static bool HasNvidiaDisplayAdapter()
@@ -490,7 +704,7 @@ internal static class FeatureAvailabilityService
         }
         catch (Exception ex)
         {
-            result.Add(new(id, category, name, false, ex.Message));
+            result.Add(new(id, category, name, false, ExceptionDetail(ex)));
         }
     }
 
@@ -540,5 +754,23 @@ internal static class FeatureAvailabilityService
     {
         foreach (var feature in features)
             result.Add(new(feature.Id, category, feature.Name, false, detail));
+    }
+
+    private static string ExceptionDetail(Exception exception)
+    {
+        var messages = new List<string>();
+        for (Exception? current = exception;
+             current is not null;
+             current = current.InnerException)
+        {
+            if (!string.IsNullOrWhiteSpace(current.Message) &&
+                !messages.Contains(current.Message, StringComparer.Ordinal))
+            {
+                messages.Add(current.Message);
+            }
+        }
+        return messages.Count == 0
+            ? exception.GetType().Name
+            : string.Join(" -> ", messages);
     }
 }

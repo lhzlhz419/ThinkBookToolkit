@@ -12,6 +12,11 @@ lifespan, warranty coverage, or data safety. You use the software entirely at
 your own risk and are solely responsible for every consequence. If you do not
 understand or accept these risks, do not install or use it.
 
+Before requesting after-sales service, uninstall ThinkBook Toolkit or remove
+the drive on which it is installed to avoid unnecessary complications. On the
+first launch of every software version, the in-app risk acknowledgement must be
+typed manually before the application can continue.
+
 **Every feature has been tested only on ThinkBook 16p G6 IAX with BIOS
 R2CN57WW. No feature is guaranteed to work or be safe on another model or BIOS
 version. Capability detection only controls what the interface displays; it is
@@ -33,15 +38,26 @@ Current feature groups include:
 - performance mode, GPU working mode, live temperatures, power readings, and
   fan control;
 - fixed fan targets, editable CPU/GPU curves, add/remove-point advanced curves
-  with hysteresis thresholds, profiles, game detection, and full-speed control;
+  with hysteresis thresholds, profiles, include/exclude-aware game detection,
+  and full-speed control;
 - battery charging modes, overnight charging, always-on USB, flip-to-start,
   and detailed battery information;
-- eye care, color modes, Dolby settings, speaker/microphone noise reduction,
-  keyboard, function-key, OSD, and touchpad controls;
+- fixed/dynamic display refresh rates, eye care, color modes, Dolby settings,
+  speaker/microphone noise reduction, keyboard, function-key, OSD, and
+  touchpad controls;
 - device, firmware, storage, and Lenovo warranty information;
 - power-limit viewing, supported-device adjustment, and independent locks for
   each available power parameter;
-- BIOS startup actions and boot-logo customization;
+- independent scanning and installation of applicable drivers, firmware, and
+  BIOS updates from Lenovo's public catalog, without the Lenovo System Update
+  DLL;
+- BIOS startup actions, boot-logo customization, and capability-gated I/O and
+  virtualization controls;
+- ordered automations combining device controls, application launches, keyboard
+  macros, and delays, with power/game triggers, Fn-key discovery, and single/double-press
+  bindings; any discovered WMI or driver key can be added to the custom list;
+- recordable keyboard macros with editable keys, down/up states, event delays,
+  ordinary-key bindings, and automation-step integration;
 - light/dark themes, Chinese/English UI, tray controls, and Windows startup.
 
 Unavailable controls are hidden from their pages. A complete capability summary
@@ -247,6 +263,8 @@ ThinkBookToolkit.Dependencies/
 `-- VantageAddins/
     |-- LenovoProductivitySystemAddin/
     |   `-- 1.0.0.138/                 # BIOS utility, metadata, notices
+    |-- LenovoSystemUpdateAddin/
+    |   `-- 1.0.34.37/                 # official driver and firmware update engine
     |-- MultimediaAddin/
     |   `-- 1.1.4.10/                  # Dolby support and native runtimes
     |-- SmartColorAddin/
@@ -279,6 +297,8 @@ number.
   device utility.
 - [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
   provides hardware sensor access.
+- [WindowsDisplayAPI](https://github.com/LenovoLegionToolkit-Team/WindowsDisplayAPI)
+  provides access to Windows display paths and Dynamic Refresh Rate.
 - [NAudio](https://github.com/naudio/NAudio) provides Windows audio endpoint
   state and microphone mute control used by Fn-key takeover.
 - [PawnIO](https://github.com/namazso/PawnIO) provides the system-level access

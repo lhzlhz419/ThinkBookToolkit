@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 
 namespace ThinkBookToolkit;
 
-internal sealed class ToolkitInputPage : ToolkitPageBase
+internal sealed class ToolkitInputPage : ToolkitPageBase,
+    IControlStateRefreshable
 {
     private readonly InputViewModel _viewModel;
     private readonly ComboBox _backlight = new() { MinWidth = 170 };
@@ -15,6 +17,8 @@ internal sealed class ToolkitInputPage : ToolkitPageBase
     private readonly Dictionary<InputSettingKind, CheckBox> _toggles = [];
     private readonly TextBlock _status;
     private bool _syncing;
+    private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private bool _disposed;
 
     public ToolkitInputPage(ToolkitRuntimeService runtime) : base(runtime)
     {
@@ -115,6 +119,23 @@ internal sealed class ToolkitInputPage : ToolkitPageBase
         if (!_viewModel.Loaded)
             await _viewModel.LoadAsync();
         SyncControls();
+    }
+
+    public async Task RefreshControlStateAsync()
+    {
+        await _refreshGate.WaitAsync();
+        try
+        {
+            if (_disposed)
+                return;
+            await _viewModel.LoadAsync();
+            if (!_disposed)
+                SyncControls();
+        }
+        finally
+        {
+            _refreshGate.Release();
+        }
     }
 
     private async Task RunAsync(Func<Task> action)
@@ -320,5 +341,11 @@ internal sealed class ToolkitInputPage : ToolkitPageBase
             }
             finally { IsBusy = false; }
         }
+    }
+
+    public override void Dispose()
+    {
+        _disposed = true;
+        base.Dispose();
     }
 }

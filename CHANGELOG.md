@@ -7,6 +7,89 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-24
+
+### Added
+
+- Added a full Automation page with ordered device-control, application,
+  delay, and macro steps; manual execution; AC-power and game-state triggers;
+  and configurable Fn-key single- and double-press bindings.
+- Added editable keyboard macros with low-level recording, per-event key,
+  Down/Up state and delay editing, ordinary-key bindings, serialized playback,
+  safe key release, and detailed execution logging.
+- Added Fn-key discovery for both Lenovo WMI and EnergyDrv events. Every
+  discovered raw key can be added to the custom key list without conflating
+  identical values from different event sources.
+- Added an independent Lenovo driver, firmware, and BIOS update page. Toolkit
+  now reads Lenovo's public machine-type catalog directly, evaluates package
+  applicability, verifies hashes and Lenovo signatures, and serializes
+  per-package download and installation without Lenovo System Update DLLs.
+- Added BIOS I/O and virtualization controls for the settings actually exposed
+  by the current firmware, with up to three responsive controls per row.
+- Added custom game-detection include and exclude application lists. Exclusions
+  override Windows GameConfigStore, explicit inclusions, effective Game Mode,
+  and inherited child-process detection.
+- Added a bilingual, per-version startup risk acknowledgement. Hardware
+  initialization and fan-backend notices do not continue until the exact
+  acknowledgement is typed and saved for the current application version.
+- Added Dynamic Refresh Rate discovery and switching alongside fixed panel
+  refresh rates, with external Windows/Fn+R changes reflected in the Display
+  page.
+- Added independently enabled NVIDIA overclock parameters and optional core
+  and memory clock ranges. Disabled parameters are left untouched.
+- Added separate feature monitoring for native full fan speed, keyboard
+  macros, automation, driver updates, BIOS I/O controls, Fn takeover, refresh
+  rates, GPU management, and GPU overclocking.
+
+### Changed
+
+- Feature detection now records the completion time and result of every probe,
+  logs concrete partial/unavailable reasons, avoids opening the hardware stack
+  twice, and lets Overview become usable before slower background readings.
+- Hardware monitoring now initializes storage and discrete-GPU telemetry in
+  the background, handles GPU removal without terminating the application, and
+  falls back to integrated-GPU or CPU-only data when appropriate.
+- Game detection now combines GameConfigStore entries, effective Windows Game
+  Mode, foreground processes, descendant processes, and the custom path lists.
+- Automation and macro cards share the same controls, colors, responsive rows,
+  editor cards, collapsed-by-default behavior, and unique case-insensitive
+  names with generated numeric suffixes.
+- Fn-triggered UI updates now refresh visible controls in place instead of
+  destroying and recreating pages, eliminating page flashes and preserving
+  responsive input.
+- Fn double-press handling no longer blocks the driver event queue, and custom
+  raw-key bindings retain microphone-event deduplication.
+- Native full fan speed is probed independently from ordinary fan control. If
+  native full speed is unavailable, Toolkit can default to the configured
+  maximum-RPM fallback without hiding ordinary controls.
+- The Performance-mode controller now prefers modern
+  `LenovoProcessManagement`, but falls back to legacy `LITSSVC` commands on
+  older ITS systems; unsupported Geek mode is omitted on the legacy path.
+- Driver-update cards now show Lenovo package titles and categories, place
+  required updates before current packages, expose independent queued install
+  actions, and optionally retain successfully installed packages as current.
+- Expanded automation and macro logs with trigger source, queueing, step/event
+  progress, elapsed time, failure/cancellation details, and privacy-safe
+  redaction of application paths and arguments.
+
+### Fixed
+
+- Fixed fan curves retaining a stale target when GPU temperature is unavailable;
+  CPU temperature alone now remains sufficient for curve calculation.
+- Fixed external refresh-rate changes not updating the current Display-page
+  selection.
+- Fixed old Delay enum values being interpreted as Macro steps after macro
+  support was introduced. Numeric delays and GUID macro references are now
+  migrated in both directions while their numeric identifiers remain stable.
+- Fixed duplicate automation and macro names, stale bindings after deletion,
+  empty macro editor borders, theme-inconsistent game lists, and mismatched
+  automation/macro control sizes.
+- Fixed partial power-setting displays reserving empty grid slots and improved
+  handling when only a subset of WMI power values is readable.
+- Fixed status-refresh actions rebuilding entire pages when Fn keys or
+  automations changed an input, display, sound, battery, cooling, or performance
+  control.
+
 ## [0.2.7] - 2026-08-12
 
 ### Added
@@ -249,7 +332,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.7...v1.0.0
 [0.2.7]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.4...v0.2.5

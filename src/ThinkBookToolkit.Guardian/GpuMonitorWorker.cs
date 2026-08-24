@@ -556,22 +556,20 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
         _lastIncludeDisplayActivity = includeDisplayActivity;
         _nextRefresh = DateTimeOffset.UtcNow + RefreshInterval;
         var next = ReadCore(includeDisplayActivity);
-        if (next.State != _last.State ||
-            !string.Equals(
-                next.PerformanceState,
-                _last.PerformanceState,
-                StringComparison.OrdinalIgnoreCase))
+        if (ShouldLogActivityTransition(_last, next))
         {
             _log.Info(
                 $"Discrete GPU state changed from {_last.State} " +
-                $"to {next.State}" +
-                (string.IsNullOrWhiteSpace(next.PerformanceState)
-                    ? "."
-                    : $" ({next.PerformanceState})."));
+                $"to {next.State}.");
         }
         _last = next;
         return next;
     }
+
+    internal static bool ShouldLogActivityTransition(
+        NvidiaActivitySnapshot previous,
+        NvidiaActivitySnapshot next) =>
+        previous.State != next.State;
 
     private NvidiaActivitySnapshot ReadCore(bool includeDisplayActivity)
     {
@@ -848,72 +846,122 @@ internal static class GuardianNvidiaOverclockController
         PhysicalGPU gpu,
         GpuOverclockSettings settings)
     {
-        var clockEntries = new[]
+        var clockEntries = new List<PerformanceStates20ClockEntryV1>();
+        if (settings.CoreFrequencyOffsetEnabled)
         {
-            new PerformanceStates20ClockEntryV1(
+            clockEntries.Add(new PerformanceStates20ClockEntryV1(
                 PublicClockDomain.Graphics,
                 new PerformanceStates20ParameterDelta(
-                    settings.CoreFrequencyOffsetMhz * 1000)),
-            new PerformanceStates20ClockEntryV1(
+                    settings.CoreFrequencyOffsetMhz * 1000)));
+        }
+        if (settings.MemoryFrequencyOffsetEnabled)
+        {
+            clockEntries.Add(new PerformanceStates20ClockEntryV1(
                 PublicClockDomain.Memory,
                 new PerformanceStates20ParameterDelta(
-                    settings.MemoryFrequencyOffsetMhz * 1000))
-        };
-        var performanceState = new[]
+                    settings.MemoryFrequencyOffsetMhz * 1000)));
+        }
+        if (clockEntries.Count > 0)
         {
-            new PerformanceStates20InfoV1.PerformanceState20(
-                PerformanceStateId.P0_3DPerformance,
-                clockEntries,
-                [])
-        };
-        GPUApi.SetPerformanceStates20(
-            gpu.Handle,
-            new PerformanceStates20InfoV1(performanceState, 2, 0));
+            var performanceState = new[]
+            {
+                new PerformanceStates20InfoV1.PerformanceState20(
+                    PerformanceStateId.P0_3DPerformance,
+                    clockEntries.ToArray(),
+                    [])
+            };
+            GPUApi.SetPerformanceStates20(
+                gpu.Handle,
+                new PerformanceStates20InfoV1(
+                    performanceState,
+                    (uint)clockEntries.Count,
+                    0));
+        }
 
-        if (settings.MinimumCoreFrequencyMhz.HasValue &&
-            settings.MaximumCoreFrequencyMhz.HasValue)
-        {
-            NvidiaLockedClockApi.Set(
-                gpu.BusInformation.BusId,
-                gpu.BusInformation.BusSlot,
-                (uint)settings.MinimumCoreFrequencyMhz.Value,
-                (uint)settings.MaximumCoreFrequencyMhz.Value);
-        }
-        else
-        {
-            NvidiaLockedClockApi.Reset(
-                gpu.BusInformation.BusId,
-                gpu.BusInformation.BusSlot);
-        }
+        NvidiaLockedClockApi.Apply(
+            gpu.BusInformation.BusId,
+            gpu.BusInformation.BusSlot,
+            settings.CoreFrequencyLimitEnabled,
+            settings.MinimumCoreFrequencyMhz,
+            settings.MaximumCoreFrequencyMhz,
+            settings.MemoryFrequencyLimitEnabled,
+            settings.MinimumMemoryFrequencyMhz,
+            settings.MaximumMemoryFrequencyMhz);
     }
 }
 
 internal static class NvidiaLockedClockApi
 {
     private const int Success = 0;
+    private const int NotSupported = 3;
 
-    public static void Set(
+    public static void Apply(
         int busId,
         int busSlot,
-        uint minimumMhz,
-        uint maximumMhz) =>
+        bool applyCore,
+        int? minimumCoreMhz,
+        int? maximumCoreMhz,
+        bool applyMemory,
+        uint? minimumMemoryMhz,
+        uint? maximumMemoryMhz)
+    {
+        if (!applyCore && !applyMemory)
+            return;
+
         WithDevice(
             busId,
             busSlot,
-            device => Check(
-                NvmlDeviceSetGpuLockedClocks(
-                    device,
-                    minimumMhz,
-                    maximumMhz),
-                "lock core clocks"));
+            device =>
+            {
+                if (applyMemory && minimumMemoryMhz.HasValue &&
+                    maximumMemoryMhz.HasValue)
+                {
+                    Check(
+                        SetMemoryLockedClocks(
+                            device,
+                            minimumMemoryMhz.Value,
+                            maximumMemoryMhz.Value),
+                        "lock memory clocks");
+                }
+                else if (applyMemory)
+                {
+                    CheckOptionalReset(
+                        ResetMemoryLockedClocks(device),
+                        "reset memory clock limits");
+                }
+
+                if (applyCore && minimumCoreMhz.HasValue &&
+                    maximumCoreMhz.HasValue)
+                {
+                    Check(
+                        NvmlDeviceSetGpuLockedClocks(
+                            device,
+                            (uint)minimumCoreMhz.Value,
+                            (uint)maximumCoreMhz.Value),
+                        "lock core clocks");
+                }
+                else if (applyCore)
+                {
+                    Check(
+                        NvmlDeviceResetGpuLockedClocks(device),
+                        "reset core clock limits");
+                }
+            });
+    }
 
     public static void Reset(int busId, int busSlot) =>
         WithDevice(
             busId,
             busSlot,
-            device => Check(
-                NvmlDeviceResetGpuLockedClocks(device),
-                "reset core clock limits"));
+            device =>
+            {
+                CheckOptionalReset(
+                    ResetMemoryLockedClocks(device),
+                    "reset memory clock limits");
+                Check(
+                    NvmlDeviceResetGpuLockedClocks(device),
+                    "reset core clock limits");
+            });
 
     private static void WithDevice(
         int busId,
@@ -944,6 +992,42 @@ internal static class NvidiaLockedClockApi
         {
             throw new InvalidOperationException(
                 $"NVIDIA could not {operation} (status {status}).");
+        }
+    }
+
+    private static void CheckOptionalReset(int status, string operation)
+    {
+        if (status != NotSupported)
+            Check(status, operation);
+    }
+
+    private static int SetMemoryLockedClocks(
+        IntPtr device,
+        uint minimumMhz,
+        uint maximumMhz)
+    {
+        try
+        {
+            return NvmlDeviceSetMemoryLockedClocks(
+                device,
+                minimumMhz,
+                maximumMhz);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return NotSupported;
+        }
+    }
+
+    private static int ResetMemoryLockedClocks(IntPtr device)
+    {
+        try
+        {
+            return NvmlDeviceResetMemoryLockedClocks(device);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return NotSupported;
         }
     }
 
@@ -978,6 +1062,17 @@ internal static class NvidiaLockedClockApi
     [DllImport("nvml.dll", CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "nvmlDeviceResetGpuLockedClocks")]
     private static extern int NvmlDeviceResetGpuLockedClocks(IntPtr device);
+
+    [DllImport("nvml.dll", CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "nvmlDeviceSetMemoryLockedClocks")]
+    private static extern int NvmlDeviceSetMemoryLockedClocks(
+        IntPtr device,
+        uint minimumMhz,
+        uint maximumMhz);
+
+    [DllImport("nvml.dll", CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "nvmlDeviceResetMemoryLockedClocks")]
+    private static extern int NvmlDeviceResetMemoryLockedClocks(IntPtr device);
 }
 
 internal sealed record NvidiaPrivateSnapshot(

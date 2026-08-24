@@ -4,10 +4,13 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Management;
+using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace ThinkBookToolkit;
 
-public sealed class GameProcessDetector
+public sealed class GameProcessDetector : IDisposable
 {
     private const string GameConfigStorePath = @"System\GameConfigStore\Children";
     private const string MatchedExeFullPathName = "MatchedExeFullPath";
@@ -35,49 +38,107 @@ public sealed class GameProcessDetector
         "textinputhost",
         "werfault",
         "wmiapsrv",
-        "wmiprvse"
+        "wmiprvse",
+        "thinkbooktoolkit",
+        "hwinfo32",
+        "hwinfo64",
+        "nvidia-smi"
     };
 
     private readonly HashSet<string> _knownGamePaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<string?>> _knownGamesByName = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<int> _pinnedProcessIds = [];
+    private readonly EffectiveGameModeMonitor _effectiveGameMode = new();
+    private readonly AppSettings? _settings;
+    private DateTimeOffset _nextGameConfigReload;
 
     public int KnownGameCount => _knownGamePaths.Count;
 
-    public GameProcessDetector()
+    public GameProcessDetector(AppSettings? settings = null)
     {
+        _settings = settings;
         ReloadKnownGames();
+        _effectiveGameMode.Start();
     }
 
     public void ReloadKnownGames()
     {
         _knownGamePaths.Clear();
         _knownGamesByName.Clear();
+        _pinnedProcessIds.Clear();
+        _nextGameConfigReload = DateTimeOffset.UtcNow.AddSeconds(30);
 
         using var root = Registry.CurrentUser.OpenSubKey(GameConfigStorePath, writable: false);
-        if (root is null)
-            return;
-
-        foreach (var childName in root.GetSubKeyNames())
+        if (root is not null)
         {
-            using var child = root.OpenSubKey(childName, writable: false);
-            var path = child?.GetValue(MatchedExeFullPathName) as string;
-            AddKnownGamePath(path);
+            foreach (var childName in root.GetSubKeyNames())
+            {
+                using var child = root.OpenSubKey(childName, writable: false);
+                var path = child?.GetValue(MatchedExeFullPathName) as string;
+                AddKnownGamePath(path);
+            }
         }
+        foreach (var path in _settings?.IncludedGamePaths ?? [])
+            AddKnownGamePath(path);
     }
 
     public bool AreGamesRunning()
     {
-        foreach (var process in ReadProcesses())
+        if (DateTimeOffset.UtcNow >= _nextGameConfigReload)
+            ReloadKnownGames();
+        var processes = ReadProcesses().ToArray();
+        var excludedIds = processes
+            .Where(process => IsExcluded(process.Path))
+            .Select(process => process.ProcessId)
+            .ToHashSet();
+        var activeIds = processes.Select(process => process.ProcessId).ToHashSet();
+        _pinnedProcessIds.RemoveWhere(id =>
+            !activeIds.Contains(id) || excludedIds.Contains(id));
+        var tracked = new HashSet<int>(_pinnedProcessIds);
+        foreach (var process in processes)
         {
-            if (IsGameProcess(process.ProcessId, process.ParentProcessId, process.Name, process.Path, trackedParents: null))
-                return true;
+            if (IsGameProcess(
+                    process.ProcessId,
+                    process.ParentProcessId,
+                    process.Name,
+                    process.Path,
+                    trackedParents: null))
+                tracked.Add(process.ProcessId);
         }
-
-        return false;
+        if (_effectiveGameMode.IsActive &&
+            EffectiveGameModeMonitor.TryGetForegroundProcessId(
+                out var foregroundId) &&
+            processes.FirstOrDefault(process =>
+                process.ProcessId == foregroundId) is { } foreground &&
+            !IsExcluded(foreground.Path) &&
+            !IgnoredProcessNames.Contains(NormalizeName(foreground.Name)))
+        {
+            tracked.Add(foregroundId);
+            _pinnedProcessIds.Add(foregroundId);
+        }
+        bool changed;
+        do
+        {
+            changed = false;
+            foreach (var process in processes)
+            {
+                if (tracked.Contains(process.ProcessId) ||
+                    !tracked.Contains(process.ParentProcessId) ||
+                    IsExcluded(process.Path) ||
+                    IgnoredProcessNames.Contains(NormalizeName(process.Name)))
+                    continue;
+                tracked.Add(process.ProcessId);
+                _pinnedProcessIds.Add(process.ProcessId);
+                changed = true;
+            }
+        } while (changed);
+        return tracked.Count > 0;
     }
 
     private bool IsGameProcess(int processId, int parentProcessId, string name, string? path, HashSet<int>? trackedParents)
     {
+        if (IsExcluded(path))
+            return false;
         var normalizedName = NormalizeName(name);
         if (string.IsNullOrWhiteSpace(normalizedName) || IgnoredProcessNames.Contains(normalizedName))
             return false;
@@ -119,21 +180,55 @@ public sealed class GameProcessDetector
     private static IEnumerable<ProcessRecord> ReadProcesses()
     {
         var records = new List<ProcessRecord>();
-        foreach (var process in Process.GetProcesses())
+        try
         {
-            using (process)
+            using var searcher = new ManagementObjectSearcher(
+                "SELECT ProcessId, ParentProcessId, Name, ExecutablePath " +
+                "FROM Win32_Process");
+            using var values = searcher.Get();
+            foreach (ManagementObject process in values)
             {
-                string? path = null;
-                try { path = process.MainModule?.FileName; } catch { }
-                records.Add(new ProcessRecord(
-                    process.Id,
-                    0,
-                    process.ProcessName,
-                    path));
+                using (process)
+                {
+                    records.Add(new ProcessRecord(
+                        Convert.ToInt32(process["ProcessId"]),
+                        Convert.ToInt32(process["ParentProcessId"]),
+                        Convert.ToString(process["Name"]) ?? string.Empty,
+                        Convert.ToString(process["ExecutablePath"])));
+                }
+            }
+        }
+        catch
+        {
+            foreach (var process in Process.GetProcesses())
+            {
+                using (process)
+                {
+                    string? path = null;
+                    try { path = process.MainModule?.FileName; } catch { }
+                    records.Add(new ProcessRecord(
+                        process.Id,
+                        0,
+                        process.ProcessName,
+                        path));
+                }
             }
         }
         return records;
     }
+
+    private bool IsExcluded(string? path)
+    {
+        var normalized = NormalizePath(path);
+        return normalized is not null &&
+               (_settings?.ExcludedGamePaths ?? []).Any(item =>
+                   string.Equals(
+                       NormalizePath(item),
+                       normalized,
+                       StringComparison.OrdinalIgnoreCase));
+    }
+
+    public void Dispose() => _effectiveGameMode.Dispose();
 
     private static string NormalizeName(string? name)
     {
@@ -157,4 +252,82 @@ public sealed class GameProcessDetector
     }
 
     private sealed record ProcessRecord(int ProcessId, int ParentProcessId, string Name, string? Path);
+}
+
+internal sealed class EffectiveGameModeMonitor : IDisposable
+{
+    private const uint NotificationVersion = 2;
+    private const int GameMode = 5;
+    private readonly EffectivePowerModeCallback _callback;
+    private IntPtr _handle;
+    private int _active;
+
+    public EffectiveGameModeMonitor()
+    {
+        _callback = OnChanged;
+    }
+
+    public bool IsActive => Volatile.Read(ref _active) != 0;
+
+    public void Start()
+    {
+        try
+        {
+            if (PowerRegisterForEffectivePowerModeNotifications(
+                    NotificationVersion,
+                    _callback,
+                    IntPtr.Zero,
+                    out var handle) == 0)
+                _handle = handle;
+        }
+        catch
+        {
+            _handle = IntPtr.Zero;
+        }
+    }
+
+    private void OnChanged(int mode, IntPtr context) =>
+        Volatile.Write(ref _active, mode == GameMode ? 1 : 0);
+
+    public static bool TryGetForegroundProcessId(out int processId)
+    {
+        processId = 0;
+        var window = GetForegroundWindow();
+        if (window == IntPtr.Zero)
+            return false;
+        _ = GetWindowThreadProcessId(window, out var raw);
+        processId = unchecked((int)raw);
+        return processId > 0;
+    }
+
+    public void Dispose()
+    {
+        if (_handle == IntPtr.Zero)
+            return;
+        try { _ = PowerUnregisterFromEffectivePowerModeNotifications(_handle); }
+        catch { }
+        _handle = IntPtr.Zero;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate void EffectivePowerModeCallback(int mode, IntPtr context);
+
+    [DllImport("powrprof.dll", CallingConvention = CallingConvention.Winapi)]
+    private static extern uint PowerRegisterForEffectivePowerModeNotifications(
+        uint version,
+        EffectivePowerModeCallback callback,
+        IntPtr context,
+        out IntPtr registrationHandle);
+
+    [DllImport("powrprof.dll", CallingConvention = CallingConvention.Winapi)]
+    private static extern uint PowerUnregisterFromEffectivePowerModeNotifications(
+        IntPtr registrationHandle);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(
+        IntPtr window,
+        out uint processId);
 }

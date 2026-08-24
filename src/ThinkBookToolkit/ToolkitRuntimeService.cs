@@ -1,6 +1,7 @@
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Threading;
@@ -28,6 +29,7 @@ internal sealed record PerformanceRuntimeSnapshot(
     int MaximumFanRpm,
     FanRpmLimits FanRpmLimits,
     bool EffectiveGameMode,
+    bool GamesRunning,
     string Status);
 
 internal sealed record ToolkitRuntimeSnapshot(
@@ -75,6 +77,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly bool _launchedAtStartup;
     private readonly bool _persistSystemSessionState;
     private readonly LenovoFnKeyManager _fnKeyManager;
+    private readonly AutomationRunner _automationRunner;
+    private readonly KeyboardMacroService _macroService;
     private MainWindow? _fanRuntime;
     private TemperatureReader? _temperatureReader;
     private ToolkitMainWindow? _window;
@@ -87,6 +91,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private DateTimeOffset _lastBatteryRefresh;
     private DateTimeOffset _lastGpuRefresh;
     private DateTimeOffset _nextGpuOverclockRetry;
+    private bool? _lastAutomationAcConnected;
+    private bool? _lastAutomationGamesRunning;
     private readonly string _bootSessionId;
     private bool _polling;
     private bool _powerSettingsLockBusy;
@@ -100,6 +106,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private bool _systemThemeSubscribed;
     private bool _powerModeSubscribed;
     private FnKeyNotificationWindow? _fnKeyNotification;
+    private bool _fnDiscoveryOwnsListener;
     private bool? _fnKeyNotificationDark;
 
     public ToolkitRuntimeService(
@@ -111,6 +118,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _launchedAtStartup = launchedAtStartup;
         _persistSystemSessionState = persistSystemSessionState;
         _fnKeyManager = new LenovoFnKeyManager(this);
+        _automationRunner = new AutomationRunner(this);
+        _macroService = new KeyboardMacroService(settings);
         _bootSessionId = GpuModeRestartState.CurrentBootSessionId;
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
@@ -199,6 +208,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 "IFanBackend.SetFullSpeed(true)",
                 "IFanBackend.SetFullSpeed(false)"));
 
+    public bool NativeFanFullSpeedAvailable =>
+        Report?.IsAvailable(FeatureIds.FanFullSpeed) == true;
+
+    public bool CanUseFanFullSpeed =>
+        NativeFanFullSpeedAvailable ||
+        Settings.UseAlternativeFullSpeedMethod;
+
     public bool IsChinese => Settings.Language != "en-US";
 
     public bool IsDark => ResolveDarkTheme(Settings.Theme);
@@ -217,6 +233,352 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public event EventHandler? OverviewLayoutChanged;
 
     public event EventHandler? FnKeyTakeoverChanged;
+
+    public event EventHandler? ControlStateChanged;
+
+    public event EventHandler? AutomationChanged;
+
+    public event EventHandler? MacroChanged;
+
+    public event EventHandler<FnKeyDiscoveredInfo>? FnKeyDiscovered;
+
+    internal async Task<string?> SetFnKeyDiscoveryModeAsync(bool enabled)
+    {
+        if (enabled)
+        {
+            if (!_fnKeyManager.IsRunning)
+            {
+                var error = await _fnKeyManager.StartAsync();
+                if (!string.IsNullOrWhiteSpace(error))
+                    return error;
+                _fnDiscoveryOwnsListener = !Settings.TakeOverFnKeys;
+            }
+            _fnKeyManager.DiscoveryMode = true;
+            return null;
+        }
+        _fnKeyManager.DiscoveryMode = false;
+        if (_fnDiscoveryOwnsListener)
+        {
+            _fnDiscoveryOwnsListener = false;
+            return await _fnKeyManager.StopAsync(
+                restoreLenovoHotkeys: true);
+        }
+        return null;
+    }
+
+    internal void PublishFnKeyDiscovered(FnKeyDiscoveredInfo info) =>
+        FnKeyDiscovered?.Invoke(this, info);
+
+    internal async Task<AutomationRunResult> RunAutomationAsync(
+        string automationId,
+        CancellationToken cancellationToken = default)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            return await (await dispatcher.InvokeAsync(() =>
+                _automationRunner.RunAsync(
+                    automationId,
+                    cancellationToken)));
+        }
+        return await _automationRunner.RunAsync(
+            automationId,
+            cancellationToken);
+    }
+
+    internal bool TrySaveAutomations(
+        IEnumerable<AutomationDefinition> automations,
+        out string? error)
+    {
+        var values = automations.ToArray();
+        if (UniqueDefinitionNames.HasDuplicates(
+                values.Select(item => item.Name)))
+        {
+            error = L(
+                "自动化名称不能重复。",
+                "Automation names must be unique.");
+            return false;
+        }
+        var previousAutomations = Settings.Automations;
+        var previousBindings = Settings.FnKeyAutomationBindings;
+        var previousDoubleBindings =
+            Settings.FnKeyDoublePressAutomationBindings;
+        Settings.Automations = AutomationSettingsDefaults.Normalize(values);
+        Settings.FnKeyAutomationBindings =
+            AutomationSettingsDefaults.NormalizeFnBindings(
+                previousBindings,
+                Settings.Automations,
+                Settings.CustomFnKeyNames);
+        Settings.FnKeyDoublePressAutomationBindings =
+            AutomationSettingsDefaults.NormalizeFnBindings(
+                previousDoubleBindings,
+                Settings.Automations,
+                Settings.CustomFnKeyNames);
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            AutomationChanged?.Invoke(this, EventArgs.Empty);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.Automations = previousAutomations;
+            Settings.FnKeyAutomationBindings = previousBindings;
+            Settings.FnKeyDoublePressAutomationBindings =
+                previousDoubleBindings;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal bool TrySetAutomationEnabled(bool enabled, out string? error)
+    {
+        var previous = Settings.AutomationEnabled;
+        Settings.AutomationEnabled = enabled;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            AutomationChanged?.Invoke(this, EventArgs.Empty);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.AutomationEnabled = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal bool TrySaveMacros(
+        IEnumerable<KeyboardMacroDefinition> macros,
+        out string? error)
+    {
+        var values = macros.ToArray();
+        if (UniqueDefinitionNames.HasDuplicates(
+                values.Select(item => item.Name)))
+        {
+            error = L(
+                "宏名称不能重复。",
+                "Macro names must be unique.");
+            return false;
+        }
+        var duplicateTrigger = values
+            .Where(item => item.TriggerVirtualKey.HasValue)
+            .GroupBy(item => item.TriggerVirtualKey!.Value)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicateTrigger is not null)
+        {
+            error = L(
+                $"按键 {KeyboardMacroKeyNames.Format(duplicateTrigger.Key)} 已绑定到多个宏。",
+                $"Key {KeyboardMacroKeyNames.Format(duplicateTrigger.Key)} is assigned to more than one macro.");
+            return false;
+        }
+        var previous = Settings.Macros;
+        Settings.Macros = KeyboardMacroDefaults.Normalize(values);
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            MacroChanged?.Invoke(this, EventArgs.Empty);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.Macros = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal bool TrySetMacroEnabled(bool enabled, out string? error)
+    {
+        if (enabled)
+        {
+            var startError = _macroService.Start();
+            if (!string.IsNullOrWhiteSpace(startError))
+            {
+                error = startError;
+                return false;
+            }
+        }
+        var previous = Settings.MacroEnabled;
+        Settings.MacroEnabled = enabled;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            MacroChanged?.Invoke(this, EventArgs.Empty);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.MacroEnabled = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal string? StartMacroRecording(
+        Action<KeyboardMacroEvent> recorded,
+        Action stopped) =>
+        _macroService.StartRecording(recorded, stopped);
+
+    internal void StopMacroRecording() => _macroService.StopRecording();
+
+    internal string? StartMacroTriggerCapture(Action<int?> captured) =>
+        _macroService.StartTriggerCapture(captured);
+
+    internal void CancelMacroTriggerCapture() =>
+        _macroService.CancelTriggerCapture();
+
+    internal Task<string?> RunMacroAsync(
+        string macroId,
+        CancellationToken cancellationToken = default,
+        string executionSource = "direct") =>
+        _macroService.PlayAsync(
+            macroId,
+            cancellationToken,
+            executionSource);
+
+    internal bool TrySaveGameDetectionPaths(
+        IEnumerable<string> included,
+        IEnumerable<string> excluded,
+        out string? error)
+    {
+        var previousIncluded = Settings.IncludedGamePaths;
+        var previousExcluded = Settings.ExcludedGamePaths;
+        Settings.IncludedGamePaths =
+            CurveProfileStore.NormalizeApplicationPaths(included);
+        Settings.ExcludedGamePaths =
+            CurveProfileStore.NormalizeApplicationPaths(excluded);
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            _fanRuntime?.RuntimeReloadGameDetection();
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.IncludedGamePaths = previousIncluded;
+            Settings.ExcludedGamePaths = previousExcluded;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal bool TrySaveFnAutomationBindings(
+        IReadOnlyDictionary<string, string> singlePressBindings,
+        IReadOnlyDictionary<string, string> doublePressBindings,
+        out string? error)
+    {
+        var previous = Settings.FnKeyAutomationBindings;
+        var previousDouble = Settings.FnKeyDoublePressAutomationBindings;
+        Settings.FnKeyAutomationBindings =
+            AutomationSettingsDefaults.NormalizeFnBindings(
+                singlePressBindings,
+                Settings.Automations,
+                Settings.CustomFnKeyNames);
+        Settings.FnKeyDoublePressAutomationBindings =
+            AutomationSettingsDefaults.NormalizeFnBindings(
+                doublePressBindings,
+                Settings.Automations,
+                Settings.CustomFnKeyNames);
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            AutomationChanged?.Invoke(this, EventArgs.Empty);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.FnKeyAutomationBindings = previous;
+            Settings.FnKeyDoublePressAutomationBindings = previousDouble;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal async Task<bool> TryRunFnAutomationAsync(
+        string keyId,
+        bool doublePress = false)
+    {
+        if (!Settings.AutomationEnabled)
+            return false;
+        var bindings = doublePress
+            ? Settings.FnKeyDoublePressAutomationBindings
+            : Settings.FnKeyAutomationBindings;
+        if (!bindings.TryGetValue(
+                keyId,
+                out var automationId))
+        {
+            return false;
+        }
+        var automation = Settings.Automations.FirstOrDefault(item =>
+            item.Id.Equals(
+                automationId,
+                StringComparison.OrdinalIgnoreCase));
+        if (automation is null)
+            return false;
+        ShowFnKeyNotification(
+            L("自动化", "Automation"),
+            automation.Name);
+        var result = await RunAutomationAsync(automation.Id);
+        if (!result.Success)
+            SetStatus(result.Error);
+        return true;
+    }
+
+    internal bool TryAddDiscoveredFnKey(
+        FnKeyDiscoveredInfo info,
+        out string? error)
+    {
+        var previous = Settings.CustomFnKeyNames;
+        var updated = new Dictionary<string, string>(
+            previous,
+            StringComparer.OrdinalIgnoreCase)
+        {
+            [info.BindingId] = string.IsNullOrWhiteSpace(info.Name)
+                ? $"Fn + 0x{unchecked((uint)info.Code):X} ({info.Channel})"
+                : info.Name.Trim()
+        };
+        Settings.CustomFnKeyNames =
+            AutomationSettingsDefaults.NormalizeCustomFnKeyNames(updated);
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            AutomationChanged?.Invoke(this, EventArgs.Empty);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.CustomFnKeyNames = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal bool HasFnAutomationBinding(string keyId) =>
+        Settings.AutomationEnabled &&
+        (HasFnAutomationBinding(keyId, doublePress: false) ||
+         HasFnAutomationBinding(keyId, doublePress: true));
+
+    internal bool HasFnAutomationBinding(string keyId, bool doublePress)
+    {
+        if (!Settings.AutomationEnabled)
+            return false;
+        var bindings = doublePress
+            ? Settings.FnKeyDoublePressAutomationBindings
+            : Settings.FnKeyAutomationBindings;
+        return bindings.TryGetValue(keyId, out var automationId) &&
+               Settings.Automations.Any(item => item.Id.Equals(
+                   automationId,
+                   StringComparison.OrdinalIgnoreCase));
+    }
 
     public event EventHandler<string>? StatusChanged;
 
@@ -274,14 +636,37 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public async Task InitializeAsync()
     {
+        var startup = Stopwatch.StartNew();
+        var previousStage = TimeSpan.Zero;
+        void LogStage(string stage)
+        {
+            var elapsed = startup.Elapsed;
+            ToolkitLog.Info(
+                $"Startup stage completed: {stage}; " +
+                $"step={(elapsed - previousStage).TotalMilliseconds:0} ms; " +
+                $"total={elapsed.TotalMilliseconds:0} ms.");
+            previousStage = elapsed;
+        }
+
+        var macroHookError = _macroService.Start();
+        if (!string.IsNullOrWhiteSpace(macroHookError))
+        {
+            ToolkitLog.Warning(
+                "The keyboard macro listener could not be started: " +
+                macroHookError);
+        }
         Report = await FeatureAvailabilityService.DetectAsync();
         ToolkitLog.Info(
             $"Feature detection completed: {Report.Items.Count(item => item.Usable)}/{Report.Items.Count} usable.");
+        FeatureAvailabilityDiagnostics.LogIssues(Report);
         FeatureAvailabilityCache.Current = Report;
+        InitializeAlternativeFullSpeedMethod();
+        LogStage("feature detection");
 
         // This must run before MainWindow raises Loaded: the embedded fan
         // runtime creates its TemperatureReader from that event.
         await RefreshHybridGpuProtectionAsync(forceGpuModeRefresh: true);
+        LogStage("hybrid GPU protection initialization");
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         _powerModeSubscribed = true;
 
@@ -307,8 +692,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
             if (Report.IsAvailable(FeatureIds.TemperatureMonitoring))
                 _temperatureReader = new TemperatureReader();
         }
+        LogStage("fan and hardware runtime creation");
 
         AvailabilityChanged?.Invoke(this, EventArgs.Empty);
+        await Task.Yield();
+        LogStage("overview availability notification");
 
         await RestoreShutdownPerformanceModeAsync();
         if (Settings.TakeOverFnKeys)
@@ -324,11 +712,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     "Fn-key takeover could not be started: ") + error);
             }
         }
+        LogStage("startup settings and Fn-key takeover");
         await ApplyPendingGpuModeAsync();
+        LogStage("pending GPU mode handling");
         await RefreshAsync(force: true);
+        LogStage("initial hardware refresh");
         _ = RefreshWarrantyAsync();
         _pollTimer.Start();
         SyncPowerSettingsLockTimer();
+        LogStage("background refresh scheduling");
     }
 
     public void AttachWindow(ToolkitMainWindow window, bool startToTrayRequested)
@@ -343,15 +735,139 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    private void InitializeAlternativeFullSpeedMethod()
+    {
+        if (!ShouldInitializeAlternativeFullSpeedMethod(Report, Settings))
+        {
+            return;
+        }
+
+        Settings.UseAlternativeFullSpeedMethod = true;
+        Settings.AlternativeFullSpeedMethodInitialized = true;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            ToolkitLog.Info(
+                "The fan backend cannot provide native full speed; the " +
+                "alternative maximum-RPM method was enabled by default.");
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                "The default alternative full-speed setting could not be saved.",
+                ex);
+        }
+    }
+
+    internal static bool ShouldInitializeAlternativeFullSpeedMethod(
+        FeatureAvailabilityReport? report,
+        AppSettings settings) =>
+        report?.IsAvailable(FeatureIds.FanControl) == true &&
+        !report.IsAvailable(FeatureIds.FanFullSpeed) &&
+        !settings.AlternativeFullSpeedMethodInitialized;
+
     public void ShowMainWindow()
     {
         if (_window is null)
             return;
+        if (!_window.Dispatcher.CheckAccess())
+        {
+            _window.Dispatcher.BeginInvoke(new Action(ShowMainWindow));
+            return;
+        }
         _window.Show();
         _window.ShowInTaskbar = true;
         if (_window.WindowState == WindowState.Minimized)
             _window.WindowState = WindowState.Normal;
         _window.Activate();
+    }
+
+    internal void MinimizeMainWindow()
+    {
+        if (_window is null)
+            return;
+        if (!_window.Dispatcher.CheckAccess())
+        {
+            _window.Dispatcher.BeginInvoke(new Action(MinimizeMainWindow));
+            return;
+        }
+        _window.WindowState = WindowState.Minimized;
+    }
+
+    internal void ToggleMainWindow()
+    {
+        if (_window is null)
+            return;
+        if (!_window.Dispatcher.CheckAccess())
+        {
+            _window.Dispatcher.BeginInvoke(new Action(ToggleMainWindow));
+            return;
+        }
+        if (_window.IsVisible &&
+            _window.WindowState != WindowState.Minimized &&
+            _window.IsActive)
+            MinimizeMainWindow();
+        else
+            ShowMainWindow();
+    }
+
+    internal void NotifyControlStateChanged() =>
+        ControlStateChanged?.Invoke(this, EventArgs.Empty);
+
+    internal async Task<string?> SetFixedRpmGameModeAsync(bool gameMode)
+    {
+        if (_fanRuntime is null)
+            return L("风扇功能不可用", "Fan controls are unavailable");
+        try
+        {
+            _fanRuntime.RuntimeSetManualFixedMode(gameMode);
+            await RefreshAsync(force: true);
+            NotifyControlStateChanged();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    internal async Task<string?> SetInputSettingAsync(
+        InputSettingKind kind,
+        bool enabled)
+    {
+        try
+        {
+            if (Settings.TakeOverFnKeys &&
+                (kind is InputSettingKind.CapsLockOsd or
+                    InputSettingKind.NumLockOsd))
+            {
+                if (!TrySetLockKeyOsd(kind, enabled, out var saveError))
+                    return saveError;
+            }
+            else
+            {
+                var confirmed = await Task.Run(() =>
+                    InputSettingsController.SetState(kind, enabled));
+                if (!confirmed.Supported || confirmed.Enabled != enabled)
+                {
+                    return L(
+                        "硬件未确认新的状态。",
+                        "Hardware did not confirm the new state.");
+                }
+                if ((kind is InputSettingKind.CapsLockOsd or
+                    InputSettingKind.NumLockOsd) &&
+                    !TrySetLockKeyOsd(kind, enabled, out var saveError))
+                {
+                    return saveError;
+                }
+            }
+            NotifyControlStateChanged();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
     }
 
     public void HideToTray()
@@ -797,6 +1313,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 Warranty = _cachedWarranty
             };
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            ProcessAutomationTriggerStates(
+                battery?.IsAcConnected,
+                performance?.GamesRunning);
             UpdateTrayText();
             SyncPowerSettingsLockTimer();
             if (itsMode != ItsMode.Unknown &&
@@ -827,6 +1346,66 @@ internal sealed class ToolkitRuntimeService : IDisposable
             _ = ApplyFanStrategyForPerformanceModeAsync(
                 modeToLink.Value,
                 modeToLinkGeneration.Value);
+        }
+    }
+
+    private void ProcessAutomationTriggerStates(
+        bool? acConnected,
+        bool? gamesRunning)
+    {
+        foreach (var trigger in ResolveAutomationTransitions(
+                     _lastAutomationAcConnected,
+                     acConnected,
+                     _lastAutomationGamesRunning,
+                     gamesRunning))
+            _ = RunAutomationTriggersAsync(trigger);
+        if (acConnected.HasValue)
+            _lastAutomationAcConnected = acConnected.Value;
+        if (gamesRunning.HasValue)
+            _lastAutomationGamesRunning = gamesRunning.Value;
+    }
+
+    internal static IReadOnlyList<AutomationTriggerKind>
+        ResolveAutomationTransitions(
+            bool? previousAcConnected,
+            bool? acConnected,
+            bool? previousGamesRunning,
+            bool? gamesRunning)
+    {
+        var result = new List<AutomationTriggerKind>(2);
+        if (previousAcConnected.HasValue && acConnected.HasValue &&
+            previousAcConnected.Value != acConnected.Value)
+        {
+            result.Add(acConnected.Value
+                ? AutomationTriggerKind.AcAdapterConnected
+                : AutomationTriggerKind.AcAdapterDisconnected);
+        }
+        if (previousGamesRunning.HasValue && gamesRunning.HasValue &&
+            previousGamesRunning.Value != gamesRunning.Value)
+        {
+            result.Add(gamesRunning.Value
+                ? AutomationTriggerKind.GameStarted
+                : AutomationTriggerKind.GameStopped);
+        }
+        return result;
+    }
+
+    private async Task RunAutomationTriggersAsync(
+        AutomationTriggerKind trigger)
+    {
+        if (!Settings.AutomationEnabled)
+            return;
+        var automations = Settings.Automations
+            .Where(automation => automation.Triggers.Contains(trigger))
+            .Select(automation => automation.Id)
+            .ToArray();
+        foreach (var automationId in automations)
+        {
+            ToolkitLog.Info(
+                $"Automation trigger {trigger} matched {automationId}.");
+            var result = await RunAutomationAsync(automationId);
+            if (!result.Success)
+                SetStatus(result.Error);
         }
     }
 
@@ -921,6 +1500,19 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public async Task<string?> SetItsModeAsync(ItsMode mode)
     {
+        var detector = new ItsModeDetector();
+        if (!detector.IsModeSupported(mode))
+        {
+            return detector.GetControlPath() ==
+                   ItsModeControlPath.LegacyLitssvc &&
+                   mode == ItsMode.Geek
+                ? L(
+                    "旧版 LITSSVC 接口不支持极客模式",
+                    "The legacy LITSSVC interface does not support Geek mode")
+                : L(
+                    "当前设备没有可用于此模式的 ITS 切换接口",
+                    "No ITS interface for this mode is available on this device");
+        }
         var isAcConnected = Snapshot.Battery?.IsAcConnected;
         if (BatteryInformationReader.TryGetAcConnectionState(
                 out var currentAcState))
@@ -941,7 +1533,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
             while (DateTimeOffset.UtcNow < deadline)
             {
-                if (await Task.Run(() => new ItsModeDetector().ReadMode()) == mode)
+                if (await Task.Run(detector.ReadMode) == mode)
                 {
                     Snapshot = Snapshot with { ItsMode = mode };
                     SnapshotChanged?.Invoke(this, EventArgs.Empty);
@@ -1000,7 +1592,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
             Settings.FnPerformanceModeOrder,
             Settings.FnPerformanceModeEnabled,
             current,
-            isAcConnected);
+            isAcConnected,
+            ItsModeController.IsModeSupported);
         if (!PerformanceModeCycle.IsSelectableMode(next))
             return;
         ShowFnKeyNotification(
@@ -1143,6 +1736,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             CurveProfileStore.SaveSettings(Settings);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
             error = null;
             return true;
         }
@@ -1159,11 +1753,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     internal bool TrySetRefreshRateCycle(
         IEnumerable<uint> rates,
+        bool includeDynamic,
         out string? error)
     {
         var normalized = RefreshRateController.NormalizeConfiguredRates(
             rates);
-        if (normalized.Count == 0)
+        if (normalized.Count == 0 && !includeDynamic)
         {
             error = L(
                 "至少需要启用一个刷新率。",
@@ -1171,7 +1766,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return false;
         }
         var previous = Settings.RefreshRateCycleHz;
+        var previousDynamic = Settings.IncludeDynamicRefreshRateInCycle;
         Settings.RefreshRateCycleHz = normalized;
+        Settings.IncludeDynamicRefreshRateInCycle = includeDynamic;
         try
         {
             CurveProfileStore.SaveSettings(Settings);
@@ -1181,10 +1778,19 @@ internal sealed class ToolkitRuntimeService : IDisposable
         catch (Exception ex)
         {
             Settings.RefreshRateCycleHz = previous;
+            Settings.IncludeDynamicRefreshRateInCycle = previousDynamic;
             error = ex.Message;
             return false;
         }
     }
+
+    internal bool TrySetRefreshRateCycle(
+        IEnumerable<uint> rates,
+        out string? error) =>
+        TrySetRefreshRateCycle(
+            rates,
+            Settings.IncludeDynamicRefreshRateInCycle,
+            out error);
 
     private string PerformanceModeDisplayName(ItsMode mode) => mode switch
     {
@@ -1438,6 +2044,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
     {
         if (_fanRuntime is null)
             return L("风扇功能不可用", "Fan controls are unavailable");
+        if (enabled && !CanUseFanFullSpeed)
+        {
+            return L(
+                "当前风扇后端不支持风扇拉满；请先在设置中启用替代方案。",
+                "The current fan backend does not support full speed. Enable the alternative method in Settings first.");
+        }
         try
         {
             async Task<string?> ApplyAsync()
@@ -1549,12 +2161,29 @@ internal sealed class ToolkitRuntimeService : IDisposable
             value,
             out error);
 
-    public bool TrySetAlternativeFullSpeedMethod(bool value, out string? error) =>
-        TrySaveSetting(
-            () => Settings.UseAlternativeFullSpeedMethod,
-            current => Settings.UseAlternativeFullSpeedMethod = current,
-            value,
-            out error);
+    public bool TrySetAlternativeFullSpeedMethod(bool value, out string? error)
+    {
+        var previousValue = Settings.UseAlternativeFullSpeedMethod;
+        var previousInitialized =
+            Settings.AlternativeFullSpeedMethodInitialized;
+        Settings.UseAlternativeFullSpeedMethod = value;
+        Settings.AlternativeFullSpeedMethodInitialized = true;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.UseAlternativeFullSpeedMethod = previousValue;
+            Settings.AlternativeFullSpeedMethodInitialized =
+                previousInitialized;
+            error = ex.Message;
+            return false;
+        }
+    }
 
     public bool TrySetContinuouslyWriteFanTargets(bool value, out string? error) =>
         TrySaveSetting(
@@ -2480,6 +3109,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         _hybridAutoGpu.PresenceChanged -= OnDiscreteGpuPresenceChanged;
         _fnKeyManager.Dispose();
+        _macroService.Dispose();
         try { _fnKeyNotification?.Close(); } catch { }
         _fnKeyNotification = null;
         _fnKeyNotificationDark = null;

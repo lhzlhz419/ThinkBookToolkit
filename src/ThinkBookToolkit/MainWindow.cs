@@ -60,7 +60,7 @@ public sealed class MainWindow : Window
     private readonly List<FanProfile> _profiles;
     private readonly AppSettings _settings;
     private readonly ItsModeDetector _itsModeDetector = new();
-    private readonly GameProcessDetector _gameProcessDetector = new();
+    private readonly GameProcessDetector _gameProcessDetector;
     private static readonly ItsMode[] SwitchableItsModes =
         [ItsMode.Intelligent, ItsMode.PowerSaving, ItsMode.Performance, ItsMode.Geek];
 
@@ -267,6 +267,7 @@ public sealed class MainWindow : Window
         _gpuModeCombo.IsEnabled = false;
         _gpuModeCombo.VerticalAlignment = VerticalAlignment.Center;
         _settings = sharedSettings ?? CurveProfileStore.LoadSettings();
+        _gameProcessDetector = new GameProcessDetector(_settings);
         if (!_settings.FanRpmLimitsCustomized)
             _settings.FanRpmLimits =
                 CurveProfileStore.DefaultFanRpmLimitsForCurrentDevice();
@@ -392,6 +393,7 @@ public sealed class MainWindow : Window
         _fanMaxRpm,
         CurveProfileStore.NormalizeFanRpmLimits(_settings.FanRpmLimits),
         _effectiveGameMode,
+        _confirmedGamesRunning,
         _statusText.Text);
 
     internal FanBackendControlSemantics RuntimeFanControlSemantics =>
@@ -534,6 +536,9 @@ public sealed class MainWindow : Window
 
     internal Task RuntimeRefreshAsync() => SampleAsync(force: true);
 
+    internal void RuntimeReloadGameDetection() =>
+        _gameProcessDetector.ReloadKnownGames();
+
     internal async Task RuntimeRestartDataReadersAsync()
     {
         _timer.Stop();
@@ -541,6 +546,7 @@ public sealed class MainWindow : Window
         while (_temperatureSampling && DateTimeOffset.UtcNow < deadline)
             await Task.Delay(25);
         _temperatureReader?.Dispose();
+        _gameProcessDetector.ReloadKnownGames();
         _temperatureReader = new TemperatureReader();
         _latestTemperatureSnapshot = null;
         _smoothedCpuTempC = null;
@@ -1456,6 +1462,16 @@ public sealed class MainWindow : Window
                 _cpuChart.SetCurrentTemp(temps.CpuTempC);
                 _gpuChart.SetCurrentTemp(temps.GpuTempC);
                 _statusText.Text = $"{(_running ? T("Running") : T("Monitoring"))} | {T("Strategy")}: {T("FixedRpm")} | {T("Game")}: {FormatGameState()}";
+                UpdateTrayText();
+                return;
+            }
+
+            if (_smoothedCpuTempC is null && _smoothedGpuTempC is null)
+            {
+                UpdateTemperatureUi(temps);
+                _targetText.Text = FormatTarget(_lastTarget);
+                _cpuChart.SetCurrentTemp(temps.CpuTempC);
+                _gpuChart.SetCurrentTemp(temps.GpuTempC);
                 UpdateTrayText();
                 return;
             }
@@ -4121,10 +4137,10 @@ public sealed class MainWindow : Window
         return _temperatureReader.Read();
     }
 
-    private static double? SmoothTemperature(double? previous, double? current, double smoothingSamples)
+    internal static double? SmoothTemperature(double? previous, double? current, double smoothingSamples)
     {
         if (current is null)
-            return previous;
+            return null;
         if (previous is null)
             return current;
 
@@ -4657,7 +4673,7 @@ public sealed class MainWindow : Window
             "Unknown" => "\u672a\u77e5",
             "FirmwareAuto" => "\u9ed8\u8ba4\u81ea\u52a8",
             "CurrentMode" => "\u5f53\u524d\u6a21\u5f0f",
-            "ItsModeSwitchUnavailable" => "\u4ec5\u5f53 LenovoProcessManagement PowerSlider Version \u5927\u4e8e\u7b49\u4e8e 8192 \u65f6\u53ef\u5207\u6362\u6a21\u5f0f\u3002",
+            "ItsModeSwitchUnavailable" => "\u672a\u68c0\u6d4b\u5230\u53ef\u7528\u7684 LenovoProcessManagement \u6216\u65e7\u7248 LITSSVC \u6027\u80fd\u6a21\u5f0f\u5207\u6362\u63a5\u53e3\u3002",
             "ItsModeSwitchNotConfirmed" => "\u670d\u52a1\u5df2\u63a5\u6536\u547d\u4ee4\uff0c\u4f46 3 \u79d2\u5185\u672a\u80fd\u4ece\u6ce8\u518c\u8868\u786e\u8ba4\u6a21\u5f0f\u53d8\u66f4\u3002",
             "ItsModeSwitchFailedFormat" => "\u6a21\u5f0f\u5207\u6362\u5931\u8d25\uff1a{0}",
             "Holding" => "\u5ef6\u65f6",
@@ -4980,7 +4996,7 @@ public sealed class MainWindow : Window
             "Unknown" => "Unknown",
             "FirmwareAuto" => "Firmware auto",
             "CurrentMode" => "Current mode",
-            "ItsModeSwitchUnavailable" => "Mode switching requires LenovoProcessManagement PowerSlider Version 8192 or later.",
+            "ItsModeSwitchUnavailable" => "No LenovoProcessManagement or legacy LITSSVC performance-mode interface was detected.",
             "ItsModeSwitchNotConfirmed" => "The service accepted the command, but the registry did not confirm the mode change within 3 seconds.",
             "ItsModeSwitchFailedFormat" => "Failed to switch mode: {0}",
             "Holding" => "Holding",

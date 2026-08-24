@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using DiskInfoToolkit;
 
@@ -20,17 +21,24 @@ internal sealed class StorageTemperatureReader
 
     public static StorageTemperatureReader? TryCreate()
     {
+        var stopwatch = Stopwatch.StartNew();
         try
         {
             var devices = Storage.GetDisks()
                 .Where(device => !device.IsFiltered)
                 .ToArray();
+            ToolkitLog.Info(
+                $"Storage telemetry initialized with {devices.Length} device(s) " +
+                $"in {stopwatch.Elapsed.TotalMilliseconds:0} ms.");
             return devices.Length > 0
                 ? new StorageTemperatureReader(devices)
                 : null;
         }
-        catch
+        catch (Exception ex)
         {
+            ToolkitLog.Warning(
+                "Storage telemetry initialization failed after " +
+                $"{stopwatch.Elapsed.TotalMilliseconds:0} ms: {ex.Message}");
             return null;
         }
     }

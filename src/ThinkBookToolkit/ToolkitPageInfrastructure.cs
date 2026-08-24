@@ -4,12 +4,18 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
 
 namespace ThinkBookToolkit;
+
+internal interface IControlStateRefreshable
+{
+    Task RefreshControlStateAsync();
+}
 
 internal abstract class ToolkitViewModelBase : INotifyPropertyChanged, IDisposable
 {
@@ -208,7 +214,11 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         }
         Grid.SetColumn(control, offset + 1);
         row.Children.Add(control);
-        var keepControlOnRight = control is CheckBox;
+        var keepControlOnRight = control is CheckBox ||
+                                 control is FrameworkElement
+                                 {
+                                     Tag: "KeepOnRight"
+                                 };
         void ApplyResponsiveRow(bool compact)
         {
             Grid.SetRow(control, compact ? 1 : 0);
@@ -1021,6 +1031,8 @@ internal sealed class AdaptiveUniformPanel : Panel
 
     public double Spacing { get; set; } = 10;
 
+    public int MaximumColumns { get; set; } = int.MaxValue;
+
     protected override Size MeasureOverride(Size availableSize)
     {
         var visibleChildren = Children
@@ -1092,7 +1104,7 @@ internal sealed class AdaptiveUniformPanel : Panel
         return Math.Max(
             1,
             Math.Min(
-                itemCount,
+                Math.Min(itemCount, Math.Max(1, MaximumColumns)),
                 (int)Math.Floor((width + Spacing) / (MinimumItemWidth + Spacing))));
     }
 }

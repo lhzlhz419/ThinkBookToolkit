@@ -14,6 +14,7 @@ and does not replace or modify those terms.
 | RAMSPDToolkit-NDD | 1.6.0 | MPL-2.0 | <https://github.com/Blacktempel/RAMSPDToolkit> |
 | BlackSharp.Core | 1.1.4 | MPL-2.0 | <https://github.com/Blacktempel/BlackSharp> |
 | HidSharp | 2.6.4 | Apache-2.0 | <https://www.zer7.com/software/hidsharp> |
+| LLT.WindowsDisplayAPI | 1.3.2-pre17 | LGPL-3.0-only | <https://github.com/LenovoLegionToolkit-Team/WindowsDisplayAPI> |
 | LLT.NvAPIWrapper.Net | 1.0.0-pre8 | LGPL-3.0 | <https://github.com/LenovoLegionToolkit-Team/NvAPIWrapper> |
 | NAudio.Wasapi / NAudio.Core | 2.2.1 | MIT | <https://github.com/naudio/NAudio> |
 | Mono.Posix.NETStandard | 1.0.0 | MIT | <https://github.com/mono/mono> |
@@ -66,6 +67,7 @@ Local development and runtime installations may use files from Lenovo Vantage
 or Lenovo PC Manager, including these component groups:
 
 - Lenovo Productivity System Add-in;
+- Lenovo System Update Add-in;
 - Multimedia Add-in;
 - Smart Color Add-in;
 - Smart Interact Add-in;

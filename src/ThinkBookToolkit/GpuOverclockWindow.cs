@@ -14,8 +14,16 @@ internal sealed class GpuOverclockWindow : Window
     private readonly ToolkitPalette _palette;
     private readonly NumericEditor _coreOffset;
     private readonly NumericEditor _memoryOffset;
+    private readonly FrameworkElement _coreLimitEditor;
+    private readonly FrameworkElement _memoryLimitEditor;
     private readonly TextBox _minimumCoreClock = ClockBox();
     private readonly TextBox _maximumCoreClock = ClockBox();
+    private readonly TextBox _minimumMemoryClock = ClockBox();
+    private readonly TextBox _maximumMemoryClock = ClockBox();
+    private readonly CheckBox _coreOffsetEnabled = new();
+    private readonly CheckBox _memoryOffsetEnabled = new();
+    private readonly CheckBox _coreLimitEnabled = new();
+    private readonly CheckBox _memoryLimitEnabled = new();
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Button _restore;
     private readonly Button _apply;
@@ -62,6 +70,34 @@ internal sealed class GpuOverclockWindow : Window
         _maximumCoreClock.Text =
             settings.MaximumCoreFrequencyMhz?.ToString(
                 CultureInfo.InvariantCulture) ?? string.Empty;
+        _minimumMemoryClock.Text =
+            settings.MinimumMemoryFrequencyMhz?.ToString(
+                CultureInfo.InvariantCulture) ?? string.Empty;
+        _maximumMemoryClock.Text =
+            settings.MaximumMemoryFrequencyMhz?.ToString(
+                CultureInfo.InvariantCulture) ?? string.Empty;
+        BindOption(
+            _coreOffsetEnabled,
+            _coreOffset.View,
+            settings.CoreFrequencyOffsetEnabled);
+        BindOption(
+            _memoryOffsetEnabled,
+            _memoryOffset.View,
+            settings.MemoryFrequencyOffsetEnabled);
+        _coreLimitEditor = ClockLimitEditor(
+            _minimumCoreClock,
+            _maximumCoreClock);
+        BindOption(
+            _coreLimitEnabled,
+            _coreLimitEditor,
+            settings.CoreFrequencyLimitEnabled);
+        _memoryLimitEditor = ClockLimitEditor(
+            _minimumMemoryClock,
+            _maximumMemoryClock);
+        BindOption(
+            _memoryLimitEnabled,
+            _memoryLimitEditor,
+            settings.MemoryFrequencyLimitEnabled);
 
         var root = new StackPanel { Margin = new Thickness(24) };
         root.Children.Add(new TextBlock
@@ -82,17 +118,27 @@ internal sealed class GpuOverclockWindow : Window
         root.Children.Add(Field(
             T("核心频率偏移量", "Core frequency offset"),
             T("范围 -500 到 +500 MHz", "Range: -500 to +500 MHz"),
-            _coreOffset.View));
+            _coreOffset.View,
+            _coreOffsetEnabled));
         root.Children.Add(Field(
             T("显存频率偏移量", "Memory frequency offset"),
             T("范围 -1000 到 +3000 MHz", "Range: -1000 to +3000 MHz"),
-            _memoryOffset.View));
+            _memoryOffset.View,
+            _memoryOffsetEnabled));
         root.Children.Add(Field(
             T("限制核心频率", "Limit core frequency"),
             T(
                 "下限和上限均为 0–3500 MHz；全部留空代表不限制。",
                 "Both limits must be 0–3500 MHz; leave both blank for no limit."),
-            ClockLimitEditor()));
+            _coreLimitEditor,
+            _coreLimitEnabled));
+        root.Children.Add(Field(
+            T("限制显存频率", "Limit memory frequency"),
+            T(
+                "下限和上限均须为正整数；全部留空代表不限制。仅支持 Ampere 及更新架构。",
+                "Both limits must be positive integers; leave both blank for no limit. Supported on Ampere and newer architectures."),
+            _memoryLimitEditor,
+            _memoryLimitEnabled));
 
         _status.Foreground = Brush(_palette.Danger);
         _status.Margin = new Thickness(0, 10, 0, 0);
@@ -142,14 +188,16 @@ internal sealed class GpuOverclockWindow : Window
         Content = root;
     }
 
-    private FrameworkElement ClockLimitEditor()
+    private FrameworkElement ClockLimitEditor(
+        TextBox minimum,
+        TextBox maximum)
     {
         var panel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center
         };
-        panel.Children.Add(_minimumCoreClock);
+        panel.Children.Add(minimum);
         panel.Children.Add(new TextBlock
         {
             Text = "~",
@@ -157,7 +205,7 @@ internal sealed class GpuOverclockWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = Brush(_palette.Muted)
         });
-        panel.Children.Add(_maximumCoreClock);
+        panel.Children.Add(maximum);
         panel.Children.Add(new TextBlock
         {
             Text = "MHz",
@@ -171,13 +219,15 @@ internal sealed class GpuOverclockWindow : Window
     private Border Field(
         string title,
         string description,
-        UIElement editor)
+        UIElement editor,
+        CheckBox enabled)
     {
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition
         {
             Width = new GridLength(1, GridUnitType.Star)
         });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var label = new StackPanel
         {
@@ -199,6 +249,10 @@ internal sealed class GpuOverclockWindow : Window
         grid.Children.Add(label);
         Grid.SetColumn(editor, 1);
         grid.Children.Add(editor);
+        enabled.Margin = new Thickness(14, 0, 0, 0);
+        enabled.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(enabled, 2);
+        grid.Children.Add(enabled);
         return new Border
         {
             Background = Brush(_palette.SurfaceRaised),
@@ -217,6 +271,12 @@ internal sealed class GpuOverclockWindow : Window
         _memoryOffset.SetValue(0);
         _minimumCoreClock.Clear();
         _maximumCoreClock.Clear();
+        _minimumMemoryClock.Clear();
+        _maximumMemoryClock.Clear();
+        SetOption(_coreOffsetEnabled, _coreOffset.View, true);
+        SetOption(_memoryOffsetEnabled, _memoryOffset.View, true);
+        SetOption(_coreLimitEnabled, _coreLimitEditor, true);
+        SetOption(_memoryLimitEnabled, _memoryLimitEditor, true);
         SetButtonsEnabled(false);
         _status.Text = T("正在恢复默认设置……", "Restoring defaults…");
         var error = await _runtime.SaveGpuOverclockSettingsAsync(
@@ -312,12 +372,47 @@ internal sealed class GpuOverclockWindow : Window
             maximum = maximumValue;
         }
 
+        var minimumMemoryText = _minimumMemoryClock.Text.Trim();
+        var maximumMemoryText = _maximumMemoryClock.Text.Trim();
+        uint? minimumMemory = null;
+        uint? maximumMemory = null;
+        if (minimumMemoryText.Length != 0 || maximumMemoryText.Length != 0)
+        {
+            if (!uint.TryParse(
+                    minimumMemoryText,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var minimumMemoryValue) ||
+                !uint.TryParse(
+                    maximumMemoryText,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var maximumMemoryValue) ||
+                minimumMemoryValue == 0 ||
+                maximumMemoryValue == 0 ||
+                maximumMemoryValue < minimumMemoryValue)
+            {
+                error = T(
+                    "显存频率上下限必须同时填写为正整数，且上限不得小于下限。",
+                    "Enter both memory clock limits as positive integers; the maximum cannot be lower than the minimum.");
+                return false;
+            }
+            minimumMemory = minimumMemoryValue;
+            maximumMemory = maximumMemoryValue;
+        }
+
         settings = new GpuOverclockSettings
         {
+            CoreFrequencyOffsetEnabled = _coreOffsetEnabled.IsChecked == true,
+            MemoryFrequencyOffsetEnabled = _memoryOffsetEnabled.IsChecked == true,
+            CoreFrequencyLimitEnabled = _coreLimitEnabled.IsChecked == true,
+            MemoryFrequencyLimitEnabled = _memoryLimitEnabled.IsChecked == true,
             CoreFrequencyOffsetMhz = core,
             MemoryFrequencyOffsetMhz = memory,
             MinimumCoreFrequencyMhz = minimum,
-            MaximumCoreFrequencyMhz = maximum
+            MaximumCoreFrequencyMhz = maximum,
+            MinimumMemoryFrequencyMhz = minimumMemory,
+            MaximumMemoryFrequencyMhz = maximumMemory
         };
         error = string.Empty;
         return true;
@@ -328,6 +423,26 @@ internal sealed class GpuOverclockWindow : Window
         _restore.IsEnabled = enabled;
         _apply.IsEnabled = enabled;
         _applyAndClose.IsEnabled = enabled;
+    }
+
+    private static void BindOption(
+        CheckBox toggle,
+        FrameworkElement editor,
+        bool enabled)
+    {
+        SetOption(toggle, editor, enabled);
+        toggle.Click += (_, _) =>
+            editor.IsEnabled = toggle.IsChecked == true;
+    }
+
+    private static void SetOption(
+        CheckBox toggle,
+        FrameworkElement? editor,
+        bool enabled)
+    {
+        toggle.IsChecked = enabled;
+        if (editor is not null)
+            editor.IsEnabled = enabled;
     }
 
     private string T(string chinese, string english) =>

@@ -278,6 +278,8 @@ public sealed class AppSettings
     public FixedGameModeOverride FixedGameModeOverride { get; set; }
     public string FixedModeHotkey { get; set; } = "";
     public bool AutoDetectGames { get; set; } = true;
+    public List<string> IncludedGamePaths { get; set; } = [];
+    public List<string> ExcludedGamePaths { get; set; } = [];
     public bool FixedSyncFanSpeeds { get; set; } = true;
     public bool FanRpmLimitsCustomized { get; set; }
     public FanRpmLimits FanRpmLimits { get; set; } = new();
@@ -294,6 +296,7 @@ public sealed class AppSettings
     public bool ShowCapsLockOsd { get; set; } = true;
     public bool ShowNumLockOsd { get; set; } = true;
     public List<uint> RefreshRateCycleHz { get; set; } = [];
+    public bool IncludeDynamicRefreshRateInCycle { get; set; }
     public List<ItsMode> FnPerformanceModeOrder { get; set; } =
         PerformanceModeCycle.DefaultOrder.ToList();
     public List<ItsMode> FnPerformanceModeEnabled { get; set; } =
@@ -304,6 +307,7 @@ public sealed class AppSettings
     public double? FanReadMinimumIntervalSeconds { get; set; }
     public double? FanWriteMinimumIntervalSeconds { get; set; }
     public bool UseAlternativeFullSpeedMethod { get; set; }
+    public bool AlternativeFullSpeedMethodInitialized { get; set; }
     public bool ContinuouslyWriteFanTargets { get; set; }
     public OverviewPageMode OverviewPageMode { get; set; } =
         OverviewPageMode.Detailed;
@@ -317,6 +321,17 @@ public sealed class AppSettings
     public Dictionary<string, PowerModeLockSettings> PowerSettingsLocksByMode
         { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public GpuOverclockSettings GpuOverclock { get; set; } = new();
+    public List<AutomationDefinition> Automations { get; set; } = [];
+    public bool AutomationEnabled { get; set; }
+    public List<KeyboardMacroDefinition> Macros { get; set; } = [];
+    public bool MacroEnabled { get; set; }
+    public Dictionary<string, string> FnKeyAutomationBindings { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> FnKeyDoublePressAutomationBindings
+        { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> CustomFnKeyNames { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+    public string AcceptedDisclaimerVersion { get; set; } = "";
     public string LastFanBackendIdentity { get; set; } = "";
     public string SuppressedFanBackendStartupNoticeIdentity { get; set; } = "";
     public string PendingGpuMode { get; set; } = "";

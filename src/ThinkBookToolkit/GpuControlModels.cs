@@ -6,10 +6,16 @@ namespace ThinkBookToolkit;
 public sealed class GpuOverclockSettings
 {
     public bool Enabled { get; set; }
+    public bool CoreFrequencyOffsetEnabled { get; set; } = true;
+    public bool MemoryFrequencyOffsetEnabled { get; set; } = true;
+    public bool CoreFrequencyLimitEnabled { get; set; } = true;
+    public bool MemoryFrequencyLimitEnabled { get; set; } = true;
     public int CoreFrequencyOffsetMhz { get; set; }
     public int MemoryFrequencyOffsetMhz { get; set; }
     public int? MinimumCoreFrequencyMhz { get; set; }
     public int? MaximumCoreFrequencyMhz { get; set; }
+    public uint? MinimumMemoryFrequencyMhz { get; set; }
+    public uint? MaximumMemoryFrequencyMhz { get; set; }
 }
 
 internal static class GpuOverclockPolicy
@@ -32,10 +38,21 @@ internal static class GpuOverclockPolicy
             minimum = null;
             maximum = null;
         }
+        var minimumMemory = value.MinimumMemoryFrequencyMhz;
+        var maximumMemory = value.MaximumMemoryFrequencyMhz;
+        if (!IsValidMemoryClockLimit(minimumMemory, maximumMemory))
+        {
+            minimumMemory = null;
+            maximumMemory = null;
+        }
 
         return new GpuOverclockSettings
         {
             Enabled = value.Enabled,
+            CoreFrequencyOffsetEnabled = value.CoreFrequencyOffsetEnabled,
+            MemoryFrequencyOffsetEnabled = value.MemoryFrequencyOffsetEnabled,
+            CoreFrequencyLimitEnabled = value.CoreFrequencyLimitEnabled,
+            MemoryFrequencyLimitEnabled = value.MemoryFrequencyLimitEnabled,
             CoreFrequencyOffsetMhz = Math.Clamp(
                 value.CoreFrequencyOffsetMhz,
                 MinimumCoreOffsetMhz,
@@ -45,7 +62,9 @@ internal static class GpuOverclockPolicy
                 MinimumMemoryOffsetMhz,
                 MaximumMemoryOffsetMhz),
             MinimumCoreFrequencyMhz = minimum,
-            MaximumCoreFrequencyMhz = maximum
+            MaximumCoreFrequencyMhz = maximum,
+            MinimumMemoryFrequencyMhz = minimumMemory,
+            MaximumMemoryFrequencyMhz = maximumMemory
         };
     }
 
@@ -77,24 +96,43 @@ internal static class GpuOverclockPolicy
             error = "Core clock limits must both be blank, or both be between 0 and 3500 MHz with the maximum greater than or equal to the minimum.";
             return false;
         }
+        if (!IsValidMemoryClockLimit(
+                value.MinimumMemoryFrequencyMhz,
+                value.MaximumMemoryFrequencyMhz))
+        {
+            error = "Memory clock limits must both be blank, or both be positive integers with the maximum greater than or equal to the minimum.";
+            return false;
+        }
 
         error = string.Empty;
         return true;
     }
 
     public static bool IsDefault(GpuOverclockSettings value) =>
+        value.CoreFrequencyOffsetEnabled &&
+        value.MemoryFrequencyOffsetEnabled &&
+        value.CoreFrequencyLimitEnabled &&
+        value.MemoryFrequencyLimitEnabled &&
         value.CoreFrequencyOffsetMhz == 0 &&
         value.MemoryFrequencyOffsetMhz == 0 &&
         value.MinimumCoreFrequencyMhz is null &&
-        value.MaximumCoreFrequencyMhz is null;
+        value.MaximumCoreFrequencyMhz is null &&
+        value.MinimumMemoryFrequencyMhz is null &&
+        value.MaximumMemoryFrequencyMhz is null;
 
     public static string Signature(GpuOverclockSettings value) =>
         string.Join(
             ":",
+            value.CoreFrequencyOffsetEnabled,
+            value.MemoryFrequencyOffsetEnabled,
+            value.CoreFrequencyLimitEnabled,
+            value.MemoryFrequencyLimitEnabled,
             value.CoreFrequencyOffsetMhz,
             value.MemoryFrequencyOffsetMhz,
             value.MinimumCoreFrequencyMhz?.ToString() ?? "",
-            value.MaximumCoreFrequencyMhz?.ToString() ?? "");
+            value.MaximumCoreFrequencyMhz?.ToString() ?? "",
+            value.MinimumMemoryFrequencyMhz?.ToString() ?? "",
+            value.MaximumMemoryFrequencyMhz?.ToString() ?? "");
 
     private static bool IsValidClockLimit(int? minimum, int? maximum)
     {
@@ -104,6 +142,16 @@ internal static class GpuOverclockPolicy
                    <= MaximumLockedCoreFrequencyMhz &&
                maximum is >= MinimumLockedCoreFrequencyMhz and
                    <= MaximumLockedCoreFrequencyMhz &&
+               maximum.Value >= minimum.Value;
+    }
+
+    private static bool IsValidMemoryClockLimit(
+        uint? minimum,
+        uint? maximum)
+    {
+        if (!minimum.HasValue && !maximum.HasValue)
+            return true;
+        return minimum is > 0 && maximum is > 0 &&
                maximum.Value >= minimum.Value;
     }
 }

@@ -3,6 +3,13 @@ using System;
 
 namespace ThinkBookToolkit;
 
+internal enum ItsModeControlPath
+{
+    Unavailable,
+    ModernDispatcher,
+    LegacyLitssvc
+}
+
 public sealed class ItsModeDetector
 {
     private const string ModernPath = @"SYSTEM\CurrentControlSet\Services\LenovoProcessManagement\Performance\PowerSlider";
@@ -12,9 +19,51 @@ public sealed class ItsModeDetector
 
     public bool IsModeSwitchSupported()
     {
-        using var key = Registry.LocalMachine.OpenSubKey(ModernPath, writable: false);
-        return key is not null && ReadInt(key, "Version", -1) >= DispatcherVersion3;
+        return GetControlPath() != ItsModeControlPath.Unavailable;
     }
+
+    internal ItsModeControlPath GetControlPath()
+    {
+        using var modern = Registry.LocalMachine.OpenSubKey(
+            ModernPath,
+            writable: false);
+        var version = modern is null
+            ? -1
+            : ReadInt(modern, "Version", -1);
+        using var legacyBase = Registry.LocalMachine.OpenSubKey(
+            LegacyBasePath,
+            writable: false);
+        using var legacy = Registry.LocalMachine.OpenSubKey(
+            LegacyPath,
+            writable: false);
+        return ResolveControlPath(
+            version,
+            legacyBase is not null && legacy is not null);
+    }
+
+    internal bool IsModeSupported(ItsMode mode) =>
+        IsModeSupported(mode, GetControlPath());
+
+    internal static ItsModeControlPath ResolveControlPath(
+        int dispatcherVersion,
+        bool legacyAvailable) =>
+        dispatcherVersion >= DispatcherVersion3
+            ? ItsModeControlPath.ModernDispatcher
+            : legacyAvailable
+                ? ItsModeControlPath.LegacyLitssvc
+                : ItsModeControlPath.Unavailable;
+
+    internal static bool IsModeSupported(
+        ItsMode mode,
+        ItsModeControlPath path) => path switch
+    {
+        ItsModeControlPath.ModernDispatcher =>
+            PerformanceModeCycle.IsSelectableMode(mode),
+        ItsModeControlPath.LegacyLitssvc =>
+            mode is ItsMode.Intelligent or ItsMode.PowerSaving or
+                ItsMode.Performance,
+        _ => false
+    };
 
     public ItsMode ReadMode()
     {

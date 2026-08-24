@@ -69,6 +69,21 @@ public sealed class FanController
 
     public void SetFullSpeed(bool enabled) => _backend.SetFullSpeed(enabled);
 
+    public bool TryProbeFullSpeedControl(out string detail) =>
+        ProbeFullSpeedControl(_backend, out detail);
+
+    internal static bool ProbeFullSpeedControl(
+        IFanBackend backend,
+        out string detail)
+    {
+        if (backend is IFanBackendCapabilityProbe probe)
+            return probe.TryProbeFullSpeedControl(out detail);
+
+        detail = "The fan backend declares full-speed enable and disable " +
+                 "operations but does not provide a non-mutating capability probe.";
+        return true;
+    }
+
     public static int ClampForBoth(
         int rpm,
         IReadOnlyDictionary<string, FanLimit> limits)

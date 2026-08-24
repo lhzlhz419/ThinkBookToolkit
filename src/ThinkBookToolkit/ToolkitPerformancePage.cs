@@ -10,7 +10,8 @@ using ThinkBookToolkit.FanBackend;
 
 namespace ThinkBookToolkit;
 
-internal sealed class ToolkitPerformancePage : ToolkitPageBase
+internal sealed class ToolkitPerformancePage : ToolkitPageBase,
+    IControlStateRefreshable
 {
     private readonly bool _coolingOnly;
     private readonly ComboBox _itsMode = new() { MinWidth = 190 };
@@ -28,6 +29,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     private Border _discreteGpuStatusRow = new();
     private Border _gpuOverclockRow = new();
     private readonly CheckBox _fullSpeed = new();
+    private Border _fullSpeedRow = new();
     private readonly TextBlock _fanStatus;
     private readonly ComboBox _strategy = new() { MinWidth = 180 };
     private readonly ComboBox _fixedMode = new() { MinWidth = 170 };
@@ -378,10 +380,11 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
     {
         PopulateFanPreferenceChoices();
         var content = new StackPanel();
-        content.Children.Add(SettingRow(
+        _fullSpeedRow = SettingRow(
             L("风扇拉满", "Full fan speed"),
             FanFullSpeedDescription(),
-            _fullSpeed));
+            _fullSpeed);
+        content.Children.Add(_fullSpeedRow);
         content.Children.Add(SettingRow(
             L("控制策略", "Control strategy"),
             L("固件自动不写入转速；固定转速和曲线策略由 Toolkit 接管。", "Firmware automatic writes no RPM target; fixed RPM and fan curves are controlled by Toolkit."),
@@ -2142,18 +2145,21 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         _syncing = true;
         var snapshot = Runtime.Snapshot;
         var isAcConnected = snapshot.Battery?.IsAcConnected;
+        var itsPath = new ItsModeDetector().GetControlPath();
         foreach (var item in _itsMode.Items.OfType<ComboBoxItem>())
         {
             item.Visibility = item.Tag is ItsMode mode &&
                               PerformanceModeAvailability.CanSelect(
                                   mode,
-                                  isAcConnected)
+                                  isAcConnected) &&
+                              ItsModeDetector.IsModeSupported(mode, itsPath)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
         }
         if (PerformanceModeAvailability.CanSelect(
                 snapshot.ItsMode,
-                isAcConnected))
+                isAcConnected) &&
+            ItsModeDetector.IsModeSupported(snapshot.ItsMode, itsPath))
             Select(_itsMode, snapshot.ItsMode);
         else
             _itsMode.SelectedItem = null;
@@ -2206,6 +2212,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
                 ? Visibility.Visible
                 : Visibility.Collapsed;
         _fullSpeed.IsChecked = snapshot.FullSpeed;
+        _fullSpeedRow.Visibility = Runtime.CanUseFanFullSpeed
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         var fanMode = snapshot.FanControlRunning || snapshot.FullSpeed
             ? snapshot.FanStrategy switch
             {
@@ -2391,6 +2400,14 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase
         SyncRuntimeControls();
         if (!_coolingOnly && IsLoaded && IsVisible)
             _ = RefreshPowerReadoutsAsync();
+    }
+
+    public System.Threading.Tasks.Task RefreshControlStateAsync()
+    {
+        if (DataContext is PerformanceViewModel viewModel)
+            viewModel.Update(Runtime.Snapshot);
+        SyncRuntimeControls();
+        return System.Threading.Tasks.Task.CompletedTask;
     }
 
     private string GpuModeName(GpuWorkingMode mode) =>

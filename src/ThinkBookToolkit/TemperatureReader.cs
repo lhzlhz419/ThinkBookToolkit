@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 
 namespace ThinkBookToolkit;
@@ -11,11 +13,16 @@ public sealed class TemperatureReader : IDisposable
     private const double BytesPerGiB = 1024d * 1024d * 1024d;
     private readonly Computer _computer;
     private readonly GpuMonitorWorkerClient? _gpuMonitor;
-    private readonly StorageTemperatureReader? _storageTelemetry;
+    private readonly object _gpuReadSync = new();
+    private Task<GpuMonitorWorkerSnapshot?>? _gpuReadTask;
+    private GpuMonitorWorkerSnapshot? _latestGpuSnapshot;
+    private StorageTemperatureReader? _storageTelemetry;
+    private Task<StorageTemperatureReader?>? _storageInitialization;
     private TemperatureSnapshot? _lastSnapshot;
 
     public TemperatureReader(bool enableGpuTelemetry = true)
     {
+        var stopwatch = Stopwatch.StartNew();
         _gpuMonitor = enableGpuTelemetry
             ? new GpuMonitorWorkerClient()
             : null;
@@ -29,8 +36,12 @@ public sealed class TemperatureReader : IDisposable
             IsMemoryEnabled = true
         };
         _computer.Open();
+        ToolkitLog.Info(
+            "LibreHardwareMonitor CPU/memory reader opened in " +
+            $"{stopwatch.Elapsed.TotalMilliseconds:0} ms.");
+        if (_gpuMonitor is not null)
+            _gpuReadTask = Task.Run(_gpuMonitor.Read);
 
-        _storageTelemetry = StorageTemperatureReader.TryCreate();
     }
 
     public TemperatureSnapshot Read()
@@ -90,7 +101,7 @@ public sealed class TemperatureReader : IDisposable
 
     private TemperatureSnapshot ReadCore()
     {
-        var isolatedGpu = _gpuMonitor?.Read();
+        var isolatedGpu = ReadGpuSnapshotWithoutBlocking();
         var retainedGpu = isolatedGpu is null &&
                           GpuTelemetryControl.Mode == GpuTelemetryMode.Paused
             ? _lastSnapshot
@@ -220,12 +231,53 @@ public sealed class TemperatureReader : IDisposable
     {
         try
         {
+            if (_storageTelemetry is null)
+            {
+                _storageInitialization ??= Task.Run(
+                    StorageTemperatureReader.TryCreate);
+                if (!_storageInitialization.IsCompleted)
+                    return [];
+                _storageTelemetry = _storageInitialization
+                    .GetAwaiter()
+                    .GetResult();
+            }
             return _storageTelemetry?.Read() ?? [];
         }
         catch
         {
             // 硬盘读取失败不能影响 CPU、GPU、内存和风扇数据。
             return [];
+        }
+    }
+
+    private GpuMonitorWorkerSnapshot? ReadGpuSnapshotWithoutBlocking()
+    {
+        if (_gpuMonitor is null ||
+            GpuTelemetryControl.Mode == GpuTelemetryMode.Paused)
+        {
+            return null;
+        }
+
+        lock (_gpuReadSync)
+        {
+            if (_gpuReadTask is null)
+            {
+                _gpuReadTask = Task.Run(_gpuMonitor.Read);
+                return _latestGpuSnapshot;
+            }
+            if (!_gpuReadTask.IsCompleted)
+                return _latestGpuSnapshot;
+            try
+            {
+                _latestGpuSnapshot = _gpuReadTask.GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                ToolkitLog.Warning(
+                    "Background GPU telemetry refresh failed: " + ex.Message);
+            }
+            _gpuReadTask = Task.Run(_gpuMonitor.Read);
+            return _latestGpuSnapshot;
         }
     }
 

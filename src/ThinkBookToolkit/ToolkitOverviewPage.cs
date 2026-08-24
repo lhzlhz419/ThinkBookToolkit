@@ -8,12 +8,14 @@ using System.Windows.Media;
 
 namespace ThinkBookToolkit;
 
-internal sealed class ToolkitOverviewPage : ToolkitPageBase
+internal sealed class ToolkitOverviewPage : ToolkitPageBase,
+    IControlStateRefreshable
 {
     private readonly OverviewViewModel _viewModel;
     private readonly ComboBox _itsMode = new() { MinWidth = 140 };
     private readonly ComboBox _gpuMode = new() { MinWidth = 160 };
     private readonly ComboBox _fanMode = new() { MinWidth = 150 };
+    private readonly Button _restartNow;
     private bool _syncingModes;
     private bool _modeWriteBusy;
 
@@ -22,6 +24,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
     {
         _viewModel = new OverviewViewModel(runtime);
         DataContext = _viewModel;
+        _restartNow = ActionButton(L("重启", "Restart"), primary: true);
         PopulateModeChoices();
         Content = BuildLayout();
         WireModeControls();
@@ -251,10 +254,9 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
                 16));
         AddHero(
             OverviewHeroIds.RestartStatus,
-            HeroStatus(
+            HeroRestartStatus(
                 L("重启状态", "Restart state"),
-                nameof(OverviewViewModel.PendingRestart),
-                16));
+                nameof(OverviewViewModel.PendingRestart)));
         left.Children.Add(pills);
         content.Children.Add(left);
 
@@ -299,16 +301,78 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
             Foreground = Brush("#CFD8FA"),
             FontSize = 12
         });
+        var valueHost = new Grid
+        {
+            MinHeight = 32,
+            Margin = new Thickness(0, 5, 0, 0)
+        };
         var value = new TextBlock
         {
             Foreground = Brushes.White,
             FontWeight = FontWeights.SemiBold,
             FontSize = valueFontSize,
-            Margin = new Thickness(0, 3, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis
         };
         value.SetBinding(TextBlock.TextProperty, new Binding(property));
-        stack.Children.Add(value);
+        valueHost.Children.Add(value);
+        stack.Children.Add(valueHost);
+        return new Border
+        {
+            Background = Brush("#24FFFFFF"),
+            BorderBrush = Brush("#35FFFFFF"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(10, 7, 10, 7),
+            Child = stack
+        };
+    }
+
+    private Border HeroRestartStatus(string label, string property)
+    {
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = Brush("#CFD8FA"),
+            FontSize = 12
+        });
+        var valueHost = new Grid
+        {
+            MinHeight = 32,
+            Margin = new Thickness(0, 5, 0, 0)
+        };
+        valueHost.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = GridLength.Auto
+        });
+        valueHost.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = GridLength.Auto
+        });
+        var value = new TextBlock
+        {
+            Foreground = Brushes.White,
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 16,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        value.SetBinding(TextBlock.TextProperty, new Binding(property));
+        valueHost.Children.Add(value);
+        _restartNow.MinWidth = 54;
+        _restartNow.MinHeight = 30;
+        _restartNow.Padding = new Thickness(10, 4, 10, 4);
+        _restartNow.Margin = new Thickness(8, 0, 0, 0);
+        _restartNow.SetBinding(
+            VisibilityProperty,
+            new Binding(nameof(OverviewViewModel.RestartRequired))
+            {
+                Converter = new BooleanToVisibilityConverter()
+            });
+        Grid.SetColumn(_restartNow, 1);
+        valueHost.Children.Add(_restartNow);
+        stack.Children.Add(valueHost);
         return new Border
         {
             Background = Brush("#24FFFFFF"),
@@ -365,6 +429,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
 
     private void WireModeControls()
     {
+        _restartNow.Click += async (_, _) => await RestartNowAsync();
         _itsMode.SelectionChanged += async (_, _) =>
         {
             if (_syncingModes ||
@@ -415,27 +480,81 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
         };
     }
 
+    private async System.Threading.Tasks.Task RestartNowAsync()
+    {
+        if (MessageBox.Show(
+                Window.GetWindow(this),
+                L(
+                    "将先恢复固件自动风扇控制，然后立即重新启动 Windows。是否继续？",
+                    "Toolkit will restore firmware-automatic fan control and restart Windows immediately. Continue?"),
+                "ThinkBook Toolkit",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No) != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _restartNow.IsEnabled = false;
+        if (Runtime.FanRuntime is not null &&
+            (Runtime.Snapshot.FanControlRunning || Runtime.Snapshot.FullSpeed))
+        {
+            var restoreError = await Runtime.RestoreFirmwareAutoAsync();
+            if (!string.IsNullOrWhiteSpace(restoreError))
+            {
+                Runtime.SetStatus(L(
+                    "重启已取消，因为恢复固件自动风扇控制失败：",
+                    "Restart cancelled because firmware-automatic fan control could not be restored: ") +
+                    restoreError);
+                _restartNow.IsEnabled = true;
+                return;
+            }
+        }
+
+        try
+        {
+            BiosAdvancedController.RestartComputer();
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error("Windows restart could not be started.", ex);
+            Runtime.SetStatus(L("无法启动重启：", "Could not start the restart: ") +
+                              ex.Message);
+            _restartNow.IsEnabled = true;
+        }
+    }
+
     private void OnSnapshotChanged(object? sender, EventArgs args) =>
         SyncModeControls();
+
+    public System.Threading.Tasks.Task RefreshControlStateAsync()
+    {
+        _viewModel.Update(Runtime.Snapshot);
+        SyncModeControls();
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
 
     private void SyncModeControls()
     {
         _syncingModes = true;
         var snapshot = Runtime.Snapshot;
         var isAcConnected = snapshot.Battery?.IsAcConnected;
+        var itsPath = new ItsModeDetector().GetControlPath();
         foreach (var item in _itsMode.Items.OfType<ComboBoxItem>())
         {
             item.Visibility = item.Tag is ItsMode mode &&
                               PerformanceModeAvailability.CanSelect(
                                   mode,
-                                  isAcConnected)
+                                  isAcConnected) &&
+                              ItsModeDetector.IsModeSupported(mode, itsPath)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
         }
         if (snapshot.ItsMode != ItsMode.Unknown &&
             PerformanceModeAvailability.CanSelect(
                 snapshot.ItsMode,
-                isAcConnected))
+                isAcConnected) &&
+            ItsModeDetector.IsModeSupported(snapshot.ItsMode, itsPath))
             Select(_itsMode, snapshot.ItsMode);
         else
             _itsMode.SelectedItem = null;
@@ -492,6 +611,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
     {
         private string _pendingRestart = "--";
         private string _discreteGpuStatus = "--";
+        private bool _restartRequired;
 
         public OverviewViewModel(ToolkitRuntimeService runtime)
             : base(runtime)
@@ -502,6 +622,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
 
         public string PendingRestart { get => _pendingRestart; private set => SetField(ref _pendingRestart, value); }
         public string DiscreteGpuStatus { get => _discreteGpuStatus; private set => SetField(ref _discreteGpuStatus, value); }
+        public bool RestartRequired { get => _restartRequired; private set => SetField(ref _restartRequired, value); }
 
         private void OnSnapshotChanged(object? sender, EventArgs args) =>
             Update(Runtime.Snapshot);
@@ -509,10 +630,11 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase
         public override void Update(ToolkitRuntimeSnapshot snapshot)
         {
             base.Update(snapshot);
-            PendingRestart = string.IsNullOrWhiteSpace(
-                    snapshot.PendingGpuMode)
-                ? Runtime.L("无需重启", "No restart required")
-                : Runtime.L("需要重启", "Restart required");
+            RestartRequired = !string.IsNullOrWhiteSpace(
+                snapshot.PendingGpuMode);
+            PendingRestart = RestartRequired
+                ? Runtime.L("需要", "Required")
+                : Runtime.L("无需重启", "No restart required");
             DiscreteGpuStatus = DiscreteGpuStatusFormatter.Format(
                 snapshot.Temperatures?.DiscreteGpuState ??
                     DiscreteGpuActivityState.Unknown,

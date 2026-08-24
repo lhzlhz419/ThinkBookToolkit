@@ -10,14 +10,25 @@ internal sealed class ToolkitAdvancedPage : ToolkitPageBase
 {
     private readonly AdvancedViewModel _viewModel;
     private readonly Dictionary<BiosBootFunction, Button> _bootButtons = [];
+    private readonly Dictionary<string, CheckBox> _ioToggles = [];
+    private readonly AdaptiveUniformPanel _ioRows = new()
+    {
+        MinimumItemWidth = 330,
+        MaximumColumns = 3,
+        Spacing = 10,
+        Tag = "BiosIoResponsiveGrid"
+    };
     private readonly Button _logoButton;
     private readonly TextBlock _status;
+    private readonly TextBlock _ioStatus;
+    private bool _syncingIo;
 
     public ToolkitAdvancedPage(ToolkitRuntimeService runtime) : base(runtime)
     {
         _viewModel = new AdvancedViewModel(runtime);
         DataContext = _viewModel;
         _status = StatusText();
+        _ioStatus = StatusText();
         _logoButton = ActionButton(L("更换开机画面", "Customize boot logo"));
         Content = BuildLayout();
         Loaded += async (_, _) => await LoadAsync();
@@ -72,10 +83,28 @@ internal sealed class ToolkitAdvancedPage : ToolkitPageBase
                 L("启动操作需要两次确认，确认后会立即重启。", "Boot actions require two confirmations and then restart immediately."),
                 "\uE90F"));
         }
-        else
+
+        if (Show(FeatureIds.BiosIoControl))
         {
-            root.Children.Add(EmptyState(L("此设备没有可用的高级固件工具。", "No advanced firmware tools are available on this device.")));
+            _ioRows.Children.Add(new TextBlock
+            {
+                Text = L("正在读取 BIOS I/O 设置……", "Reading BIOS I/O settings…"),
+                Foreground = Brush(Palette.Muted),
+                Margin = new Thickness(2, 2, 2, 4)
+            });
+            root.Children.Add(Card(
+                L("IO控制（重启后生效）", "I/O controls (effective after restart)"),
+                _ioRows,
+                L(
+                    "只显示 BIOS 实际暴露且允许启用/禁用的项目。",
+                    "Only settings exposed by the BIOS with both enabled and disabled values are shown."),
+                "\uE950"));
+            _ioStatus.Margin = new Thickness(4, 2, 4, 10);
+            root.Children.Add(_ioStatus);
         }
+
+        if (actions.Children.Count == 0 && !Show(FeatureIds.BiosIoControl))
+            root.Children.Add(EmptyState(L("此设备没有可用的高级固件工具。", "No advanced firmware tools are available on this device.")));
 
         _status.Margin = new Thickness(4, 2, 4, 10);
         root.Children.Add(_status);
@@ -141,6 +170,109 @@ internal sealed class ToolkitAdvancedPage : ToolkitPageBase
         if (_viewModel.Support is null)
             await _viewModel.LoadAsync();
         _status.Text = _viewModel.Status;
+        if (Show(FeatureIds.BiosIoControl))
+            await LoadIoAsync();
+    }
+
+    private async Task LoadIoAsync()
+    {
+        SetIoEnabled(false);
+        try
+        {
+            var states = await Task.Run(BiosIoController.ReadSupportedStates);
+            RenderIoStates(states);
+            _ioStatus.Text = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error("BIOS I/O settings could not be read.", ex);
+            _ioRows.Children.Clear();
+            _ioRows.Children.Add(new TextBlock
+            {
+                Text = L("无法读取 BIOS I/O 设置。", "BIOS I/O settings could not be read."),
+                Foreground = Brush(Palette.Muted)
+            });
+            _ioStatus.Text = L("IO 控制不可用：", "I/O controls unavailable: ") + ex.Message;
+        }
+        finally
+        {
+            SetIoEnabled(true);
+        }
+    }
+
+    private void RenderIoStates(IReadOnlyList<BiosIoState> states)
+    {
+        _syncingIo = true;
+        _ioRows.Children.Clear();
+        _ioToggles.Clear();
+        foreach (var state in states)
+        {
+            var toggle = new CheckBox { IsChecked = state.Enabled };
+            toggle.Click += async (_, _) =>
+            {
+                if (!_syncingIo)
+                    await SetIoStateAsync(state, toggle.IsChecked == true);
+            };
+            _ioToggles[state.Definition.Id] = toggle;
+            _ioRows.Children.Add(SettingRow(
+                Runtime.IsChinese
+                    ? state.Definition.ChineseName
+                    : state.Definition.EnglishName,
+                Runtime.IsChinese
+                    ? state.Definition.ChineseDescription
+                    : state.Definition.EnglishDescription,
+                toggle,
+                state.Definition.IsVirtualization ? "\uE968" : "\uE950"));
+        }
+
+        if (states.Count == 0)
+        {
+            _ioRows.Children.Add(new TextBlock
+            {
+                Text = L(
+                    "此设备的 BIOS 没有暴露可由 Toolkit 调整的 I/O 项目。",
+                    "This device's BIOS exposes no I/O settings that Toolkit can change."),
+                Foreground = Brush(Palette.Muted),
+                TextWrapping = TextWrapping.Wrap
+            });
+        }
+        _syncingIo = false;
+    }
+
+    private async Task SetIoStateAsync(BiosIoState state, bool enabled)
+    {
+        SetIoEnabled(false);
+        _ioStatus.Text = L("正在保存 BIOS 设置……", "Saving BIOS setting…");
+        try
+        {
+            _ = await Task.Run(() =>
+                BiosIoController.SetEnabled(state.Definition.Id, enabled));
+            ToolkitLog.Info(
+                $"BIOS I/O setting {state.Definition.Id} was set to {(enabled ? "Enable" : "Disable")}.");
+            _syncingIo = true;
+            _ioToggles[state.Definition.Id].IsChecked = enabled;
+            _syncingIo = false;
+            _ioStatus.Text = L("设置已保存。", "Setting saved.");
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                $"BIOS I/O setting {state.Definition.Id} could not be changed.",
+                ex);
+            var failure = L("设置失败：", "Setting failed: ") + ex.Message;
+            await LoadIoAsync();
+            _ioStatus.Text = failure;
+        }
+        finally
+        {
+            SetIoEnabled(true);
+        }
+    }
+
+    private void SetIoEnabled(bool enabled)
+    {
+        foreach (var toggle in _ioToggles.Values)
+            toggle.IsEnabled = enabled;
     }
 
     private async Task RunBootFunctionAsync(BiosBootFunction function)

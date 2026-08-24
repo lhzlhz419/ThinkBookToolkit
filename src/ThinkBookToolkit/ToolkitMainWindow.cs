@@ -44,6 +44,8 @@ internal sealed class ToolkitMainWindow : Window
     private bool _preparingExit;
     private bool _forceClose;
     private bool _disposed;
+    private bool _controlStateRefreshRunning;
+    private bool _controlStateRefreshPending;
 
     internal static TimeSpan PageTransitionDuration { get; } =
         TimeSpan.FromMilliseconds(180);
@@ -98,6 +100,7 @@ internal sealed class ToolkitMainWindow : Window
         _runtime.AvailabilityChanged += OnAvailabilityChanged;
         _runtime.AppearanceChanged += OnAppearanceChanged;
         _runtime.OverviewLayoutChanged += OnOverviewLayoutChanged;
+        _runtime.ControlStateChanged += OnControlStateChanged;
         _runtime.StatusChanged += OnStatusChanged;
         Loaded += OnLoaded;
         StateChanged += OnStateChanged;
@@ -177,8 +180,15 @@ internal sealed class ToolkitMainWindow : Window
 
     private Border BuildNavigation()
     {
-        var panel = new StackPanel();
-        var brand = new Grid { Margin = new Thickness(5, 4, 5, 22) };
+        var shell = new Grid();
+        shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        shell.RowDefinitions.Add(new RowDefinition
+        {
+            Height = new GridLength(1, GridUnitType.Star)
+        });
+        shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var brand = new Grid { Margin = new Thickness(5, 3, 5, 12) };
         brand.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         brand.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         brand.Children.Add(new Border
@@ -218,18 +228,34 @@ internal sealed class ToolkitMainWindow : Window
         });
         Grid.SetColumn(_brandText, 1);
         brand.Children.Add(_brandText);
-        panel.Children.Add(brand);
+        shell.Children.Add(brand);
 
-        AddNavigation(panel, "overview", "\uE80F", L("概览", "Overview"));
-        AddNavigationIf(panel, "performance", "\uE945", L("性能", "Performance"));
-        AddNavigationIf(panel, "cooling", "\uE9D9", L("散热", "Cooling"));
-        AddNavigationIf(panel, "battery", "\uE850", L("电池与电源", "Battery and power"));
-        AddNavigationIf(panel, "display", "\uE7F4", L("显示", "Display"));
-        AddNavigationIf(panel, "sound", "\uE767", L("声音", "Sound"));
-        AddNavigationIf(panel, "input", "\uE765", L("输入设备", "Input devices"));
-        AddNavigationIf(panel, "device", "\uE772", L("设备信息", "Device information"));
-        AddNavigationIf(panel, "advanced", "\uE90F", L("高级工具", "Advanced tools"));
-        AddNavigation(panel, "settings", "\uE713", L("设置", "Settings"));
+        var navigationItems = new StackPanel();
+        AddNavigation(navigationItems, "overview", "\uE80F", L("概览", "Overview"));
+        AddNavigationIf(navigationItems, "performance", "\uE945", L("性能", "Performance"));
+        AddNavigationIf(navigationItems, "cooling", "\uE9D9", L("散热", "Cooling"));
+        AddNavigationIf(navigationItems, "battery", "\uE850", L("电池与电源", "Battery and power"));
+        AddNavigationIf(navigationItems, "display", "\uE7F4", L("显示", "Display"));
+        AddNavigationIf(navigationItems, "sound", "\uE767", L("声音", "Sound"));
+        AddNavigationIf(navigationItems, "input", "\uE765", L("输入设备", "Input devices"));
+        AddNavigation(navigationItems, "automation", "\uE771", L("自动化", "Automation"));
+        AddNavigationIf(navigationItems, "device", "\uE772", L("设备信息", "Device information"));
+        AddNavigationIf(navigationItems, "driver-update", "\uE896", L("驱动更新", "Driver updates"));
+        AddNavigationIf(navigationItems, "advanced", "\uE90F", L("高级工具", "Advanced tools"));
+        var navigationScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            PanningMode = PanningMode.VerticalOnly,
+            Content = navigationItems
+        };
+        Grid.SetRow(navigationScroll, 1);
+        shell.Children.Add(navigationScroll);
+
+        var settings = new StackPanel { Margin = new Thickness(0, 7, 0, 0) };
+        AddNavigation(settings, "settings", "\uE713", L("设置", "Settings"));
+        Grid.SetRow(settings, 2);
+        shell.Children.Add(settings);
         UpdateNavigationSelection();
 
         return new Border
@@ -247,7 +273,7 @@ internal sealed class ToolkitMainWindow : Window
                 Opacity = _runtime.IsDark ? .2 : .08,
                 Color = Colors.Black
             },
-            Child = panel
+            Child = shell
         };
     }
 
@@ -299,9 +325,9 @@ internal sealed class ToolkitMainWindow : Window
             ToolTip = text,
             HorizontalContentAlignment = HorizontalAlignment.Left,
             VerticalContentAlignment = VerticalAlignment.Center,
-            MinHeight = 48,
-            Padding = new Thickness(8, 10, 10, 10),
-            Margin = new Thickness(0, 2, 0, 2),
+            MinHeight = 42,
+            Padding = new Thickness(8, 7, 10, 7),
+            Margin = new Thickness(0, 1, 0, 1),
             BorderThickness = new Thickness(0),
             Background = Brushes.Transparent,
             Foreground = Brush(Palette.Muted),
@@ -482,7 +508,9 @@ internal sealed class ToolkitMainWindow : Window
         "display" => new ToolkitDisplayPage(_runtime),
         "sound" => new ToolkitSoundPage(_runtime),
         "input" => new ToolkitInputPage(_runtime),
+        "automation" => new ToolkitAutomationPage(_runtime),
         "device" => new ToolkitDevicePage(_runtime),
+        "driver-update" => new ToolkitDriverUpdatePage(_runtime),
         "advanced" => new ToolkitAdvancedPage(_runtime),
         "settings" => new ToolkitSettingsPage(_runtime),
         _ => new ToolkitOverviewPage(_runtime)
@@ -498,8 +526,10 @@ internal sealed class ToolkitMainWindow : Window
         "display" => (L("显示", "Display"), L("护眼与色彩管理", "Eye care and color management"), "\uE7F4"),
         "sound" => (L("声音", "Sound"), L("Dolby 音效与智能降噪", "Dolby audio and intelligent noise cancellation"), "\uE767"),
         "input" => (L("输入设备", "Input devices"), L("键盘、功能键与触摸板", "Keyboard, function keys, and touchpad"), "\uE765"),
+        "automation" => (L("自动化", "Automation"), L("有序设备控制、应用操作与 Fn 快捷键", "Ordered device controls, application actions, and Fn keys"), "\uE771"),
         "device" => (L("设备信息", "Device information"), L("硬件、固件与保修状态", "Hardware, firmware, and warranty"), "\uE772"),
-        "advanced" => (L("高级工具", "Advanced tools"), L("固件启动与维护工具", "Firmware startup and maintenance tools"), "\uE90F"),
+        "driver-update" => (L("驱动更新", "Driver updates"), L("Lenovo 驱动、固件与 BIOS 更新", "Lenovo driver, firmware, and BIOS updates"), "\uE896"),
+        "advanced" => (L("高级工具", "Advanced tools"), L("固件启动、IO 控制与维护工具", "Firmware startup, I/O controls, and maintenance tools"), "\uE90F"),
         "settings" => (L("设置", "Settings"), L("全局偏好、窗口行为与功能检测", "Global preferences, window behavior, and availability"), "\uE713"),
         _ => (L("概览", "Overview"), L("设备状态与当前控制模式", "Device status and current control modes"), "\uE80F")
     };
@@ -517,7 +547,8 @@ internal sealed class ToolkitMainWindow : Window
             "sound" => report.AnyAvailable(FeatureIds.DolbyAtmos, FeatureIds.SpeakerNoiseCancellation, FeatureIds.MicrophoneNoiseCancellation),
             "input" => report.AnyAvailable(FeatureIds.KeyboardBacklight, FeatureIds.KeyboardBacklightAutoOff, FeatureIds.FunctionLock, FeatureIds.CapsLockOsd, FeatureIds.NumLockOsd, FeatureIds.FnCtrlSwap, FeatureIds.Touchpad, FeatureIds.FnKeyTakeover),
             "device" => report.AnyAvailable(FeatureIds.DeviceInformation, FeatureIds.WarrantyInformation),
-            "advanced" => report.AnyAvailable(FeatureIds.BootLogo, FeatureIds.BiosSetup, FeatureIds.StartupInterrupt, FeatureIds.SecureWipe),
+            "driver-update" => report.AnyAvailable(FeatureIds.DriverUpdate),
+            "advanced" => report.AnyAvailable(FeatureIds.BootLogo, FeatureIds.BiosSetup, FeatureIds.StartupInterrupt, FeatureIds.SecureWipe, FeatureIds.BiosIoControl),
             _ => true
         };
     }
@@ -553,8 +584,8 @@ internal sealed class ToolkitMainWindow : Window
         foreach (var button in _navigation.Values)
         {
             button.Padding = collapse
-                ? new Thickness(7, 10, 4, 10)
-                : new Thickness(8, 10, 10, 10);
+                ? new Thickness(7, 7, 4, 7)
+                : new Thickness(8, 7, 10, 7);
         }
         _mainArea.Margin = collapse
             ? new Thickness(4, 14, 14, 14)
@@ -569,6 +600,11 @@ internal sealed class ToolkitMainWindow : Window
             return;
         try
         {
+            if (!ShowApplicationDisclaimer())
+            {
+                _runtime.RequestExit();
+                return;
+            }
             await Dispatcher.InvokeAsync(
                 () => { },
                 DispatcherPriority.ContextIdle);
@@ -581,6 +617,38 @@ internal sealed class ToolkitMainWindow : Window
         {
             ShowToast(L("初始化失败：", "Initialization failed: ") + ex.Message, isError: true);
         }
+    }
+
+    private bool ShowApplicationDisclaimer()
+    {
+        if (!ApplicationDisclaimerPreference.RequiresConfirmation(
+                _runtime.Settings))
+        {
+            return true;
+        }
+        var dialog = new ApplicationDisclaimerWindow(
+            _runtime.Settings.Language,
+            _runtime.IsDark)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() != true)
+            return false;
+        if (ApplicationDisclaimerPreference.Accept(
+                _runtime.Settings,
+                out var error))
+        {
+            return true;
+        }
+        MessageBox.Show(
+            this,
+            L(
+                "无法保存风险确认，因此软件不会继续启动：",
+                "The risk acknowledgement could not be saved, so the application will not continue: ") + error,
+            "ThinkBook Toolkit",
+            MessageBoxButton.OK,
+            MessageBoxImage.Error);
+        return false;
     }
 
     private void ShowFanBackendStartupNotice()
@@ -640,6 +708,65 @@ internal sealed class ToolkitMainWindow : Window
         }
         if (_selectedPage is "overview" or "performance" or "cooling")
             RenderPage();
+    }
+
+    private async void OnControlStateChanged(object? sender, EventArgs args)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.BeginInvoke(new Action(() =>
+                OnControlStateChanged(sender, args)));
+            return;
+        }
+        var currentPage = _pageHost.Content as ToolkitPageBase;
+        foreach (var pageId in new[]
+                 {
+                     "overview",
+                     "performance",
+                     "cooling",
+                     "battery",
+                     "display",
+                     "sound",
+                     "input"
+                 })
+        {
+            if (_pages.TryGetValue(pageId, out var page) &&
+                !ReferenceEquals(page, currentPage) &&
+                _pages.Remove(pageId))
+            {
+                page.Dispose();
+            }
+        }
+        _controlStateRefreshPending = true;
+        if (_controlStateRefreshRunning)
+            return;
+        _controlStateRefreshRunning = true;
+        try
+        {
+            while (_controlStateRefreshPending)
+            {
+                _controlStateRefreshPending = false;
+                if (_pageHost.Content is not
+                    IControlStateRefreshable refreshable)
+                {
+                    continue;
+                }
+                try
+                {
+                    await refreshable.RefreshControlStateAsync();
+                }
+                catch (Exception ex)
+                {
+                    ToolkitLog.Warning(
+                        "The visible page could not refresh its control state: " +
+                        ex.Message);
+                }
+            }
+        }
+        finally
+        {
+            _controlStateRefreshRunning = false;
+        }
     }
 
     private void RebuildShell(bool disposePages)
@@ -733,6 +860,7 @@ internal sealed class ToolkitMainWindow : Window
         _runtime.AvailabilityChanged -= OnAvailabilityChanged;
         _runtime.AppearanceChanged -= OnAppearanceChanged;
         _runtime.OverviewLayoutChanged -= OnOverviewLayoutChanged;
+        _runtime.ControlStateChanged -= OnControlStateChanged;
         _runtime.StatusChanged -= OnStatusChanged;
         _toastTimer.Stop();
         if (_ownsRuntime) _runtime.Dispose();

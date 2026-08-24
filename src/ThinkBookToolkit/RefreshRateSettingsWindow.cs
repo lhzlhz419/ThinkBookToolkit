@@ -11,6 +11,7 @@ internal sealed class RefreshRateSettingsWindow : Window
 {
     private readonly ToolkitRuntimeService _runtime;
     private readonly HashSet<uint> _enabled;
+    private bool _dynamicEnabled;
     private readonly TextBlock _status = new()
     {
         TextWrapping = TextWrapping.Wrap
@@ -31,6 +32,8 @@ internal sealed class RefreshRateSettingsWindow : Window
                 state.AvailableHz,
                 runtime.Settings.RefreshRateCycleHz)
             .ToHashSet();
+        _dynamicEnabled = state.DynamicSupported &&
+            runtime.Settings.IncludeDynamicRefreshRateInCycle;
 
         Title = T("刷新率切换设置", "Refresh-rate switch settings");
         Width = 500;
@@ -80,7 +83,7 @@ internal sealed class RefreshRateSettingsWindow : Window
             };
             toggle.Unchecked += (_, _) =>
             {
-                if (_enabled.Count <= 1 && _enabled.Contains(value))
+                if (EnabledCount <= 1 && _enabled.Contains(value))
                 {
                     toggle.IsChecked = true;
                     _status.Text = T(
@@ -89,6 +92,46 @@ internal sealed class RefreshRateSettingsWindow : Window
                     return;
                 }
                 _enabled.Remove(value);
+                _status.Text = string.Empty;
+            };
+            root.Children.Add(new Border
+            {
+                Background = Brush(palette.SurfaceRaised),
+                BorderBrush = Brush(palette.Border),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(11),
+                Margin = new Thickness(0, 0, 0, 8),
+                Child = toggle
+            });
+        }
+
+        if (state.DynamicSupported)
+        {
+            var toggle = new CheckBox
+            {
+                Content = new DisplayRefreshRateMode(
+                    state.DynamicMaximumHz,
+                    true).DisplayName,
+                IsChecked = _dynamicEnabled,
+                Margin = new Thickness(0, 0, 0, 8),
+                Padding = new Thickness(12, 9, 12, 9)
+            };
+            toggle.Checked += (_, _) =>
+            {
+                _dynamicEnabled = true;
+                _status.Text = string.Empty;
+            };
+            toggle.Unchecked += (_, _) =>
+            {
+                if (EnabledCount <= 1 && _dynamicEnabled)
+                {
+                    toggle.IsChecked = true;
+                    _status.Text = T(
+                        "至少需要启用一个刷新率。",
+                        "At least one refresh rate must remain enabled.");
+                    return;
+                }
+                _dynamicEnabled = false;
                 _status.Text = string.Empty;
             };
             root.Children.Add(new Border
@@ -137,7 +180,10 @@ internal sealed class RefreshRateSettingsWindow : Window
 
     private void Apply()
     {
-        if (!_runtime.TrySetRefreshRateCycle(_enabled, out var error))
+        if (!_runtime.TrySetRefreshRateCycle(
+                _enabled,
+                _dynamicEnabled,
+                out var error))
         {
             _status.Text = T(
                 "无法保存刷新率设置：",
@@ -147,6 +193,9 @@ internal sealed class RefreshRateSettingsWindow : Window
         DialogResult = true;
         Close();
     }
+
+    private int EnabledCount => _enabled.Count +
+        (_dynamicEnabled ? 1 : 0);
 
     private string T(string chinese, string english) =>
         _runtime.IsChinese ? chinese : english;

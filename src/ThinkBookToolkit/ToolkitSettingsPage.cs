@@ -21,6 +21,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly CheckBox _minimizeToTray = new();
     private readonly CheckBox _closeToTray = new();
     private readonly CheckBox _takeOverFnKeys = new();
+    private readonly Button _customizeFnKeys;
+    private readonly Button _discoverFnKeys;
+    private readonly Button _gameDetectionPaths;
     private readonly CheckBox _disableOnSleep = new();
     private readonly CheckBox _alternativeFullSpeed = new();
     private readonly CheckBox _continuousFanWrites = new();
@@ -67,6 +70,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         DataContext = _viewModel;
         _status = StatusText();
         _editOverview = ActionButton(L("编辑概览页", "Edit overview"));
+        _customizeFnKeys = ActionButton(L("自定义", "Customize"));
+        _discoverFnKeys = ActionButton(L("发现 Fn 按键", "Discover Fn keys"));
+        _gameDetectionPaths = ActionButton(L("设置", "Settings"));
         _restartReaders = ActionButton(L("强制刷新读数", "Restart readers"));
         _checkUpdates = ActionButton(L("检查更新", "Check for updates"));
         _downloadUpdate = ActionButton(L("下载更新", "Download update"), primary: true);
@@ -182,6 +188,17 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("关闭按钮隐藏窗口；从托盘菜单选择退出才结束程序。", "The close button hides the window; Exit in the tray menu ends the app."),
             _closeToTray));
         startup.Children.Add(startupPrimary);
+        var fnKeyControls = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Tag = "KeepOnRight"
+        };
+        _customizeFnKeys.Margin = new Thickness(0, 0, 12, 0);
+        _discoverFnKeys.Margin = new Thickness(0, 0, 12, 0);
+        fnKeyControls.Children.Add(_discoverFnKeys);
+        fnKeyControls.Children.Add(_customizeFnKeys);
+        fnKeyControls.Children.Add(_takeOverFnKeys);
         startup.Children.Add(SettingRow(
             L(
                 "禁用 Lenovo Hotkeys 并接管 Fn 快捷键",
@@ -189,7 +206,13 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L(
                 "由 Toolkit 处理 ThinkBook 的 Fn 事件并显示全局提示；Fn+Q 按自定义顺序切换性能模式。关闭此项会恢复 Lenovo Hotkeys。",
                 "Let Toolkit handle ThinkBook Fn events and show a global OSD. Fn+Q follows the custom performance-mode order. Turning this off restores Lenovo Hotkeys."),
-            _takeOverFnKeys));
+            fnKeyControls));
+        startup.Children.Add(SettingRow(
+            L("自定义游戏检测路径", "Custom game detection paths"),
+            L(
+                "使用包含应用和排除应用列表修正 Windows 游戏检测结果；排除应用优先。",
+                "Use include and exclude lists to adjust Windows game detection. Exclusions take priority."),
+            _gameDetectionPaths));
         if (Runtime.Report?.IsAvailable(FeatureIds.FanControl) == true)
         {
             _disableOnSleepRow = SettingRow(
@@ -216,9 +239,13 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             };
             fanBehavior.Children.Add(SettingRow(
                 L("使用替代方案维持风扇满转", "Use alternative full-speed method"),
-                L(
-                    "写入设置的风扇上限作为满转手段。",
-                    "Use the configured fan maximum as the full-speed target."),
+                Runtime.NativeFanFullSpeedAvailable
+                    ? L(
+                        "写入设置的风扇上限作为满转手段。",
+                        "Use the configured fan maximum as the full-speed target.")
+                    : L(
+                        "写入设置的风扇上限作为满转手段。若关闭此项，则无法使用风扇满转功能。",
+                        "Use the configured fan maximum as the full-speed target. If this is disabled, full fan speed will be unavailable."),
                 _alternativeFullSpeed));
             fanBehavior.Children.Add(SettingRow(
                 L("持续写入风扇值", "Continuously write fan targets"),
@@ -472,6 +499,30 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                     "Fn-key takeover could not be changed and was rolled back: ") +
                   error;
             SyncControls();
+        };
+        _customizeFnKeys.Click += (_, _) =>
+        {
+            var window = new FnAutomationSettingsWindow(Runtime)
+            {
+                Owner = Window.GetWindow(this)
+            };
+            window.ShowDialog();
+        };
+        _discoverFnKeys.Click += (_, _) =>
+        {
+            var window = new FnKeyDiscoveryWindow(Runtime)
+            {
+                Owner = Window.GetWindow(this)
+            };
+            window.ShowDialog();
+        };
+        _gameDetectionPaths.Click += (_, _) =>
+        {
+            var window = new GameDetectionSettingsWindow(Runtime)
+            {
+                Owner = Window.GetWindow(this)
+            };
+            window.ShowDialog();
         };
         _disableOnSleep.Click += (_, _) =>
         {
@@ -1042,6 +1093,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         "声音" => L("声音", "Sound"),
         "输入设备" => L("输入设备", "Input devices"),
         "设备" => L("设备", "Device"),
+        "驱动更新" => L("驱动更新", "Driver updates"),
+        "自动化" => L("自动化", "Automation"),
         "高级工具" => L("高级工具", "Advanced tools"),
         "设置" => L("设置", "Settings"),
         _ => category
@@ -1054,6 +1107,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         {
             FeatureIds.TemperatureMonitoring => "Temperature and power monitoring",
             FeatureIds.FanControl => "Fan monitoring and control",
+            FeatureIds.FanFullSpeed => "Full fan speed",
             FeatureIds.SleepFanControl => "Release fan control while sleeping",
             FeatureIds.PerformanceMode => "Performance mode",
             FeatureIds.GpuMode => "GPU working mode",
@@ -1088,6 +1142,10 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.BiosSetup => "Enter BIOS setup",
             FeatureIds.StartupInterrupt => "Startup interrupt menu",
             FeatureIds.SecureWipe => "Secure wipe",
+            FeatureIds.BiosIoControl => "I/O controls",
+            FeatureIds.DriverUpdate => "Lenovo driver and firmware updates",
+            FeatureIds.Automation => "Automation and Fn-key mappings",
+            FeatureIds.KeyboardMacros => "Keyboard macros",
             FeatureIds.UpdateCheck => "Software update check",
             _ => fallback
         };
@@ -1110,6 +1168,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 FeatureIds.PowerSettings => L("当前设备不支持查看或调整功耗参数。", "Power values cannot be viewed or changed on this device."),
                 FeatureIds.WarrantyInformation => L("需要有效的序列号和网络连接。", "A valid serial number and network connection are required."),
                 FeatureIds.FanControl => L("当前设备上无法使用风扇监控与控制。", "Fan monitoring and control are unavailable on this device."),
+                FeatureIds.FanFullSpeed => L("当前风扇后端不支持原生风扇拉满。", "Native full fan speed is unavailable with the current backend."),
                 _ => L("当前设备上未检测到此功能。", "This feature was not detected on the current device.")
             };
         }
@@ -1117,6 +1176,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         {
             FeatureIds.TemperatureMonitoring => L("部分温度或功耗数据暂时不可用。", "Some temperature or power readings are unavailable."),
             FeatureIds.FanControl => L("部分风扇功能暂时不可用。", "Some fan functions are unavailable."),
+            FeatureIds.FanFullSpeed => L("风扇拉满仅可通过替代方案使用。", "Full fan speed is available only through the alternative method."),
             FeatureIds.SleepFanControl => L("睡眠期间的风扇控制仅部分可用。", "Fan handling during sleep is only partially available."),
             FeatureIds.PowerSettings when feature.PartiallyAvailable =>
                 PowerSettingsController.CurrentProfile.Writable

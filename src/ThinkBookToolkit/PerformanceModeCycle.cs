@@ -45,12 +45,14 @@ internal static class PerformanceModeCycle
         IEnumerable<ItsMode>? order,
         IEnumerable<ItsMode>? enabled,
         ItsMode current,
-        bool isAcConnected)
+        bool isAcConnected,
+        Func<ItsMode, bool>? isSupported = null)
     {
         var enabledSet = NormalizeEnabled(enabled).ToHashSet();
         var available = NormalizeOrder(order)
             .Where(enabledSet.Contains)
             .Where(mode => isAcConnected || mode != ItsMode.Geek)
+            .Where(mode => isSupported?.Invoke(mode) != false)
             .ToArray();
         if (available.Length == 0)
             return ItsMode.Unknown;
