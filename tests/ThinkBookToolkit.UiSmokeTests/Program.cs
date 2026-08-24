@@ -117,6 +117,7 @@ internal static class Program
                 GpuCoreClockMhz = 1552,
                 GpuMemoryClockMhz = 6001,
                 GpuHotSpotTempC = 51.3,
+                GpuPowerLimitW = 140,
                 VramChipTemperaturesC = [56, 58, 56, 54],
                 PhysicalMemoryUsedGb = 16.5,
                 PhysicalMemoryTotalGb = 31.4,
@@ -349,7 +350,9 @@ internal static class Program
                ContainsText(window.CurrentPage!, "剩余天数") &&
                warrantyRemainingItemId == "remaining-days" &&
                overviewViewModel?.WarrantyRemainingDays != "--" &&
-               overviewViewModel?.PowerCpuPl1 == "125 W",
+               overviewViewModel?.PowerCpuPl1 == "125 W" &&
+               overviewViewModel.GpuPowerLimit == "140.0 W" &&
+               overviewViewModel.GpuPowerLimitVisible,
             $"Overview does not contain all seven configurable cards or power values. " +
             $"Cards: {string.Join(",", overviewCards)}; " +
             $"power={ContainsText(window.CurrentPage!, "功耗限制")}; " +
@@ -568,6 +571,17 @@ internal static class Program
                PropertyText(telemetryViewModel, "MemorySlot2Temperature") == "-",
             "Missing memory-slot temperatures are not represented correctly.");
         var populatedTemperatures = runtime.Snapshot.Temperatures!;
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            Temperatures = populatedTemperatures with
+            {
+                MemorySlotTemperaturesC = [47, 49]
+            }
+        });
+        Assert(PropertyText(telemetryViewModel, "MemorySlot1Temperature") == "47.0 °C" &&
+               PropertyText(telemetryViewModel, "MemorySlot2Temperature") == "49.0 °C" &&
+               PropertyText(telemetryViewModel, "MemoryAverageTemperature") == "48.0 °C",
+            "Filtered DIMM temperatures are not displayed or averaged correctly.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
             Temperatures = populatedTemperatures with { CpuPowerW = 0 }
@@ -1783,6 +1797,7 @@ internal static class Program
             55,
             [54, 55],
             30,
+            140,
             "core",
             "memory");
         var roundTrip = JsonSerializer.Deserialize<GpuMonitorWorkerSnapshot>(
@@ -1790,6 +1805,7 @@ internal static class Program
         Assert(roundTrip is not null &&
                roundTrip.Name == snapshot.Name &&
                roundTrip.PowerW == snapshot.PowerW &&
+               roundTrip.PowerLimitW == 140 &&
                roundTrip.MemoryChipTemperaturesC.SequenceEqual(
                    snapshot.MemoryChipTemperaturesC),
             "The isolated GPU monitor JSON contract does not round-trip.");
@@ -2669,6 +2685,22 @@ internal static class Program
         Assert(!readOnly.Writable && readOnly.CpuTemperatureOffset == 0 &&
                readOnly.GpuTgpOffset == 0,
             "Unknown devices must expose raw read-only power values.");
+        var lfcLimits = PowerSettingsController.CreateLfcPowerLimitState(70, 85);
+        Assert(lfcLimits.CpuPl1 == 70 && lfcLimits.CpuPl2 == 85 &&
+               lfcLimits.IsAvailable(PowerSetting.CpuPl1) &&
+               lfcLimits.IsAvailable(PowerSetting.CpuPl2) &&
+               !lfcLimits.IsAvailable(PowerSetting.CpuTemperatureLimit) &&
+               PowerSettingsController.CanUseLfcReadFallback(
+                   readOnly,
+                   new InvalidOperationException(
+                       "No active LENOVO_OTHER_METHOD instance found.")) &&
+               !PowerSettingsController.CanUseLfcReadFallback(
+                   g6,
+                   new InvalidOperationException(
+                       "No active LENOVO_OTHER_METHOD instance found.")) &&
+               LenovoLfcPowerLimitReader.PowerLimit(70) == 70 &&
+               LenovoLfcPowerLimitReader.PowerLimit(0) is null,
+            "Gen 4 LFC CPU power-limit fallback is not strictly read-only or correctly scoped.");
     }
 
     private static void VerifyPerformanceFanLinkSettings()

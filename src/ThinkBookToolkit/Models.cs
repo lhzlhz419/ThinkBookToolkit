@@ -41,6 +41,7 @@ public sealed record TemperatureSnapshot(
     public double? GpuCoreClockMhz { get; init; }
     public double? GpuMemoryClockMhz { get; init; }
     public double? GpuHotSpotTempC { get; init; }
+    public double? GpuPowerLimitW { get; init; }
     public IReadOnlyList<double> VramChipTemperaturesC { get; init; } = [];
     public DiscreteGpuActivityState DiscreteGpuState { get; init; } =
         DiscreteGpuActivityState.Unknown;

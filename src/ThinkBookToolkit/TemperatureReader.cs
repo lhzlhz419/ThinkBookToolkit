@@ -61,6 +61,7 @@ public sealed class TemperatureReader : IDisposable
                     GpuCoreClockMhz = null,
                     GpuMemoryClockMhz = null,
                     GpuHotSpotTempC = null,
+                    GpuPowerLimitW = null,
                     VramChipTemperaturesC = []
                 }
                 : new TemperatureSnapshot(
@@ -151,6 +152,9 @@ public sealed class TemperatureReader : IDisposable
             .Where(sensor =>
                 sensor.RootHardwareType == HardwareType.Memory ||
                 ContainsAny(sensor, ["dimm", "dram", "memory module", "ddr4", "ddr5"]))
+            .Where(sensor => !ContainsAny(
+                sensor,
+                ["resolution", "low limit", "high limit", "critical limit"]))
             .Select(sensor => sensor.Value)
             .Where(IsPlausibleTemperature)
             .Take(12)
@@ -207,6 +211,8 @@ public sealed class TemperatureReader : IDisposable
             GpuCoreClockMhz = isolatedGpu?.CoreClockMhz,
             GpuMemoryClockMhz = isolatedGpu?.MemoryClockMhz,
             GpuHotSpotTempC = isolatedGpu?.HotSpotTemperatureC,
+            GpuPowerLimitW = isolatedGpu?.PowerLimitW ??
+                retainedGpu?.GpuPowerLimitW,
             VramChipTemperaturesC = isolatedGpu?.MemoryChipTemperaturesC ?? [],
             DiscreteGpuState = isolatedGpu?.DiscreteGpuState ??
                 retainedGpu?.DiscreteGpuState ??

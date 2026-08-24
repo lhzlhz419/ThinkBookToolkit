@@ -30,6 +30,7 @@ internal sealed record GpuMonitorSnapshot(
     double? MemoryTemperatureC,
     IReadOnlyList<double> MemoryChipTemperaturesC,
     double? PowerW,
+    double? PowerLimitW,
     string CoreTemperatureSensor,
     string MemoryTemperatureSensor,
     DiscreteGpuActivityState DiscreteGpuState,
@@ -171,7 +172,8 @@ internal static class GpuMonitorWorker
                         log,
                         hardwareFailures,
                         nonNvidiaFallback: true,
-                        activity) ??
+                        activity,
+                        powerLimitW: null) ??
                         StateOnlySnapshot(activity);
                 }
                 else
@@ -194,7 +196,8 @@ internal static class GpuMonitorWorker
                             log,
                             hardwareFailures,
                             nonNvidiaFallback: false,
-                            activity);
+                            activity,
+                            stateReader.ReadPowerLimitW());
                     }
                     else
                     {
@@ -286,7 +289,8 @@ internal static class GpuMonitorWorker
         GuardianLog log,
         HashSet<string> hardwareFailures,
         bool nonNvidiaFallback,
-        NvidiaActivitySnapshot activity)
+        NvidiaActivitySnapshot activity,
+        double? powerLimitW)
     {
         var candidates = new List<GpuReading>();
         foreach (var hardware in computer.Hardware.Where(item =>
@@ -363,6 +367,7 @@ internal static class GpuMonitorWorker
             memoryTemperature.Sensor?.Value,
             privateValues.MemoryChipTemperaturesC,
             PickPower(gpu.Sensors),
+            powerLimitW,
             coreTemperature.Name,
             memoryTemperature.Name,
             activity.State,
@@ -381,6 +386,7 @@ internal static class GpuMonitorWorker
             null,
             null,
             [],
+            null,
             null,
             "not found",
             "not found",
@@ -536,7 +542,10 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
     private PhysicalGPU? _gpu;
     private string _gpuName = string.Empty;
     private DateTimeOffset _nextRefresh;
+    private DateTimeOffset _nextPowerLimitRefresh;
     private bool? _lastIncludeDisplayActivity;
+    private double? _lastPowerLimitW;
+    private bool _powerLimitFailureLogged;
     private NvidiaActivitySnapshot _last =
         new(string.Empty, DiscreteGpuActivityState.Unknown, string.Empty);
 
@@ -571,6 +580,35 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
         }
         _last = next;
         return next;
+    }
+
+    public double? ReadPowerLimitW()
+    {
+        if (DateTimeOffset.UtcNow < _nextPowerLimitRefresh)
+            return _lastPowerLimitW;
+
+        _nextPowerLimitRefresh = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+        try
+        {
+            _gpu ??= FindLaptopGpu();
+            if (_gpu is null)
+                return null;
+            _lastPowerLimitW = NvidiaLockedClockApi.ReadEnforcedPowerLimitW(
+                _gpu.BusInformation.BusId,
+                _gpu.BusInformation.BusSlot);
+            _powerLimitFailureLogged = false;
+            return _lastPowerLimitW;
+        }
+        catch (Exception ex)
+        {
+            if (!_powerLimitFailureLogged)
+            {
+                _log.Error("NVIDIA enforced power-limit query failed.", ex);
+                _powerLimitFailureLogged = true;
+            }
+            _nextPowerLimitRefresh = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+            return null;
+        }
     }
 
     private NvidiaActivitySnapshot ReadCore(bool includeDisplayActivity)
@@ -915,6 +953,18 @@ internal static class NvidiaLockedClockApi
                 NvmlDeviceResetGpuLockedClocks(device),
                 "reset core clock limits"));
 
+    public static double ReadEnforcedPowerLimitW(int busId, int busSlot)
+    {
+        uint milliwatts = 0;
+        WithDevice(
+            busId,
+            busSlot,
+            device => Check(
+                NvmlDeviceGetEnforcedPowerLimit(device, out milliwatts),
+                "read the enforced power limit"));
+        return milliwatts / 1000d;
+    }
+
     private static void WithDevice(
         int busId,
         int busSlot,
@@ -978,6 +1028,12 @@ internal static class NvidiaLockedClockApi
     [DllImport("nvml.dll", CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "nvmlDeviceResetGpuLockedClocks")]
     private static extern int NvmlDeviceResetGpuLockedClocks(IntPtr device);
+
+    [DllImport("nvml.dll", CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "nvmlDeviceGetEnforcedPowerLimit")]
+    private static extern int NvmlDeviceGetEnforcedPowerLimit(
+        IntPtr device,
+        out uint limit);
 }
 
 internal sealed record NvidiaPrivateSnapshot(

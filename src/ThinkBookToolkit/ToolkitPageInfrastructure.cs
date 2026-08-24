@@ -388,6 +388,8 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                     new(L("CPU 温度墙", "CPU temperature limit"), nameof(HardwareMonitorViewModel.PowerCpuTemperature), false, "Turbo Time", nameof(HardwareMonitorViewModel.PowerTurboTime),
                         VisibilityProperty: nameof(HardwareMonitorViewModel.PowerCpuTemperatureVisible),
                         SecondaryVisibilityProperty: nameof(HardwareMonitorViewModel.PowerTurboTimeVisible)),
+                    new(L("GPU 当前功耗上限", "GPU enforced power limit"), nameof(HardwareMonitorViewModel.GpuPowerLimit),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.GpuPowerLimitVisible)),
                     new("GPU Power Boost", nameof(HardwareMonitorViewModel.PowerGpuBoost),
                         VisibilityProperty: nameof(HardwareMonitorViewModel.PowerGpuBoostVisible)),
                     new(

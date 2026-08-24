@@ -895,6 +895,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             (OverviewCardIds.Power, "cpu-pl2") => "CPU PL2",
             (OverviewCardIds.Power, "cpu-temperature") => L("CPU 温度上限", "CPU temperature limit"),
             (OverviewCardIds.Power, "turbo-time") => "CPU Turbo Time Limit",
+            (OverviewCardIds.Power, "gpu-power-limit") =>
+                L("GPU 当前功耗上限", "GPU enforced power limit"),
             (OverviewCardIds.Power, "gpu-boost") => "GPU Power Boost",
             (OverviewCardIds.Power, "gpu-tgp") => "GPU TGP",
             (OverviewCardIds.Power, "gpu-temperature") => L("GPU 温度上限", "GPU temperature limit"),

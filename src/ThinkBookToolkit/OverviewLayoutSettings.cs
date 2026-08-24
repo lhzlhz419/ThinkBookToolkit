@@ -58,7 +58,7 @@ internal static class OverviewLayoutDefaults
             [OverviewCardIds.Battery] = ["status", "charge", "health", "power"],
             [OverviewCardIds.MemoryStorage] = ["physical-memory", "virtual-memory", "slot1-temperature", "slot2-temperature", "disk-temperatures", "disk-health", "utilization", "average-temperature"],
             [OverviewCardIds.Fans] = ["fan1-speed", "fan2-speed", "fan1-target", "fan2-target"],
-            [OverviewCardIds.Power] = ["cpu-pl1", "cpu-pl2", "cpu-temperature", "turbo-time", "gpu-boost", "gpu-tgp", "gpu-temperature", "gpu-to-cpu", "atpp"],
+            [OverviewCardIds.Power] = ["cpu-pl1", "cpu-pl2", "cpu-temperature", "turbo-time", "gpu-power-limit", "gpu-boost", "gpu-tgp", "gpu-temperature", "gpu-to-cpu", "atpp"],
             [OverviewCardIds.Warranty] = ["status", "start-date", "end-date", "remaining-days", "progress"]
         };
 
@@ -173,7 +173,7 @@ internal static class OverviewLayoutDefaults
             [OverviewCardIds.Battery] = ["status", "charge", "health", "power"],
             [OverviewCardIds.MemoryStorage] = ["physical-memory", "virtual-memory", "slot1-temperature", "slot2-temperature", "disk-temperatures", "disk-health"],
             [OverviewCardIds.Fans] = ["fan1-speed", "fan2-speed", "fan1-target", "fan2-target"],
-            [OverviewCardIds.Power] = ["cpu-pl1", "cpu-pl2", "cpu-temperature", "turbo-time", "gpu-boost", "gpu-tgp", "gpu-temperature", "gpu-to-cpu", "atpp"],
+            [OverviewCardIds.Power] = ["cpu-pl1", "cpu-pl2", "cpu-temperature", "turbo-time", "gpu-power-limit", "gpu-boost", "gpu-tgp", "gpu-temperature", "gpu-to-cpu", "atpp"],
             [OverviewCardIds.Warranty] = ["status", "start-date", "end-date", "remaining-days", "progress"]
         };
 

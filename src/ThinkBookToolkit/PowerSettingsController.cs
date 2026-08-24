@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Management;
+using System.Threading;
 
 namespace ThinkBookToolkit;
 
@@ -69,6 +70,7 @@ internal sealed record PowerDeviceProfile(
 internal static class PowerSettingsController
 {
     private static readonly object IoSync = new();
+    private static int _lfcFallbackLogged;
 
     private const uint CpuPl1Id = 0x01020000;
     private const uint CpuPl2Id = 0x01010000;
@@ -218,9 +220,60 @@ internal static class PowerSettingsController
     {
         lock (IoSync)
         {
-            using var other = GetActiveOtherMethod();
-            return ReadState(other, CurrentProfile);
+            var profile = CurrentProfile;
+            try
+            {
+                using var other = GetActiveOtherMethod();
+                return ReadState(other, profile);
+            }
+            catch (Exception ex) when (CanUseLfcReadFallback(profile, ex))
+            {
+                if (Interlocked.Exchange(ref _lfcFallbackLogged, 1) == 0)
+                {
+                    ToolkitLog.Warning(
+                        "LENOVO_OTHER_METHOD is unavailable; using the read-only " +
+                        $"LFC CPU power-limit fallback: {ex.Message}");
+                }
+                return ReadLfcPowerLimits();
+            }
         }
+    }
+
+    internal static bool CanUseLfcReadFallback(
+        PowerDeviceProfile profile,
+        Exception exception) =>
+        profile.Kind == PowerDeviceKind.ReadOnly &&
+        (exception is ManagementException
+            { ErrorCode: ManagementStatus.NotSupported } ||
+         exception is InvalidOperationException invalidOperation &&
+         invalidOperation.Message.StartsWith(
+             "No active LENOVO_OTHER_METHOD instance found.",
+             StringComparison.Ordinal));
+
+    internal static PowerSettingsState CreateLfcPowerLimitState(
+        int? cpuPl1,
+        int? cpuPl2)
+    {
+        var available = PowerSettingAvailability.None;
+        if (cpuPl1.HasValue)
+            available |= Flag(PowerSetting.CpuPl1);
+        if (cpuPl2.HasValue)
+            available |= Flag(PowerSetting.CpuPl2);
+        if (available == PowerSettingAvailability.None)
+            throw new InvalidOperationException(
+                "No LFC CPU power-limit values could be read.");
+
+        return new(
+            cpuPl1 ?? 0,
+            cpuPl2 ?? 0,
+            0, 0, 0, 0, 0, 0)
+        { AvailableSettings = available };
+    }
+
+    private static PowerSettingsState ReadLfcPowerLimits()
+    {
+        var limits = LenovoLfcPowerLimitReader.Read();
+        return CreateLfcPowerLimitState(limits.CpuPl1W, limits.CpuPl2W);
     }
 
     public static void WriteState(PowerSettingsState state)

@@ -19,6 +19,7 @@ internal sealed record GpuMonitorWorkerSnapshot(
     double? MemoryTemperatureC,
     IReadOnlyList<double> MemoryChipTemperaturesC,
     double? PowerW,
+    double? PowerLimitW,
     string CoreTemperatureSensor,
     string MemoryTemperatureSensor,
     DiscreteGpuActivityState DiscreteGpuState =

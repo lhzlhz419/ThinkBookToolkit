@@ -136,6 +136,7 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     public string PowerTurboTime => PowerValue(PowerSetting.CpuTurboTimeLimit, value => value.CpuTurboTimeLimit, "s");
     public string PowerGpuBoost => PowerValue(PowerSetting.GpuPowerBoost, value => value.GpuPowerBoost);
     public string PowerGpuTgp => PowerValue(PowerSetting.GpuConfigurableTgp, value => value.GpuConfigurableTgp);
+    public string GpuPowerLimit => Power(_snapshot.Temperatures?.GpuPowerLimitW);
     public string PowerGpuTemperature => PowerValue(PowerSetting.GpuTemperatureLimit, value => value.GpuTemperatureLimit, "°C");
     public string PowerGpuToCpu => PowerValue(PowerSetting.GpuToCpuDynamicBoost, value => value.GpuToCpuDynamicBoost);
     public string PowerAtpp => _snapshot.PowerSettings is { } power &&
@@ -150,6 +151,9 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     public bool PowerTurboTimeVisible => PowerVisible(PowerSetting.CpuTurboTimeLimit, "turbo-time");
     public bool PowerGpuBoostVisible => PowerVisible(PowerSetting.GpuPowerBoost, "gpu-boost");
     public bool PowerGpuTgpVisible => PowerVisible(PowerSetting.GpuConfigurableTgp, "gpu-tgp");
+    public bool GpuPowerLimitVisible =>
+        Show(OverviewCardIds.Power, "gpu-power-limit") &&
+        _snapshot.Temperatures?.GpuPowerLimitW.HasValue == true;
     public bool PowerGpuTemperatureVisible => PowerVisible(PowerSetting.GpuTemperatureLimit, "gpu-temperature");
     public bool PowerGpuToCpuVisible => PowerVisible(PowerSetting.GpuToCpuDynamicBoost, "gpu-to-cpu");
     public bool PowerAtppVisible => PowerVisible(PowerSetting.Atpp, "atpp") &&
@@ -283,8 +287,8 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     private string MemorySlotTemperature(int index)
     {
         var values = _snapshot.Temperatures?.MemorySlotTemperaturesC;
-        return values is not null && index * 6 < values.Count
-            ? Temperature(values[index * 6])
+        return values is not null && index < values.Count
+            ? Temperature(values[index])
             : "-";
     }
 
