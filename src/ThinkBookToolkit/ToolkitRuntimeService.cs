@@ -708,7 +708,22 @@ internal sealed class ToolkitRuntimeService : IDisposable
             var temperatures = performance?.Temperatures;
             var fans = performance?.Fans;
             if (temperatures is null && _temperatureReader is not null)
+            {
                 temperatures = await Task.Run(_temperatureReader.Read);
+                if (fans is null)
+                {
+                    var lenovoThermal = _temperatureReader.LastLenovoThermalSnapshot;
+                    if (lenovoThermal.Fan1Rpm.HasValue &&
+                        lenovoThermal.Fan2Rpm.HasValue)
+                    {
+                        fans = new FanSnapshot(
+                            DateTimeOffset.Now,
+                            lenovoThermal.Fan1Rpm.Value,
+                            lenovoThermal.Fan2Rpm.Value,
+                            new Dictionary<string, FanLimit>());
+                    }
+                }
+            }
             if (Settings.GpuOverclock.Enabled &&
                 GpuTelemetryControl.Mode == GpuTelemetryMode.Full &&
                 (temperatures?.DiscreteGpuState is

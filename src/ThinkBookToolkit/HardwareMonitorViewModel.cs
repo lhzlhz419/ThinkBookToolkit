@@ -365,7 +365,7 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         value.HasValue ? $"{value.Value:0.0} °C" : "--";
 
     private static string Power(double? value) =>
-        value.HasValue ? $"{value.Value:0.0} W" : "--";
+        value is > 0 and < 2000 ? $"{value.Value:0.0} W" : "--";
 
     private static string FanSpeed(int? value) =>
         value.HasValue ? $"{value.Value} RPM" : "--";

@@ -570,6 +570,18 @@ internal static class Program
         var populatedTemperatures = runtime.Snapshot.Temperatures!;
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
+            Temperatures = populatedTemperatures with { CpuPowerW = 0 }
+        });
+        Assert(PropertyText(telemetryViewModel, "CpuPower") == "--" &&
+               !PropertyText(telemetryViewModel, "CompactCpu").Contains("0.0 W", StringComparison.Ordinal),
+            "Unavailable CPU package power is presented as a valid zero-watt reading.");
+        Assert(LenovoLfcThermalReader.Temperature(53) == 53 &&
+               LenovoLfcThermalReader.Temperature(0) is null &&
+               LenovoLfcThermalReader.FanSpeed(2200) == 2200 &&
+               LenovoLfcThermalReader.FanSpeed(10001) is null,
+            "Lenovo LFC read-only telemetry validation is incorrect.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
             FanTarget = new FanTargets(0, 0),
             Temperatures = populatedTemperatures with
             {

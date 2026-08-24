@@ -14,6 +14,9 @@ public sealed class TemperatureReader : IDisposable
     private readonly StorageTemperatureReader? _storageTelemetry;
     private TemperatureSnapshot? _lastSnapshot;
 
+    internal LenovoLfcThermalSnapshot LastLenovoThermalSnapshot { get; private set; } =
+        LenovoLfcThermalSnapshot.Empty;
+
     public TemperatureReader(bool enableGpuTelemetry = true)
     {
         _gpuMonitor = enableGpuTelemetry
@@ -90,6 +93,8 @@ public sealed class TemperatureReader : IDisposable
 
     private TemperatureSnapshot ReadCore()
     {
+        var lenovoThermal = LenovoLfcThermalReader.Read();
+        LastLenovoThermalSnapshot = lenovoThermal;
         var isolatedGpu = _gpuMonitor?.Read();
         var retainedGpu = isolatedGpu is null &&
                           GpuTelemetryControl.Mode == GpuTelemetryMode.Paused
@@ -150,6 +155,11 @@ public sealed class TemperatureReader : IDisposable
             .Where(IsPlausibleTemperature)
             .Take(12)
             .ToArray();
+        if (memoryTemperatures.Length == 0 &&
+            lenovoThermal.RamTemperatureC is { } ramTemperature)
+        {
+            memoryTemperatures = [ramTemperature];
+        }
 
         // 硬盘温度与健康度由同一个 DiskInfoToolkit 设备对象、
         // 在同一次 RefreshVolatileData() 后读取，不再创建第二个 LHM Computer。
@@ -165,13 +175,22 @@ public sealed class TemperatureReader : IDisposable
                 SensorType.Load,
                 ["cpu core", "core"]);
         return new TemperatureSnapshot(
-            cpuTemperature.Sensor?.Value,
-            isolatedGpu?.CoreTemperatureC,
+            cpuTemperature.Sensor?.Value ?? lenovoThermal.CpuTemperatureC,
+            isolatedGpu?.CoreTemperatureC ??
+                retainedGpu?.GpuTempC ??
+                lenovoThermal.GpuTemperatureC,
             isolatedGpu?.MemoryTemperatureC,
             cpuPower,
             isolatedGpu?.PowerW,
-            cpuTemperature.Name,
-            isolatedGpu?.CoreTemperatureSensor ?? "not found",
+            cpuTemperature.Sensor is not null
+                ? cpuTemperature.Name
+                : lenovoThermal.CpuTemperatureC.HasValue
+                    ? "Lfc_thermal_interface.GetCPUTemperature"
+                    : "not found",
+            isolatedGpu?.CoreTemperatureSensor ??
+                (lenovoThermal.GpuTemperatureC.HasValue
+                    ? "Lfc_thermal_interface.GetGPUTemperature"
+                    : "not found"),
             isolatedGpu?.MemoryTemperatureSensor ?? "not found")
         {
             CpuName = cpuHardware?.Name ?? string.Empty,
@@ -332,6 +351,7 @@ public sealed class TemperatureReader : IDisposable
     {
         var powerSensors = sensors
             .Where(sensor => sensor.SensorType == SensorType.Power)
+            .Where(sensor => IsPlausiblePower(sensor.Value))
             .ToList();
         return powerSensors
             .Where(sensor => ContainsAny(sensor, patterns))
@@ -386,6 +406,9 @@ public sealed class TemperatureReader : IDisposable
 
     private static bool IsPlausibleClock(double value) =>
         value is > 0 and < 20000;
+
+    private static bool IsPlausiblePower(double value) =>
+        value is > 0 and < 2000;
 
     private static bool IsPlausibleTemperature(double value) =>
         value is > -40 and < 160;
