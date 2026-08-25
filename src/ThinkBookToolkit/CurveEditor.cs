@@ -19,6 +19,7 @@ public sealed class CurveEditor : FrameworkElement
     private bool _darkTheme;
     private int _editFan = 1;
     private bool _syncFanSpeeds;
+    private int _fanCount = 2;
     private string _title;
     private string _temperatureAxisLabel = "Temperature (\u00B0C)";
     private string _fontFamilyName = "Segoe UI";
@@ -76,7 +77,19 @@ public sealed class CurveEditor : FrameworkElement
 
     public void SetEditFan(int fan)
     {
-        _editFan = fan == 2 ? 2 : 1;
+        _editFan = fan == 2 && _fanCount > 1 ? 2 : 1;
+        InvalidateVisual();
+    }
+
+    public void SetFanCount(int fanCount)
+    {
+        _fanCount = fanCount > 1 ? 2 : 1;
+        if (_fanCount == 1)
+        {
+            _editFan = 1;
+            _syncFanSpeeds = true;
+            Fan2Values = [.. Fan1Values];
+        }
         InvalidateVisual();
     }
 
@@ -93,7 +106,7 @@ public sealed class CurveEditor : FrameworkElement
             Fan1MinRpm,
             Fan1MaxRpm);
         Fan2Values = CurveProfileStore.ClampCurve(
-            fan2Values,
+            _fanCount == 1 ? fan1Values : fan2Values,
             Fan2MinRpm,
             Fan2MaxRpm);
         InvalidateVisual();
@@ -129,7 +142,7 @@ public sealed class CurveEditor : FrameworkElement
             Fan1MinRpm,
             Fan1MaxRpm);
         Fan2Values = CurveProfileStore.ClampCurve(
-            Fan2Values,
+            _fanCount == 1 ? Fan1Values : Fan2Values,
             Fan2MinRpm,
             Fan2MaxRpm);
         InvalidateVisual();
@@ -164,7 +177,8 @@ public sealed class CurveEditor : FrameworkElement
             DrawText(drawingContext, temp.ToString(CultureInfo.InvariantCulture), 11, FontWeights.Normal, MutedTextColor, new Point(x, plotBottom + 10), TextAlignment.Center);
         }
 
-        DrawCurve(drawingContext, Fan2Values, Fan2Color, _editFan == 2);
+        if (_fanCount > 1)
+            DrawCurve(drawingContext, Fan2Values, Fan2Color, _editFan == 2);
         DrawCurve(drawingContext, Fan1Values, Fan1Color, _editFan == 1);
         DrawLegend(drawingContext, plotRight);
 
@@ -259,7 +273,7 @@ public sealed class CurveEditor : FrameworkElement
         values[index] = ClampForFan(rpm, _editFan);
         EnforceNonDecreasingInPlace(values, index);
 
-        if (_syncFanSpeeds)
+        if (_syncFanSpeeds || _fanCount == 1)
         {
             var otherValues = _editFan == 2 ? Fan1Values : Fan2Values;
             var otherFan = _editFan == 2 ? 1 : 2;
@@ -346,6 +360,11 @@ public sealed class CurveEditor : FrameworkElement
     private void DrawLegend(DrawingContext drawingContext, double plotRight)
     {
         var y = 16.0;
+        if (_fanCount == 1)
+        {
+            DrawLegendItem(drawingContext, plotRight - 88, y, Fan1Color, "Fan", true);
+            return;
+        }
         DrawLegendItem(drawingContext, plotRight - 176, y, Fan1Color, "Fan 1", _editFan == 1);
         DrawLegendItem(drawingContext, plotRight - 88, y, Fan2Color, "Fan 2", _editFan == 2);
     }

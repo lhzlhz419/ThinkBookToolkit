@@ -7,6 +7,11 @@ public static class FanBackendContract
     public static Version CurrentVersion { get; } = new(1, 1);
 }
 
+public static class FanBackendRuntimeContext
+{
+    public static int DeclaredFanCount { get; set; } = 2;
+}
+
 public sealed record FanBackendRange(string Fan, uint Id, int MinRpm, int MaxRpm);
 
 public sealed record FanBackendStartupNoticeText(

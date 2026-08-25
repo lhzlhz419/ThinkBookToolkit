@@ -101,6 +101,7 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
                 ? _snapshot.Fans?.Fan1Rpm
                 : null;
             var second = Show(OverviewCardIds.Fans, "fan2-speed")
+                         && DeviceModelDetector.HasSecondFan()
                 ? _snapshot.Fans?.Fan2Rpm
                 : null;
             return RpmPair(first, second);
@@ -112,6 +113,8 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         {
             var firstVisible = Show(OverviewCardIds.Fans, "fan1-target");
             var secondVisible = Show(OverviewCardIds.Fans, "fan2-target");
+            if (!DeviceModelDetector.HasSecondFan())
+                secondVisible = false;
             if (firstVisible && secondVisible)
                 return $"{WithoutRpmSuffix(Fan1Target)} / {Fan2Target}";
             if (firstVisible)

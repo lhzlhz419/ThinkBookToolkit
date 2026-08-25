@@ -12,6 +12,7 @@ using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 
 namespace ThinkBookToolkit;
 
@@ -22,6 +23,12 @@ internal static class ModernTheme
     private const int DwmwaBorderColor = 34;
     private const int DwmwaCaptionColor = 35;
     private const int DwmwaTextColor = 36;
+    private static readonly DependencyProperty UsesManagedThemeStyleProperty =
+        DependencyProperty.RegisterAttached(
+            "UsesManagedThemeStyle",
+            typeof(bool),
+            typeof(ModernTheme),
+            new PropertyMetadata(false));
     private static bool _windowThemeHandlerRegistered;
     private static bool _isDark;
 
@@ -43,7 +50,28 @@ internal static class ModernTheme
         application.Resources[typeof(ScrollBar)] = ScrollBarStyle(palette);
         application.Resources[typeof(ToolTip)] = ToolTipStyle(palette);
         foreach (Window window in application.Windows)
-            ApplyWindowTitleBar(window, isDark);
+            RefreshWindow(window, isDark);
+    }
+
+    /// <summary>
+    /// Reconnects controls which have already been created to the current
+    /// application theme and applies the matching native window chrome.
+    /// WPF can otherwise retain an implicit style resolved before a system
+    /// theme change, producing a dark page with light selectors.
+    /// </summary>
+    internal static void RefreshWindow(Window window, bool isDark)
+    {
+        ApplyManagedControlStyles(window);
+        ApplyWindowTitleBar(window, isDark);
+
+        if (window.Dispatcher.HasShutdownStarted)
+            return;
+
+        // Windows may initialize or repaint the non-client area after Loaded.
+        // Apply the DWM attributes once more after that work has completed.
+        _ = window.Dispatcher.BeginInvoke(
+            DispatcherPriority.Loaded,
+            new Action(() => ApplyWindowTitleBar(window, isDark)));
     }
 
     internal static void ApplyWindowTitleBar(Window window, bool isDark)
@@ -85,8 +113,78 @@ internal static class ModernTheme
             new RoutedEventHandler((sender, _) =>
             {
                 if (sender is Window window)
-                    ApplyWindowTitleBar(window, _isDark);
+                    RefreshWindow(window, _isDark);
             }));
+    }
+
+    private static void ApplyManagedControlStyles(DependencyObject root)
+    {
+        var pending = new Stack<DependencyObject>();
+        var visited = new HashSet<DependencyObject>();
+        pending.Push(root);
+
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            if (!visited.Add(current))
+                continue;
+
+            ApplyManagedControlStyle(current);
+
+            foreach (var child in LogicalTreeHelper.GetChildren(current)
+                         .OfType<DependencyObject>())
+            {
+                pending.Push(child);
+            }
+
+            if (current is not Visual)
+                continue;
+
+            for (var index = 0;
+                 index < VisualTreeHelper.GetChildrenCount(current);
+                 index++)
+            {
+                pending.Push(VisualTreeHelper.GetChild(current, index));
+            }
+        }
+    }
+
+    private static void ApplyManagedControlStyle(DependencyObject element)
+    {
+        if (element is not FrameworkElement frameworkElement)
+            return;
+
+        object? resourceKey = element switch
+        {
+            ComboBox => typeof(ComboBox),
+            ComboBoxItem => typeof(ComboBoxItem),
+            TextBox => typeof(TextBox),
+            Button => typeof(Button),
+            CheckBox => typeof(CheckBox),
+            RadioButton => typeof(RadioButton),
+            TabControl => typeof(TabControl),
+            TabItem => typeof(TabItem),
+            Slider => typeof(Slider),
+            ProgressBar => typeof(ProgressBar),
+            ScrollBar => typeof(ScrollBar),
+            ToolTip => typeof(ToolTip),
+            _ => null
+        };
+        if (resourceKey is null)
+            return;
+
+        // Do not replace deliberately assigned component-specific styles.
+        // Controls relying on an implicit style are explicitly connected via
+        // DynamicResource so subsequent Follow-system changes update them too.
+        if (frameworkElement.ReadLocalValue(FrameworkElement.StyleProperty) ==
+                DependencyProperty.UnsetValue ||
+            (bool)frameworkElement.GetValue(UsesManagedThemeStyleProperty))
+        {
+            frameworkElement.SetResourceReference(
+                FrameworkElement.StyleProperty,
+                resourceKey);
+            frameworkElement.SetValue(UsesManagedThemeStyleProperty, true);
+        }
     }
 
     private static void SetWindowColor(

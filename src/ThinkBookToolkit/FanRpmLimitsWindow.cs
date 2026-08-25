@@ -14,6 +14,7 @@ internal sealed class FanRpmLimitsWindow : Window
     private readonly TextBox _fan2Maximum;
     private readonly TextBlock _validation;
     private readonly bool _isChinese;
+    private readonly bool _hasSecondFan;
 
     public FanRpmLimitsWindow(
         Window? owner,
@@ -27,6 +28,7 @@ internal sealed class FanRpmLimitsWindow : Window
         if (owner is not null)
             Owner = owner;
         _isChinese = isChinese;
+        _hasSecondFan = DeviceModelDetector.HasSecondFan();
         Title = T("风扇转速上下限", "Fan RPM limits");
         Width = 660;
         SizeToContent = SizeToContent.Height;
@@ -88,23 +90,29 @@ internal sealed class FanRpmLimitsWindow : Window
         {
             Width = new GridLength(1, GridUnitType.Star)
         });
-        fans.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
-        fans.ColumnDefinitions.Add(new ColumnDefinition
+        if (_hasSecondFan)
         {
-            Width = new GridLength(1, GridUnitType.Star)
-        });
+            fans.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+            fans.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star)
+            });
+        }
         fans.Children.Add(FanCard(
-            T("风扇 1", "Fan 1"),
+            _hasSecondFan ? T("风扇 1", "Fan 1") : T("风扇", "Fan"),
             _fan1Minimum,
             _fan1Maximum,
             isDark));
-        var fan2 = FanCard(
-            T("风扇 2", "Fan 2"),
-            _fan2Minimum,
-            _fan2Maximum,
-            isDark);
-        Grid.SetColumn(fan2, 2);
-        fans.Children.Add(fan2);
+        if (_hasSecondFan)
+        {
+            var fan2 = FanCard(
+                T("风扇 2", "Fan 2"),
+                _fan2Minimum,
+                _fan2Maximum,
+                isDark);
+            Grid.SetColumn(fan2, 2);
+            fans.Children.Add(fan2);
+        }
         root.Children.Add(fans);
 
         root.Children.Add(new Border
@@ -213,14 +221,21 @@ internal sealed class FanRpmLimitsWindow : Window
     {
         if (!TryRead(_fan1Minimum, out var fan1Minimum) ||
             !TryRead(_fan1Maximum, out var fan1Maximum) ||
-            !TryRead(_fan2Minimum, out var fan2Minimum) ||
-            !TryRead(_fan2Maximum, out var fan2Maximum))
+            (_hasSecondFan &&
+             (!TryRead(_fan2Minimum, out _) ||
+              !TryRead(_fan2Maximum, out _))))
         {
             _validation.Text = T(
                 "请输入 0–10000 之间、以 100 RPM 为步进的整数。",
                 "Enter integers from 0 to 10000 in 100-RPM increments.");
             return;
         }
+        var fan2Minimum = _hasSecondFan
+            ? int.Parse(_fan2Minimum.Text, CultureInfo.InvariantCulture)
+            : fan1Minimum;
+        var fan2Maximum = _hasSecondFan
+            ? int.Parse(_fan2Maximum.Text, CultureInfo.InvariantCulture)
+            : fan1Maximum;
         if (fan1Minimum >= fan1Maximum || fan2Minimum >= fan2Maximum)
         {
             _validation.Text = T(

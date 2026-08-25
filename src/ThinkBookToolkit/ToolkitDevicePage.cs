@@ -152,6 +152,11 @@ internal sealed class ToolkitDevicePage : ToolkitPageBase
             L("结束日期", "End date"),
             FormatWarrantyDate(snapshot?.EndDate)));
         dates.Children.Add(WarrantyMetric(
+            L("剩余天数", "Days remaining"),
+            loading || snapshot?.EndDate is null
+                ? L("查询中", "Loading")
+                : $"{snapshot.RemainingDays} {L("天", "days")}"));
+        dates.Children.Add(WarrantyMetric(
             L("已用保修期", "Warranty elapsed"),
             loading ? L("查询中", "Loading") : $"{snapshot!.ProgressPercentage}%"));
         content.Children.Add(dates);
@@ -179,12 +184,27 @@ internal sealed class ToolkitDevicePage : ToolkitPageBase
                 Margin = new Thickness(0, 10, 0, 0)
             });
         }
+        Button? detailsButton = null;
+        if (snapshot?.Entitlements.Count > 0)
+        {
+            detailsButton = ActionButton(
+                L("显示详细保修信息", "Show warranty details"));
+            detailsButton.Click += (_, _) =>
+            {
+                var window = new WarrantyDetailsWindow(Runtime, snapshot)
+                {
+                    Owner = Window.GetWindow(this)
+                };
+                window.ShowDialog();
+            };
+        }
         return Card(
             L("保修信息", "Warranty"),
             content,
             L("保修查询与设备信息独立加载；在线查询失败时可使用匹配本机的缓存。", "Warranty loads independently from device details; a matching cache can be used if the online query fails."),
             "\uE73E",
-            statusColor);
+            statusColor,
+            detailsButton);
     }
 
     private Border WarrantyMetric(string title, string value)

@@ -119,7 +119,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _persistSystemSessionState = persistSystemSessionState;
         _fnKeyManager = new LenovoFnKeyManager(this);
         _automationRunner = new AutomationRunner(this);
-        _macroService = new KeyboardMacroService(settings);
+        _macroService = new KeyboardMacroService(
+            settings,
+            _fnKeyManager.HandleStandardKeyboardEvent);
         _bootSessionId = GpuModeRestartState.CurrentBootSessionId;
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
@@ -3070,9 +3072,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
     {
         if (_trayIcon is null)
             return;
+        var fan = DeviceModelDetector.HasSecondFan()
+            ? $"F1 {Snapshot.Fans?.Fan1Rpm ?? 0} F2 {Snapshot.Fans?.Fan2Rpm ?? 0}"
+            : $"FAN {Snapshot.Fans?.Fan1Rpm ?? 0}";
         var text = $"CPU {FormatTemperature(Snapshot.Temperatures?.CpuTempC)} " +
                    $"GPU {FormatTemperature(Snapshot.Temperatures?.GpuTempC)} " +
-                   $"F1 {Snapshot.Fans?.Fan1Rpm ?? 0} F2 {Snapshot.Fans?.Fan2Rpm ?? 0}";
+                   fan;
         _trayIcon.Text = text.Length <= 63 ? text : text[..63];
     }
 

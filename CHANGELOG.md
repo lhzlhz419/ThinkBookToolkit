@@ -7,6 +7,43 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-25
+
+### Added
+
+- Added Lenovo China warranty lookup with normalized entitlement details,
+  longest-valid end-date selection, remaining-day display, detailed warranty
+  dialog, and schema-versioned local caching.
+- Added an explicit single-fan model declaration, initially containing
+  ThinkBook 16 G8+ IPH. Its WMI fan backend uses only `0x04030001`, while fan
+  readings, targets, limits, fixed-RPM tables, ordinary curves, advanced
+  curves, tray text, and Overview adapt to one fan without probing FAN2.
+- Added standard-keyboard `PrintScreen` discovery as a distinct Fn event
+  source so the physical Fn+F10 screenshot key can be discovered and assigned
+  when firmware does not report it through Lenovo WMI or EnergyDrv.
+
+### Changed
+
+- Fn+F10 now consistently opens Windows screen snipping through
+  `ms-screenclip:` whether Toolkit is foreground or background. WMI, EnergyDrv,
+  and standard-keyboard reports share one custom binding and are deduplicated
+  without breaking double-press actions; opening screen snipping no longer
+  shows a Toolkit OSD.
+- Warranty summaries use the latest valid entitlement end date rather than a
+  shorter base entitlement when multiple warranty products are returned.
+
+### Fixed
+
+- Fixed Follow-system dark mode leaving selectors, text fields, buttons, child
+  windows, or native title bars in the light theme. Existing controls now stay
+  connected to dynamic application styles, and the hidden fan runtime can no
+  longer overwrite the visible shell's global theme resources.
+- Fixed Fn+F10 doing nothing or taking an immediate full-screen capture while
+  Toolkit was foreground, and fixed its built-in/custom action and discovery
+  behavior differing between foreground and background.
+- Fixed dual-fan assumptions causing invalid FAN2 reads, writes, controls, and
+  labels on declared single-fan models.
+
 ## [1.0.0] - 2026-08-24
 
 ### Added
@@ -332,7 +369,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.7...v1.0.0
 [0.2.7]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.5...v0.2.6

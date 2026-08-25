@@ -1824,7 +1824,10 @@ public sealed class MainWindow : Window
         if (_trayIcon is null)
             return;
 
-        var text = $"CPU {_lastCpuText} GPU {_lastGpuText} F1 {_lastFan1Text} F2 {_lastFan2Text}";
+        var fan = DeviceModelDetector.HasSecondFan()
+            ? $"F1 {_lastFan1Text} F2 {_lastFan2Text}"
+            : $"FAN {_lastFan1Text}";
+        var text = $"CPU {_lastCpuText} GPU {_lastGpuText} {fan}";
         _trayIcon.Text = text.Length <= 63 ? text : text[..63];
     }
 
@@ -2139,11 +2142,11 @@ public sealed class MainWindow : Window
                 StringComparison.OrdinalIgnoreCase))
             .Value;
         if (fan1 is null ||
-            fan2 is null ||
+            (DeviceModelDetector.HasSecondFan() && fan2 is null) ||
             fan1.MinRpm < 0 ||
-            fan2.MinRpm < 0 ||
+            (fan2 is not null && fan2.MinRpm < 0) ||
             fan1.MaxRpm <= fan1.MinRpm ||
-            fan2.MaxRpm <= fan2.MinRpm)
+            (fan2 is not null && fan2.MaxRpm <= fan2.MinRpm))
         {
             return false;
         }
@@ -2152,8 +2155,8 @@ public sealed class MainWindow : Window
         {
             Fan1MinimumRpm = fan1.MinRpm,
             Fan1MaximumRpm = fan1.MaxRpm,
-            Fan2MinimumRpm = fan2.MinRpm,
-            Fan2MaximumRpm = fan2.MaxRpm
+            Fan2MinimumRpm = fan2?.MinRpm ?? fan1.MinRpm,
+            Fan2MaximumRpm = fan2?.MaxRpm ?? fan1.MaxRpm
         });
         return true;
     }
@@ -2860,19 +2863,23 @@ public sealed class MainWindow : Window
     {
         var effectiveMode = mode == ItsMode.Unknown ? ItsMode.Intelligent : mode;
         var limits = _settings.FanRpmLimits;
-        return new FanTargets(
-            CurveProfileStore.ClampFixedRpm(
+        var fan1 = CurveProfileStore.ClampFixedRpm(
                 GetFixedRpmValue(effectiveMode, game, 1),
                 limits.Fan1MinimumRpm,
-                limits.Fan1MaximumRpm),
-            CurveProfileStore.ClampFixedRpm(
+                limits.Fan1MaximumRpm);
+        var fan2 = DeviceModelDetector.HasSecondFan()
+            ? CurveProfileStore.ClampFixedRpm(
                 GetFixedRpmValue(effectiveMode, game, 2),
                 limits.Fan2MinimumRpm,
-                limits.Fan2MaximumRpm));
+                limits.Fan2MaximumRpm)
+            : fan1;
+        return new FanTargets(fan1, fan2);
     }
 
     private async Task ApplyFixedTargetAsync(FanTargets target)
     {
+        if (!DeviceModelDetector.HasSecondFan())
+            target = new FanTargets(target.Fan1Rpm, target.Fan1Rpm);
         var restoreAutomatic =
             target.Fan1Rpm == 0 &&
             target.Fan2Rpm == 0;
@@ -3492,7 +3499,9 @@ public sealed class MainWindow : Window
         if (target.Fan1Rpm == 0 && target.Fan2Rpm == 0)
             return T("FirmwareAuto");
 
-        return $"F1 {target.Fan1Rpm} / F2 {target.Fan2Rpm} RPM";
+        return DeviceModelDetector.HasSecondFan()
+            ? $"F1 {target.Fan1Rpm} / F2 {target.Fan2Rpm} RPM"
+            : $"{target.Fan1Rpm} RPM";
     }
 
     private string FormatGameState()
@@ -4447,7 +4456,14 @@ public sealed class MainWindow : Window
         writeInterval <= TimeSpan.FromSeconds(1);
 
     private bool IsChinese => _settings.Language != "en-US";
-    private bool IsDark => _settings.Theme == "dark";
+    // MainWindow is also used as the hidden fan/hardware runtime by the
+    // Toolkit shell. It must resolve "system" to the effective Windows app
+    // theme; treating every value other than "dark" as light would overwrite
+    // the application-wide control styles while the visible shell stayed dark.
+    private bool IsDark => ResolveDarkTheme(_settings);
+
+    internal static bool ResolveDarkTheme(AppSettings settings) =>
+        ToolkitRuntimeService.ResolveDarkTheme(settings.Theme);
 
     private string T(string key) => Translate(key, IsChinese);
 
@@ -5230,7 +5246,10 @@ public sealed class MainWindow : Window
 
     private void ApplyTheme()
     {
-        if (Application.Current is not null)
+        // In embedded mode this window is only a hidden fan/hardware runtime.
+        // The visible Toolkit shell owns application-wide UI resources; a
+        // background runtime must never replace them.
+        if (!_embeddedMode && Application.Current is not null)
             ModernTheme.Apply(Application.Current, IsDark);
 
         var background = Brush(IsDark ? "#111827" : "#ffffff");

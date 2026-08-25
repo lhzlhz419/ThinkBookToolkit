@@ -14,6 +14,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     IControlStateRefreshable
 {
     private readonly bool _coolingOnly;
+    private readonly bool _hasSecondFan;
     private readonly ComboBox _itsMode = new() { MinWidth = 190 };
     private readonly Button _performanceModeOrderSettings;
     private readonly ComboBox _gpuMode = new() { MinWidth = 210 };
@@ -96,9 +97,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
 
     public ToolkitPerformancePage(
         ToolkitRuntimeService runtime,
-        bool coolingOnly = false) : base(runtime)
+        bool coolingOnly = false,
+        bool? hasSecondFanOverride = null) : base(runtime)
     {
         _coolingOnly = coolingOnly;
+        _hasSecondFan = hasSecondFanOverride ??
+                        DeviceModelDetector.HasSecondFan();
         _modeStatus = StatusText();
         _restartNow = ActionButton(L("立即重启", "Restart now"), primary: true);
         _viewGpuApplications = ActionButton(
@@ -134,6 +138,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             runtime.IsChinese,
             runtime.IsDark,
             runtime.Settings.AdvancedFanCurve.Points);
+        _cpuCurve.SetFanCount(_hasSecondFan ? 2 : 1);
+        _gpuCurve.SetFanCount(_hasSecondFan ? 2 : 1);
+        _advancedCurve.SetFanCount(_hasSecondFan ? 2 : 1);
         ConfigureCurves();
         DataContext = new PerformanceViewModel(runtime);
         Content = BuildLayout();
@@ -210,18 +217,24 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             "#49BCE8");
         Add(
             OverviewCardIds.Fans,
-            ["fan1-speed", "fan2-speed"],
-            L("双风扇", "Dual fans"),
+            _hasSecondFan
+                ? ["fan1-speed", "fan2-speed"]
+                : ["fan1-speed"],
+            _hasSecondFan
+                ? L("双风扇", "Dual fans")
+                : L("风扇", "Fan"),
             nameof(PerformanceViewModel.CompactFans),
-            "FAN1 / FAN2",
+            _hasSecondFan ? "FAN1 / FAN2" : "RPM",
             "\uE9CA",
             "#56C2C9");
         Add(
             OverviewCardIds.Fans,
-            ["fan1-target", "fan2-target"],
+            _hasSecondFan
+                ? ["fan1-target", "fan2-target"]
+                : ["fan1-target"],
             L("转速目标", "Speed target"),
             nameof(PerformanceViewModel.CompactFanTargets),
-            "FAN1 / FAN2",
+            _hasSecondFan ? "FAN1 / FAN2" : "FAN",
             "\uE768",
             Palette.Warning);
         return Card(
@@ -510,8 +523,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         content.Children.Add(SettingRow(
             L("当使用风扇控制时，切换到", "When fan control is used, switch to"),
             L(
-                "需要切换时，确认性能模式切换成功并等待 2 秒后才启用风扇控制；固件自动和双风扇均由固件控制的固定转速不触发。",
-                "When a switch is needed, fan control starts two seconds after the performance mode is confirmed. Firmware automatic and fixed RPM with both fans firmware-controlled do not trigger it."),
+                _hasSecondFan
+                    ? "需要切换时，确认性能模式切换成功并等待 2 秒后才启用风扇控制；固件自动和双风扇均由固件控制的固定转速不触发。"
+                    : "需要切换时，确认性能模式切换成功并等待 2 秒后才启用风扇控制；固件自动和风扇由固件控制的固定转速不触发。",
+                _hasSecondFan
+                    ? "When a switch is needed, fan control starts two seconds after the performance mode is confirmed. Firmware automatic and fixed RPM with both fans firmware-controlled do not trigger it."
+                    : "When a switch is needed, fan control starts two seconds after the performance mode is confirmed. Firmware automatic and fixed RPM with the fan firmware-controlled do not trigger it."),
             _fanControlTargetMode));
 
         var whitelist = new AdaptiveUniformPanel
@@ -723,7 +740,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             Width = new GridLength(1, GridUnitType.Star),
             MinWidth = 92
         });
-        for (var index = 0; index < 4; index++)
+        for (var index = 0; index < (_hasSecondFan ? 4 : 2); index++)
         {
             table.ColumnDefinitions.Add(new ColumnDefinition
             {
@@ -734,10 +751,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         for (var index = 0; index < 5; index++)
             table.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         AddFixedHeader(table, L("模式", "Mode"), 0);
-        AddFixedHeader(table, L("普通 F1", "Normal F1"), 1);
-        AddFixedHeader(table, L("普通 F2", "Normal F2"), 2);
-        AddFixedHeader(table, L("游戏 F1", "Game F1"), 3);
-        AddFixedHeader(table, L("游戏 F2", "Game F2"), 4);
+        AddFixedHeader(table, _hasSecondFan ? L("普通 F1", "Normal F1") : L("普通", "Normal"), 1);
+        if (_hasSecondFan)
+            AddFixedHeader(table, L("普通 F2", "Normal F2"), 2);
+        AddFixedHeader(table, _hasSecondFan ? L("游戏 F1", "Game F1") : L("游戏", "Game"), _hasSecondFan ? 3 : 2);
+        if (_hasSecondFan)
+            AddFixedHeader(table, L("游戏 F2", "Game F2"), 4);
         AddFixedRow(table, 1, "PowerSaving", L("省电", "Power saving"));
         AddFixedRow(table, 2, "Intelligent", L("智能", "Intelligent"));
         AddFixedRow(table, 3, "Performance", L("性能", "Performance"));
@@ -751,9 +770,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             Padding = new Thickness(12),
             Child = table
         });
-        _syncFixed.Margin = new Thickness(0, 12, 0, 0);
-        _syncFixed.Content = L("同步固定转速下的两个风扇", "Synchronize both fans for fixed RPM");
-        _fixedPanel.Children.Add(_syncFixed);
+        if (_hasSecondFan)
+        {
+            _syncFixed.Margin = new Thickness(0, 12, 0, 0);
+            _syncFixed.Content = L("同步固定转速下的两个风扇", "Synchronize both fans for fixed RPM");
+            _fixedPanel.Children.Add(_syncFixed);
+        }
         _fixedPanel.Children.Add(new TextBlock
         {
             Text = FanZeroRpmDescription(),
@@ -796,9 +818,16 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         Grid.SetRow(block, row);
         grid.Children.Add(block);
         AddFixedBox(grid, prefix + "NormalFan1Rpm", row, 1);
-        AddFixedBox(grid, prefix + "NormalFan2Rpm", row, 2);
-        AddFixedBox(grid, prefix + "GameFan1Rpm", row, 3);
-        AddFixedBox(grid, prefix + "GameFan2Rpm", row, 4);
+        if (_hasSecondFan)
+        {
+            AddFixedBox(grid, prefix + "NormalFan2Rpm", row, 2);
+            AddFixedBox(grid, prefix + "GameFan1Rpm", row, 3);
+            AddFixedBox(grid, prefix + "GameFan2Rpm", row, 4);
+        }
+        else
+        {
+            AddFixedBox(grid, prefix + "GameFan1Rpm", row, 2);
+        }
     }
 
     private void AddFixedBox(Grid grid, string key, int row, int column)
@@ -844,7 +873,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     private void BuildCurvePanel()
     {
         AddChoice(_editFan, "Fan 1", 1);
-        AddChoice(_editFan, "Fan 2", 2);
+        if (_hasSecondFan)
+            AddChoice(_editFan, "Fan 2", 2);
         var identityContent = new Grid();
         identityContent.ColumnDefinitions.Add(new ColumnDefinition
         {
@@ -898,19 +928,22 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             Width = new GridLength(1, GridUnitType.Star)
         });
         editRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _independentCurves.Content = L(
-            "独立控制两个风扇的曲线",
-            "Control both fan curves independently");
-        _independentCurves.VerticalAlignment = VerticalAlignment.Center;
-        editRow.Children.Add(_independentCurves);
-        var editFan = CompactSetting(
-            L("选择要编辑的风扇", "Select fan to edit"),
-            _editFan);
-        editFan.MinWidth = 330;
-        editFan.HorizontalAlignment = HorizontalAlignment.Right;
-        Grid.SetColumn(editFan, 1);
-        editRow.Children.Add(editFan);
-        _curvePanel.Children.Add(editRow);
+        if (_hasSecondFan)
+        {
+            _independentCurves.Content = L(
+                "独立控制两个风扇的曲线",
+                "Control both fan curves independently");
+            _independentCurves.VerticalAlignment = VerticalAlignment.Center;
+            editRow.Children.Add(_independentCurves);
+            var editFan = CompactSetting(
+                L("选择要编辑的风扇", "Select fan to edit"),
+                _editFan);
+            editFan.MinWidth = 330;
+            editFan.HorizontalAlignment = HorizontalAlignment.Right;
+            Grid.SetColumn(editFan, 1);
+            editRow.Children.Add(editFan);
+            _curvePanel.Children.Add(editRow);
+        }
         _curvePanel.Children.Add(_cpuCurve);
         _gpuCurve.Margin = new Thickness(0, 10, 0, 0);
         _curvePanel.Children.Add(_gpuCurve);
@@ -1456,14 +1489,14 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         {
             if (_draftProfile is null) return;
             _draftProfile.CpuFan1Curve = fan1;
-            _draftProfile.CpuFan2Curve = fan2;
+            _draftProfile.CpuFan2Curve = _hasSecondFan ? fan2 : [.. fan1];
             MarkFanDirty();
         };
         _gpuCurve.ValuesChanged += (fan1, fan2) =>
         {
             if (_draftProfile is null) return;
             _draftProfile.GpuFan1Curve = fan1;
-            _draftProfile.GpuFan2Curve = fan2;
+            _draftProfile.GpuFan2Curve = _hasSecondFan ? fan2 : [.. fan1];
             MarkFanDirty();
         };
         _applyFan.Click += async (_, _) => await ApplyFanDraftAsync();
@@ -1899,25 +1932,30 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         value = new FixedRpmSettings
         {
             PowerSavingNormalFan1Rpm = values["PowerSavingNormalFan1Rpm"],
-            PowerSavingNormalFan2Rpm = values["PowerSavingNormalFan2Rpm"],
+            PowerSavingNormalFan2Rpm = Fan2("PowerSavingNormalFan1Rpm", "PowerSavingNormalFan2Rpm"),
             PowerSavingGameFan1Rpm = values["PowerSavingGameFan1Rpm"],
-            PowerSavingGameFan2Rpm = values["PowerSavingGameFan2Rpm"],
+            PowerSavingGameFan2Rpm = Fan2("PowerSavingGameFan1Rpm", "PowerSavingGameFan2Rpm"),
             IntelligentNormalFan1Rpm = values["IntelligentNormalFan1Rpm"],
-            IntelligentNormalFan2Rpm = values["IntelligentNormalFan2Rpm"],
+            IntelligentNormalFan2Rpm = Fan2("IntelligentNormalFan1Rpm", "IntelligentNormalFan2Rpm"),
             IntelligentGameFan1Rpm = values["IntelligentGameFan1Rpm"],
-            IntelligentGameFan2Rpm = values["IntelligentGameFan2Rpm"],
+            IntelligentGameFan2Rpm = Fan2("IntelligentGameFan1Rpm", "IntelligentGameFan2Rpm"),
             PerformanceNormalFan1Rpm = values["PerformanceNormalFan1Rpm"],
-            PerformanceNormalFan2Rpm = values["PerformanceNormalFan2Rpm"],
+            PerformanceNormalFan2Rpm = Fan2("PerformanceNormalFan1Rpm", "PerformanceNormalFan2Rpm"),
             PerformanceGameFan1Rpm = values["PerformanceGameFan1Rpm"],
-            PerformanceGameFan2Rpm = values["PerformanceGameFan2Rpm"],
+            PerformanceGameFan2Rpm = Fan2("PerformanceGameFan1Rpm", "PerformanceGameFan2Rpm"),
             GeekNormalFan1Rpm = values["GeekNormalFan1Rpm"],
-            GeekNormalFan2Rpm = values["GeekNormalFan2Rpm"],
+            GeekNormalFan2Rpm = Fan2("GeekNormalFan1Rpm", "GeekNormalFan2Rpm"),
             GeekGameFan1Rpm = values["GeekGameFan1Rpm"],
-            GeekGameFan2Rpm = values["GeekGameFan2Rpm"]
+            GeekGameFan2Rpm = Fan2("GeekGameFan1Rpm", "GeekGameFan2Rpm")
         };
         value = CurveProfileStore.NormalizeFixedRpmSettings(value, limits);
         error = string.Empty;
         return true;
+
+        int Fan2(string fan1Key, string fan2Key) =>
+            values.TryGetValue(fan2Key, out var fan2)
+                ? fan2
+                : values[fan1Key];
     }
 
     private void PopulateFixed(FixedRpmSettings value)

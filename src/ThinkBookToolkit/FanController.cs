@@ -20,6 +20,8 @@ public sealed class FanController
 
     public FanController()
     {
+        FanBackendRuntimeContext.DeclaredFanCount =
+            DeviceModelDetector.HasSecondFan() ? 2 : 1;
         _backend = LoadBackend();
         BackendIdentity = ComputeBackendIdentity(_backend);
     }
@@ -93,11 +95,15 @@ public sealed class FanController
     }
 
     public static (int MinRpm, int MaxRpm) SharedRange(
-        IReadOnlyDictionary<string, FanLimit> limits) =>
-        (
-            Math.Max(limits["fan1"].MinRpm, limits["fan2"].MinRpm),
-            Math.Min(limits["fan1"].MaxRpm, limits["fan2"].MaxRpm)
-        );
+        IReadOnlyDictionary<string, FanLimit> limits)
+    {
+        var fan1 = limits["fan1"];
+        if (!limits.TryGetValue("fan2", out var fan2))
+            return (fan1.MinRpm, fan1.MaxRpm);
+        return (
+            Math.Max(fan1.MinRpm, fan2.MinRpm),
+            Math.Min(fan1.MaxRpm, fan2.MaxRpm));
+    }
 
     private static IFanBackend LoadBackend()
     {

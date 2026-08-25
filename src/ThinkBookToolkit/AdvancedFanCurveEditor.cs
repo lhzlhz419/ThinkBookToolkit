@@ -14,7 +14,6 @@ internal sealed class AdvancedFanCurveEditor : Border
     private const double LabelColumnWidth = 190;
     private const double PointColumnWidth = 132;
     private static readonly double[] RowHeights = [42, 48, 48, 48, 48, 48, 48, 48, 48, 46];
-    private static readonly double TableContentHeight = RowHeights.Sum();
 
     private readonly bool _isChinese;
     private readonly ToolkitPalette _palette;
@@ -22,6 +21,10 @@ internal sealed class AdvancedFanCurveEditor : Border
     private readonly TextBlock _validation = new();
     private readonly List<PointControls> _controls = [];
     private List<AdvancedFanCurvePoint> _points;
+    private int _fanCount = 2;
+    private double TableContentHeight => RowHeights
+        .Where((_, index) => _fanCount > 1 || index != 2)
+        .Sum();
 
     public AdvancedFanCurveEditor(
         bool isChinese,
@@ -70,9 +73,25 @@ internal sealed class AdvancedFanCurveEditor : Border
 
     public event EventHandler? ValuesChanged;
 
+    public void SetFanCount(int fanCount)
+    {
+        _fanCount = fanCount > 1 ? 2 : 1;
+        if (_fanCount == 1)
+        {
+            foreach (var point in _points)
+                point.Fan2Rpm = point.Fan1Rpm;
+        }
+        RebuildTable();
+    }
+
     public void SetValues(IReadOnlyList<AdvancedFanCurvePoint> points)
     {
         _points = points.Select(AdvancedFanCurve.Clone).ToList();
+        if (_fanCount == 1)
+        {
+            foreach (var point in _points)
+                point.Fan2Rpm = point.Fan1Rpm;
+        }
         RebuildTable();
     }
 
@@ -103,8 +122,9 @@ internal sealed class AdvancedFanCurveEditor : Border
             var point = points[index];
             if (point.Fan1Rpm < limits.Fan1MinimumRpm ||
                 point.Fan1Rpm > limits.Fan1MaximumRpm ||
-                point.Fan2Rpm < limits.Fan2MinimumRpm ||
-                point.Fan2Rpm > limits.Fan2MaximumRpm)
+                (_fanCount > 1 &&
+                 (point.Fan2Rpm < limits.Fan2MinimumRpm ||
+                  point.Fan2Rpm > limits.Fan2MaximumRpm)))
             {
                 error = L(
                     $"点位 {index + 1} 的 Fan 1 转速必须位于 {limits.Fan1MinimumRpm}–{limits.Fan1MaximumRpm} RPM，Fan 2 转速必须位于 {limits.Fan2MinimumRpm}–{limits.Fan2MaximumRpm} RPM。",
@@ -152,6 +172,8 @@ internal sealed class AdvancedFanCurveEditor : Border
         ];
         for (var row = 0; row < labelTexts.Length; row++)
         {
+            if (_fanCount == 1 && row == 2)
+                continue;
             labels.Children.Add(Cell(
                 new TextBlock
                 {
@@ -230,7 +252,8 @@ internal sealed class AdvancedFanCurveEditor : Border
             0,
             index));
         grid.Children.Add(Cell(controls.Fan1, 1, index));
-        grid.Children.Add(Cell(controls.Fan2, 2, index));
+        if (_fanCount > 1)
+            grid.Children.Add(Cell(controls.Fan2, 2, index));
         grid.Children.Add(Cell(controls.CpuUp, 3, index));
         grid.Children.Add(Cell(controls.CpuDown, 4, index));
         grid.Children.Add(Cell(controls.GpuUp, 5, index));
@@ -263,11 +286,12 @@ internal sealed class AdvancedFanCurveEditor : Border
         {
             Background = Brush(_palette.Surface)
         };
-        foreach (var height in RowHeights)
+        for (var index = 0; index < RowHeights.Length; index++)
         {
             grid.RowDefinitions.Add(new RowDefinition
             {
-                Height = new GridLength(height)
+                Height = new GridLength(
+                    _fanCount == 1 && index == 2 ? 0 : RowHeights[index])
             });
         }
         return grid;
@@ -462,7 +486,7 @@ internal sealed class AdvancedFanCurveEditor : Border
         {
             var point = _controls[index];
             if (!TryInteger(point.Fan1.Text, out var fan1) ||
-                !TryInteger(point.Fan2.Text, out var fan2))
+                (_fanCount > 1 && !TryInteger(point.Fan2.Text, out _)))
             {
                 error = L(
                     $"点位 {index + 1} 的风扇转速必须是整数。",
@@ -485,7 +509,11 @@ internal sealed class AdvancedFanCurveEditor : Border
             points.Add(new AdvancedFanCurvePoint
             {
                 Fan1Rpm = fan1,
-                Fan2Rpm = fan2,
+                Fan2Rpm = _fanCount == 1
+                    ? fan1
+                    : int.Parse(
+                        point.Fan2.Text,
+                        CultureInfo.InvariantCulture),
                 CpuRampUpTemperatureC = cpuUp,
                 CpuRampDownTemperatureC = cpuDown,
                 GpuRampUpTemperatureC = gpuUp,

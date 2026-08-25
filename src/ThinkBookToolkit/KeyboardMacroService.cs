@@ -23,6 +23,7 @@ internal sealed class KeyboardMacroService : IDisposable
     private static readonly UIntPtr Magic = new(0x5442544D);
 
     private readonly AppSettings _settings;
+    private readonly Func<int, bool, bool>? _keyObserver;
     private readonly HookProc _hookProc;
     private readonly SemaphoreSlim _playGate = new(1, 1);
     private readonly CancellationTokenSource _disposeCancellation = new();
@@ -38,9 +39,12 @@ internal sealed class KeyboardMacroService : IDisposable
     private bool _recording;
     private bool _disposed;
 
-    public KeyboardMacroService(AppSettings settings)
+    public KeyboardMacroService(
+        AppSettings settings,
+        Func<int, bool, bool>? keyObserver = null)
     {
         _settings = settings;
+        _keyObserver = keyObserver;
         _hookProc = HookCallback;
     }
 
@@ -261,6 +265,17 @@ internal sealed class KeyboardMacroService : IDisposable
                 DelayMilliseconds = delay
             });
             return new IntPtr(1);
+        }
+        try
+        {
+            if (_keyObserver?.Invoke(virtualKey, isDown) == true)
+                return new IntPtr(1);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                "A global keyboard event observer failed.",
+                ex);
         }
         if (!_settings.MacroEnabled)
             return CallNextHookEx(_hook, code, message, data);

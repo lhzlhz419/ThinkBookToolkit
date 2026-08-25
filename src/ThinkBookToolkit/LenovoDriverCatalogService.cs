@@ -841,7 +841,7 @@ internal static class LenovoDriverCatalogService
             Timeout = TimeSpan.FromMinutes(30)
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd(
-            "ThinkBookToolkit/1.0.0");
+            $"ThinkBookToolkit/{ApplicationUpdateService.CurrentVersionText}");
         return client;
     }
 

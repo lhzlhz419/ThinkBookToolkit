@@ -736,7 +736,10 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             : OverviewLayoutDefaults.DetailedCardDefinitions;
         foreach (var definition in definitions)
         {
-            var displayedItems = definition.Value;
+            var displayedItems = definition.Value
+                .Where(item => DeviceModelDetector.HasSecondFan() ||
+                               item is not ("fan2-speed" or "fan2-target"))
+                .ToArray();
             var items = new StackPanel { Margin = new Thickness(28, 5, 0, 0) };
             var cardToggle = new CheckBox
             {
@@ -757,7 +760,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 }
                 SyncOverviewEditor();
             };
-            foreach (var itemId in definition.Value)
+            foreach (var itemId in displayedItems)
             {
                 var itemToggle = new CheckBox
                 {

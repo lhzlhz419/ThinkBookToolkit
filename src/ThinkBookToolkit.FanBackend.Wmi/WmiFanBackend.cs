@@ -11,6 +11,13 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
     private const uint Fan1Id = 0x04030001;
     private const uint Fan2Id = 0x04030002;
     private IReadOnlyDictionary<string, FanBackendRange>? _cachedLimits;
+    private bool? _fan2Available;
+
+    public WmiFanBackend()
+    {
+        if (FanBackendRuntimeContext.DeclaredFanCount == 1)
+            _fan2Available = false;
+    }
 
     public Version ApiVersion => FanBackendContract.CurrentVersion;
 
@@ -39,8 +46,20 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
     {
         using var other = GetActiveOtherMethod();
         var fan1 = ReadFeatureValue(other, Fan1Id);
-        var fan2 = ReadFeatureValue(other, Fan2Id);
         var limits = _cachedLimits ??= ReadFanLimits();
+        _fan2Available ??= limits.ContainsKey("fan2");
+        var fan2 = fan1;
+        if (_fan2Available == true)
+        {
+            try
+            {
+                fan2 = ReadFeatureValue(other, Fan2Id);
+            }
+            catch
+            {
+                _fan2Available = false;
+            }
+        }
         return new FanBackendSnapshot(DateTimeOffset.Now, fan1, fan2, limits);
     }
 
@@ -48,7 +67,30 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
     {
         using var other = GetActiveOtherMethod();
         SetFeatureValue(other, Fan1Id, fan1Rpm);
-        SetFeatureValue(other, Fan2Id, fan2Rpm);
+        if (_fan2Available is null)
+        {
+            try
+            {
+                var limits = _cachedLimits ??= ReadFanLimits();
+                _fan2Available = limits.ContainsKey("fan2");
+            }
+            catch
+            {
+                // Fall back to probing FAN2 once when range data is absent.
+            }
+        }
+        if (_fan2Available != false)
+        {
+            try
+            {
+                SetFeatureValue(other, Fan2Id, fan2Rpm);
+                _fan2Available = true;
+            }
+            catch when (_fan2Available is null)
+            {
+                _fan2Available = false;
+            }
+        }
     }
 
     public void RestoreAuto() => Apply(0, 0);
@@ -107,14 +149,23 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
                 var ids = ToIntArray(item["FanId"]);
                 var mins = ToIntArray(item["FanMinSpeed"]);
                 var maxes = ToIntArray(item["FanMaxSpeed"]);
-                if (ids.Length < 2 || mins.Length < 2 || maxes.Length < 2)
+                if (ids.Length < 1 || mins.Length < 1 || maxes.Length < 1)
                     break;
 
-                return new Dictionary<string, FanBackendRange>
+                var result = new Dictionary<string, FanBackendRange>
                 {
-                    ["fan1"] = new("fan1", Fan1Id, mins[0], maxes[0]),
-                    ["fan2"] = new("fan2", Fan2Id, mins[1], maxes[1])
+                    ["fan1"] = new("fan1", Fan1Id, mins[0], maxes[0])
                 };
+                if (FanBackendRuntimeContext.DeclaredFanCount > 1 &&
+                    ids.Length >= 2 && mins.Length >= 2 && maxes.Length >= 2)
+                {
+                    result["fan2"] = new(
+                        "fan2",
+                        Fan2Id,
+                        mins[1],
+                        maxes[1]);
+                }
+                return result;
             }
         }
 

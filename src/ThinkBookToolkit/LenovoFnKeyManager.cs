@@ -48,6 +48,13 @@ internal enum LenovoFnKeyEventSource
     UtilityEvent
 }
 
+internal enum ScreenSnippingEventSource
+{
+    EnergyDriver,
+    UtilityEvent,
+    StandardKeyboard
+}
+
 internal sealed class LenovoFnKeyManager : IDisposable
 {
     private readonly ToolkitRuntimeService _runtime;
@@ -59,6 +66,9 @@ internal sealed class LenovoFnKeyManager : IDisposable
     private readonly object _mirrorGate = new();
     private long _lastMicrophoneDriverTick;
     private long _lastRefreshRateEventTick;
+    private long _lastScreenSnippingEventTick;
+    private ScreenSnippingEventSource _lastScreenSnippingEventSource;
+    private bool _standardPrintScreenDown;
     private int _hotkeysDisabledByToolkit;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>>
         _pendingPresses = new(StringComparer.OrdinalIgnoreCase);
@@ -214,6 +224,12 @@ internal sealed class LenovoFnKeyManager : IDisposable
         {
             if (!value.HasFlag(key))
                 continue;
+            if (key == LenovoDriverKey.FnF10 &&
+                !TryClaimScreenSnippingEvent(
+                    ScreenSnippingEventSource.EnergyDriver))
+            {
+                continue;
+            }
             var keyId = DriverKeyBindingId(key);
             if (keyId.Length > 0 && await TryRunCustomFnAsync(keyId))
                 continue;
@@ -226,7 +242,7 @@ internal sealed class LenovoFnKeyManager : IDisposable
                     await NotifyKeyboardBacklightAsync();
                     break;
                 case LenovoDriverKey.FnF10:
-                    await NotifyTouchpadAsync(toggle: false);
+                    OpenScreenSnippingTool();
                     break;
                 case LenovoDriverKey.FnF4:
                     ToggleMicrophone();
@@ -269,12 +285,24 @@ internal sealed class LenovoFnKeyManager : IDisposable
             return;
         }
 
+        var screenSnippingKey = key is
+            LenovoSpecialKey.FnPrtSc or LenovoSpecialKey.FnPrtSc2;
+        if (screenSnippingKey &&
+            !TryClaimScreenSnippingEvent(
+                ScreenSnippingEventSource.UtilityEvent))
+            return;
+
         if (await TryRunCustomFnAsync(discoveredKeyId))
             return;
 
         var keyId = SpecialKeyBindingId(key);
         if (keyId.Length > 0 && await TryRunCustomFnAsync(keyId))
             return;
+        if (screenSnippingKey &&
+            await TryRunCustomFnAsync(FnAutomationKeyIds.PrintScreen))
+        {
+            return;
+        }
 
         switch (key)
         {
@@ -296,15 +324,7 @@ internal sealed class LenovoFnKeyManager : IDisposable
                 break;
             case LenovoSpecialKey.FnPrtSc:
             case LenovoSpecialKey.FnPrtSc2:
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "explorer.exe",
-                    Arguments = "ms-screenclip:",
-                    UseShellExecute = true
-                });
-                _runtime.ShowFnKeyNotification(
-                    _runtime.L("屏幕截图", "Screen snipping"),
-                    "Fn + PrtSc");
+                OpenScreenSnippingTool();
                 break;
             case LenovoSpecialKey.FnF8ThinkBook:
                 await NotifyTouchpadAsync(toggle: true);
@@ -353,7 +373,7 @@ internal sealed class LenovoFnKeyManager : IDisposable
             LenovoSpecialKey.FnLockOn or LenovoSpecialKey.FnLockOff =>
                 FnAutomationKeyIds.FnLock,
             LenovoSpecialKey.FnPrtSc or LenovoSpecialKey.FnPrtSc2 =>
-                FnAutomationKeyIds.PrintScreen,
+                FnAutomationKeyIds.FnF10,
             LenovoSpecialKey.FnF8ThinkBook => FnAutomationKeyIds.Touchpad,
             LenovoSpecialKey.FnR or LenovoSpecialKey.FnR2 =>
                 FnAutomationKeyIds.RefreshRate,
@@ -438,6 +458,114 @@ internal sealed class LenovoFnKeyManager : IDisposable
                     ? _runtime.L("已开启", "On")
                     : _runtime.L("已关闭", "Off"));
     }
+
+    /// <summary>
+    /// Some ThinkBook firmware exposes the physical Fn+F10 screenshot key as
+    /// a normal VK_SNAPSHOT only while Toolkit owns the foreground window.
+    /// Feed that path into the same Fn pipeline used by Lenovo WMI events and
+    /// consume it so Windows does not take an immediate full-screen capture.
+    /// </summary>
+    internal bool HandleStandardKeyboardEvent(int virtualKey, bool isDown)
+    {
+        const int vkSnapshot = 0x2C;
+        if (virtualKey != vkSnapshot || !_running)
+            return false;
+
+        var shouldDispatch = false;
+        lock (_mirrorGate)
+        {
+            if (isDown)
+            {
+                if (!_standardPrintScreenDown)
+                {
+                    _standardPrintScreenDown = true;
+                    shouldDispatch = true;
+                }
+            }
+            else
+            {
+                _standardPrintScreenDown = false;
+            }
+        }
+
+        if (!shouldDispatch)
+            return true;
+
+        PublishDiscovery(
+            vkSnapshot,
+            "KEYBOARD",
+            "Fn + F10 / PrintScreen");
+        if (!DiscoveryMode && TryClaimScreenSnippingEvent(
+                ScreenSnippingEventSource.StandardKeyboard))
+            _ = HandleScreenSnippingKeyAsync();
+        return true;
+    }
+
+    private async Task HandleScreenSnippingKeyAsync()
+    {
+        try
+        {
+            if (await TryRunCustomFnAsync(FnAutomationKeyIds.FnF10))
+                return;
+            // Preserve bindings saved by builds which exposed this physical
+            // key as the separate Fn+PrtSc entry.
+            if (await TryRunCustomFnAsync(FnAutomationKeyIds.PrintScreen))
+                return;
+            OpenScreenSnippingTool();
+            _runtime.NotifyControlStateChanged();
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                "The standard PrintScreen Fn-key path failed.",
+                ex);
+        }
+    }
+
+    private bool TryClaimScreenSnippingEvent(
+        ScreenSnippingEventSource source)
+    {
+        lock (_mirrorGate)
+        {
+            var now = Environment.TickCount64;
+            // A single physical key can be reported by the keyboard hook and
+            // a Lenovo event listener. Suppress only that cross-channel mirror;
+            // repeated presses from the same channel must remain available for
+            // user-configured double-press actions.
+            if (source != _lastScreenSnippingEventSource &&
+                now - _lastScreenSnippingEventTick < 250)
+                return false;
+            _lastScreenSnippingEventTick = now;
+            _lastScreenSnippingEventSource = source;
+            return true;
+        }
+    }
+
+    private void OpenScreenSnippingTool()
+    {
+        try
+        {
+            Process.Start(CreateScreenSnippingStartInfo());
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error(
+                "The Windows screen-snipping tool could not be opened.",
+                ex);
+            _runtime.SetStatus(
+                _runtime.L(
+                    "无法打开 Windows 截图工具：",
+                    "Could not open Windows screen snipping: ") +
+                ex.GetBaseException().Message);
+        }
+    }
+
+    internal static ProcessStartInfo CreateScreenSnippingStartInfo() => new()
+    {
+        FileName = "explorer.exe",
+        Arguments = "ms-screenclip:",
+        UseShellExecute = true
+    };
 
     private async Task NotifyKeyboardBacklightAsync()
     {

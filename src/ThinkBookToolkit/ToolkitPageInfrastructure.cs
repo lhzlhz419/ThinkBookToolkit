@@ -372,19 +372,28 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             "disk-temperatures",
             nameof(HardwareMonitorViewModel.StorageHealthMetrics),
             "disk-health")), layout);
+        var fanSpeedRows = new List<MonitorRow>
+        {
+            new(L("风扇转速", "Fan speed"), nameof(HardwareMonitorViewModel.Fan1Speed), ItemId: "fan1-speed")
+        };
+        var fanTargetRows = new List<MonitorRow>
+        {
+            new(L("转速目标", "Speed target"), nameof(HardwareMonitorViewModel.Fan1Target), ItemId: "fan1-target")
+        };
+        if (DeviceModelDetector.HasSecondFan())
+        {
+            fanSpeedRows[0] = new(L("风扇1转速", "Fan 1 speed"), nameof(HardwareMonitorViewModel.Fan1Speed), ItemId: "fan1-speed");
+            fanSpeedRows.Add(new(L("风扇2转速", "Fan 2 speed"), nameof(HardwareMonitorViewModel.Fan2Speed), ItemId: "fan2-speed"));
+            fanTargetRows[0] = new(L("风扇1目标", "Fan 1 target"), nameof(HardwareMonitorViewModel.Fan1Target), ItemId: "fan1-target");
+            fanTargetRows.Add(new(L("风扇2目标", "Fan 2 target"), nameof(HardwareMonitorViewModel.Fan2Target), ItemId: "fan2-target"));
+        }
         Add(OverviewCardIds.Fans, HardwareMonitorCard(
             L("风扇", "Fans"),
             null,
             new MonitorSection(L("风扇转速", "Fan speed"),
-            [
-                new(L("风扇1转速", "Fan 1 speed"), nameof(HardwareMonitorViewModel.Fan1Speed), ItemId: "fan1-speed"),
-                new(L("风扇2转速", "Fan 2 speed"), nameof(HardwareMonitorViewModel.Fan2Speed), ItemId: "fan2-speed")
-            ]),
+                fanSpeedRows),
             new MonitorSection(L("转速目标", "Speed target"),
-            [
-                new(L("风扇1目标", "Fan 1 target"), nameof(HardwareMonitorViewModel.Fan1Target), ItemId: "fan1-target"),
-                new(L("风扇2目标", "Fan 2 target"), nameof(HardwareMonitorViewModel.Fan2Target), ItemId: "fan2-target")
-            ])), layout);
+                fanTargetRows)), layout);
         if (layout is not null && includeOverviewExtras)
         {
             Add(OverviewCardIds.Power, HardwareMonitorCard(

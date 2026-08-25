@@ -96,11 +96,12 @@ internal static class FnAutomationKeyIds
 
     public static string FromDiscovered(string channel, int code)
     {
-        var source = channel.Equals(
-            "IOCTL",
-            StringComparison.OrdinalIgnoreCase)
-            ? "ioctl"
-            : "wmi";
+        var source = channel.ToUpperInvariant() switch
+        {
+            "IOCTL" => "ioctl",
+            "KEYBOARD" => "keyboard",
+            _ => "wmi"
+        };
         return $"{CustomPrefix}{source}-{unchecked((uint)code):X8}";
     }
 
@@ -122,7 +123,8 @@ internal static class FnAutomationKeyIds
             return false;
         var source = remainder[..separator];
         if (!source.Equals("wmi", StringComparison.OrdinalIgnoreCase) &&
-            !source.Equals("ioctl", StringComparison.OrdinalIgnoreCase))
+            !source.Equals("ioctl", StringComparison.OrdinalIgnoreCase) &&
+            !source.Equals("keyboard", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }

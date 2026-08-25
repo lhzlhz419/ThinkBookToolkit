@@ -67,6 +67,8 @@ internal static class Program
         VerifyRefreshRatePreferences();
         VerifyApplicationUpdateService();
         VerifyApplicationDisclaimer();
+        VerifyThemeReapplication();
+        VerifyWarrantyAndSingleFanModels();
         VerifyAutomationContracts();
         VerifyFeatureAvailabilityDiagnostics();
         VerifyDriverUpdateContracts();
@@ -89,7 +91,7 @@ internal static class Program
         using var runtime = new ToolkitRuntimeService(settings);
         ModernTheme.Apply(Application.Current, runtime.IsDark);
         var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false);
-        Assert(window.Title == "ThinkBook Toolkit v1.0.0",
+        Assert(window.Title == "ThinkBook Toolkit v1.0.1",
             "The native title bar does not show the current application version.");
         runtime.SetReportForTesting(CreateReport(_ => true));
         runtime.SetSnapshotForTesting(runtime.Snapshot with
@@ -186,7 +188,7 @@ internal static class Program
         using (var versionSettingsPage = new ToolkitSettingsPage(runtime))
         {
             Assert(ContainsText(versionSettingsPage, "当前版本") &&
-                   ContainsText(versionSettingsPage, "v1.0.0") &&
+                   ContainsText(versionSettingsPage, "v1.0.1") &&
                    ContainsButtonText(versionSettingsPage, "检查更新") &&
                    ContainsText(versionSettingsPage, "软件更新检查") &&
                    ContainsText(versionSettingsPage, "自定义游戏检测路径"),
@@ -211,10 +213,10 @@ internal static class Program
             applyUpdateResult.Invoke(versionSettingsPage,
             [
                 new ApplicationRelease(
-                    new Version(1, 0, 0),
-                    "v1.0.0",
+                    new Version(1, 0, 1),
+                    "v1.0.1",
                     new Uri(
-                        "https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.0.0"))
+                        "https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.0.1"))
             ]);
             Assert(GetPrivateField<TextBlock>(
                        versionSettingsPage,
@@ -1812,6 +1814,58 @@ internal static class Program
         window.Close();
     }
 
+    private static void VerifyThemeReapplication()
+    {
+        var systemThemeSettings = new AppSettings { Theme = "system" };
+        Assert(
+            MainWindow.ResolveDarkTheme(systemThemeSettings) ==
+            ToolkitRuntimeService.ResolveDarkTheme("system"),
+            "The embedded fan runtime does not resolve Follow-system to the effective Windows application theme.");
+
+        ModernTheme.Apply(Application.Current, isDark: false);
+        var selector = new ComboBox();
+        selector.Items.Add(new ComboBoxItem { Content = "Theme" });
+        var input = new TextBox { Text = "Theme" };
+        var root = new StackPanel();
+        root.Children.Add(selector);
+        root.Children.Add(input);
+        var window = new Window { Content = root };
+
+        ModernTheme.RefreshWindow(window, isDark: false);
+        var lightStyle = selector.Style;
+        Assert(
+            selector.Background is SolidColorBrush lightBackground &&
+            lightBackground.Color ==
+            (Color)ColorConverter.ConvertFromString(
+                ToolkitPalette.For(isDark: false).SurfaceRaised),
+            "The light selector theme was not applied before the system-theme transition.");
+
+        ModernTheme.Apply(Application.Current, isDark: true);
+        ModernTheme.RefreshWindow(window, isDark: true);
+        Assert(
+            selector.Background is SolidColorBrush darkBackground &&
+            darkBackground.Color ==
+            (Color)ColorConverter.ConvertFromString(
+                ToolkitPalette.For(isDark: true).SurfaceRaised),
+            "An existing selector retained its light background after switching to the system dark theme.");
+        Assert(
+            selector.Foreground is SolidColorBrush darkForeground &&
+            darkForeground.Color ==
+            (Color)ColorConverter.ConvertFromString(
+                ToolkitPalette.For(isDark: true).Text),
+            "An existing selector retained its light foreground after switching to the system dark theme.");
+        Assert(!ReferenceEquals(lightStyle, selector.Style),
+            "The selector did not resolve the replacement dark application style.");
+        Assert(
+            input.Background is SolidColorBrush inputBackground &&
+            inputBackground.Color ==
+            (Color)ColorConverter.ConvertFromString(
+                ToolkitPalette.For(isDark: true).SurfaceRaised),
+            "An existing text box retained its light theme after switching to system dark.");
+
+        window.Content = null;
+    }
+
     private static void VerifyFanBackendStartupNotice()
     {
         var chinese = new FanBackendStartupNoticeText(
@@ -2870,7 +2924,7 @@ internal static class Program
 
     private static void VerifyApplicationUpdateService()
     {
-        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.0",
+        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.1",
             "The application version is not the expected release version.");
         var release = ApplicationUpdateService.ParseReleaseJson(
             "{\"tag_name\":\"v1.1.0\",\"html_url\":" +
@@ -3001,6 +3055,8 @@ internal static class Program
                    LenovoDriverKey.FnQ) == FnAutomationKeyIds.FnQ &&
                LenovoFnKeyManager.DriverKeyBindingId(
                    LenovoDriverKey.FnF4) == FnAutomationKeyIds.FnF4 &&
+               LenovoFnKeyManager.DriverKeyBindingId(
+                   LenovoDriverKey.FnF10) == FnAutomationKeyIds.FnF10 &&
                LenovoFnKeyManager.SpecialKeyBindingId(
                    LenovoSpecialKey.FnF8ThinkBook) ==
                    FnAutomationKeyIds.Touchpad &&
@@ -3008,10 +3064,22 @@ internal static class Program
                    LenovoSpecialKey.FnR) ==
                    FnAutomationKeyIds.RefreshRate &&
                LenovoFnKeyManager.SpecialKeyBindingId(
+                   LenovoSpecialKey.FnPrtSc) ==
+                   FnAutomationKeyIds.FnF10 &&
+               LenovoFnKeyManager.SpecialKeyBindingId(
                    LenovoSpecialKey.CameraOn) == string.Empty &&
                LenovoFnKeyManager.DoublePressInterval ==
                    TimeSpan.FromMilliseconds(300),
             "Fn-key automation bindings do not preserve defaults or reject stale mappings.");
+        var screenSnipping =
+            LenovoFnKeyManager.CreateScreenSnippingStartInfo();
+        Assert(
+            screenSnipping.FileName.Equals(
+                "explorer.exe",
+                StringComparison.OrdinalIgnoreCase) &&
+            screenSnipping.Arguments == "ms-screenclip:" &&
+            screenSnipping.UseShellExecute,
+            "Fn+F10 and the Lenovo screen-snipping event do not use the Windows screen-snipping URI.");
         var discoveredWmi = new FnKeyDiscoveredInfo(
             0x1234,
             "WMI",
@@ -3039,6 +3107,22 @@ internal static class Program
                    out var customAutomationId) &&
                customAutomationId == normalized[0].Id,
             "Discovered Fn keys are not stored distinctly by event source or accepted by automation bindings.");
+        var discoveredKeyboard = discoveredWmi with
+        {
+            Channel = "KEYBOARD",
+            Code = 0x2C,
+            Name = "Fn + F10 / PrintScreen"
+        };
+        Assert(
+            discoveredKeyboard.BindingId != discoveredWmi.BindingId &&
+            discoveredKeyboard.BindingId != discoveredDriver.BindingId &&
+            FnAutomationKeyIds.TryGetCustomDetails(
+                discoveredKeyboard.BindingId,
+                out var keyboardChannel,
+                out var keyboardCode) &&
+            keyboardChannel == "KEYBOARD" &&
+            keyboardCode == 0x2C,
+            "Standard-keyboard Fn+F10 events cannot be discovered or saved independently.");
 
         using var runtime = new ToolkitRuntimeService(new AppSettings
         {
@@ -3422,6 +3506,109 @@ internal static class Program
         {
             gameWindow.Close();
         }
+    }
+
+    private static void VerifyWarrantyAndSingleFanModels()
+    {
+        const string warrantyJson = """
+        {
+          "statusCode": 200,
+          "message": "success",
+          "data": {
+            "baseinfo": [
+              { "ServiceProductName": "No start", "EndDate": "2035-01-01" }
+            ],
+            "detailinfo": {
+              "warranty": [
+                {
+                  "ServiceProductName": "基础保修服务",
+                  "ServiceProductNumber": "BASE",
+                  "StartDate": "2025-11-22",
+                  "EndDate": "2027-01-05"
+                }
+              ],
+              "onsite": [],
+              "other": [
+                {
+                  "ServiceProductName": "一诺闪修服务",
+                  "ServiceProductNumber": "FLASH",
+                  "StartDate": "2025-11-22",
+                  "EndDate": "2031-03-05",
+                  "PartStartDate": "2025-11-22 00:00:00",
+                  "PartEndDate": "2031-03-05 00:00:00"
+                },
+                {
+                  "ServiceProductName": "空日期服务",
+                  "StartDate": "",
+                  "EndDate": ""
+                }
+              ]
+            }
+          }
+        }
+        """;
+        var warranty = WarrantyService.ParseChinaWarranty(warrantyJson);
+        Assert(warranty.StartDate == new DateOnly(2025, 11, 22) &&
+               warranty.EndDate == new DateOnly(2031, 3, 5) &&
+               warranty.Entitlements.Count == 2 &&
+               warranty.Entitlements.All(item =>
+                   item.StartDate < item.EndDate) &&
+               warranty.Entitlements.All(item =>
+                   item.Name != "空日期服务"),
+            "Lenovo China warranty parsing does not select the longest valid coverage or filter empty dates.");
+        var snapshot = WarrantySnapshot.FromDates(
+            warranty.StartDate,
+            warranty.EndDate,
+            entitlements: warranty.Entitlements);
+        using (var runtime = new ToolkitRuntimeService(new AppSettings
+               {
+                   Language = "zh-CN",
+                   Theme = "dark"
+               }))
+        {
+            var details = new WarrantyDetailsWindow(runtime, snapshot);
+            try
+            {
+                Assert(ContainsText(details, "2031-03-05") &&
+                       ContainsText(details, "一诺闪修服务") &&
+                       !ContainsText(details, "空日期服务"),
+                    "The warranty details window omits valid services or shows entries with empty dates.");
+            }
+            finally
+            {
+                details.Close();
+            }
+        }
+
+        Assert(DeviceModelDetector.SingleFanModels.SequenceEqual([
+                   DeviceModelDetector.ThinkBook16G8PlusIph
+               ]) &&
+               !DeviceModelDetector.HasSecondFan(
+                   DeviceModelDetector.ThinkBook16G8PlusIph) &&
+               DeviceModelDetector.HasSecondFan(
+                   DeviceModelDetector.ThinkBook16pG6Iax),
+            "The ThinkBook 16 G8+ IPH single-fan topology is incorrect.");
+        using var singleFanRuntime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark"
+        });
+        singleFanRuntime.SetReportForTesting(CreateReport(id =>
+            id is FeatureIds.FanControl or FeatureIds.TemperatureMonitoring));
+        using var cooling = new ToolkitPerformancePage(
+            singleFanRuntime,
+            coolingOnly: true,
+            hasSecondFanOverride: false);
+        var editFan = GetPrivateField<ComboBox>(cooling, "_editFan");
+        var fixedBoxes = GetPrivateField<Dictionary<string, TextBox>>(
+            cooling,
+            "_fixedBoxes");
+        Assert(editFan.Items.Count == 1 &&
+               fixedBoxes.Count == 8 &&
+               !ContainsText(cooling, "双风扇") &&
+               !ContainsText(cooling, "Fan 2") &&
+               !ContainsText(cooling, "FAN2"),
+            "Single-fan cooling UI still exposes dual-fan controls or labels.");
     }
 
     private static void VerifyDriverUpdateContracts()

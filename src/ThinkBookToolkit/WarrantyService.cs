@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -31,11 +32,21 @@ internal sealed record WarrantySnapshot(
     bool IsStale,
     string? Error)
 {
+    public IReadOnlyList<WarrantyEntitlement> Entitlements { get; init; } = [];
+
+    public int RemainingDays => EndDate.HasValue
+        ? Math.Max(
+            0,
+            EndDate.Value.DayNumber -
+            DateOnly.FromDateTime(DateTime.Now).DayNumber)
+        : 0;
+
     public static WarrantySnapshot FromDates(
         DateOnly startDate,
         DateOnly endDate,
         bool isStale = false,
-        string? error = null)
+        string? error = null,
+        IReadOnlyList<WarrantyEntitlement>? entitlements = null)
     {
         var today = DateOnly.FromDateTime(DateTime.Now);
         var state = today < startDate
@@ -45,7 +56,10 @@ internal sealed record WarrantySnapshot(
                 : WarrantyState.InWarranty;
 
         var progress = CalculateProgress(startDate, endDate, today);
-        return new(startDate, endDate, state, progress, isStale, error);
+        return new(startDate, endDate, state, progress, isStale, error)
+        {
+            Entitlements = entitlements ?? []
+        };
     }
 
     public static WarrantySnapshot Unavailable(string? error = null) =>
@@ -73,10 +87,25 @@ internal sealed record WarrantySnapshot(
     }
 }
 
+internal sealed record WarrantyEntitlement(
+    string Category,
+    string Name,
+    string ProductNumber,
+    DateOnly StartDate,
+    DateOnly EndDate,
+    string SmallClass,
+    string Remark,
+    DateOnly? PartStartDate,
+    DateOnly? PartEndDate,
+    DateOnly? LaborStartDate,
+    DateOnly? LaborEndDate,
+    DateOnly? OnSiteStartDate,
+    DateOnly? OnSiteEndDate);
+
 internal static class WarrantyService
 {
-    private const string BaiyingWarrantyEndpoint =
-        "https://paas.lenovo.com.cn/qrcode-server/account/getSnInfo?sn=";
+    private const string ChinaWarrantyEndpoint =
+        "https://newsupport.lenovo.com.cn/api/drive/";
 
     private const string LenovoSupportWarrantyEndpoint =
         "https://supportapi.lenovo.com/v2.5/warranty?serial=";
@@ -92,6 +121,7 @@ internal static class WarrantyService
     };
 
     private static readonly HttpClient HttpClient = CreateHttpClient();
+    private static readonly SemaphoreSlim QueryGate = new(1, 1);
 
     private static string CachePath
     {
@@ -106,6 +136,20 @@ internal static class WarrantyService
     }
 
     public static async Task<WarrantySnapshot> GetWarrantyAsync(
+        CancellationToken cancellationToken)
+    {
+        await QueryGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await GetWarrantyCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            QueryGate.Release();
+        }
+    }
+
+    private static async Task<WarrantySnapshot> GetWarrantyCoreAsync(
         CancellationToken cancellationToken)
     {
         string serialNumber;
@@ -136,27 +180,37 @@ internal static class WarrantyService
                                 StringComparison.OrdinalIgnoreCase) &&
                             cached.TryGetDates(out _, out _);
 
-        if (matchingCache && cached!.IsFromToday())
+        if (matchingCache &&
+            cached!.IsFromToday() &&
+            cached.SchemaVersion >= 2)
         {
             cached.TryGetDates(out var cachedStart, out var cachedEnd);
-            return WarrantySnapshot.FromDates(cachedStart, cachedEnd);
+            return WarrantySnapshot.FromDates(
+                cachedStart,
+                cachedEnd,
+                entitlements: cached.Entitlements ?? []);
         }
 
         try
         {
-            var (startDate, endDate) = await FetchWarrantyAsync(
+            var result = await FetchWarrantyAsync(
                 serialNumber,
                 cancellationToken);
             await SaveCacheAsync(
                 new WarrantyCacheEntry
                 {
+                    SchemaVersion = 2,
                     SerialHash = serialHash,
-                    StartDate = startDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                    EndDate = endDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    StartDate = result.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    EndDate = result.EndDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    Entitlements = result.Entitlements.ToList(),
                     StoredAtUtc = DateTimeOffset.UtcNow
                 },
                 cancellationToken);
-            return WarrantySnapshot.FromDates(startDate, endDate);
+            return WarrantySnapshot.FromDates(
+                result.StartDate,
+                result.EndDate,
+                entitlements: result.Entitlements);
         }
         catch (OperationCanceledException)
         {
@@ -171,7 +225,8 @@ internal static class WarrantyService
                     cachedStart,
                     cachedEnd,
                     isStale: true,
-                    error: ex.Message);
+                    error: ex.Message,
+                    entitlements: cached.Entitlements ?? []);
             }
 
             return WarrantySnapshot.Unavailable(ex.Message);
@@ -198,15 +253,15 @@ internal static class WarrantyService
         return client;
     }
 
-    private static async Task<(DateOnly StartDate, DateOnly EndDate)>
+    private static async Task<WarrantyQueryResult>
         FetchWarrantyAsync(
             string serialNumber,
             CancellationToken cancellationToken)
     {
-        Exception? baiyingError = null;
+        Exception? chinaError = null;
         try
         {
-            return await FetchBaiyingWarrantyAsync(
+            return await FetchChinaWarrantyAsync(
                 serialNumber,
                 cancellationToken);
         }
@@ -216,14 +271,18 @@ internal static class WarrantyService
         }
         catch (Exception ex)
         {
-            baiyingError = ex;
+            chinaError = ex;
+            ToolkitLog.Warning(
+                "Lenovo China warranty query failed: " + ex.Message);
         }
 
         try
         {
-            return await FetchLenovoSupportWarrantyAsync(
+            var dates = await FetchLenovoSupportWarrantyAsync(
                 serialNumber,
                 cancellationToken);
+            ToolkitLog.Info("Warranty information loaded from Lenovo Support API.");
+            return new WarrantyQueryResult(dates.StartDate, dates.EndDate, []);
         }
         catch (OperationCanceledException)
         {
@@ -233,24 +292,20 @@ internal static class WarrantyService
         {
             throw new InvalidOperationException(
                 "Lenovo did not return warranty information for this device. " +
-                $"Baiying: {baiyingError.Message} Support: {supportError.Message}");
+                $"China: {chinaError.Message} Support: {supportError.Message}");
         }
     }
 
-    private static async Task<(DateOnly StartDate, DateOnly EndDate)>
-        FetchBaiyingWarrantyAsync(
-            string serialNumber,
-            CancellationToken cancellationToken)
+    private static async Task<WarrantyQueryResult>
+        FetchChinaWarrantyAsync(
+        string serialNumber,
+        CancellationToken cancellationToken)
     {
         var uri = new Uri(
-            BaiyingWarrantyEndpoint +
+            ChinaWarrantyEndpoint +
             Uri.EscapeDataString(serialNumber.Trim()) +
-            "&userAuth=");
+            "/drivewarrantyinfo");
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        request.Headers.Referrer = new Uri("https://iknow.lenovo.com.cn/");
-        request.Headers.TryAddWithoutValidation(
-            "Origin",
-            "https://iknow.lenovo.com.cn");
 
         using var response = await HttpClient.SendAsync(
             request,
@@ -258,37 +313,110 @@ internal static class WarrantyService
             cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        await using var stream = await response.Content.ReadAsStreamAsync(
-            cancellationToken);
-        using var document = await JsonDocument.ParseAsync(
-            stream,
-            cancellationToken: cancellationToken);
-        var root = document.RootElement;
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var result = ParseChinaWarranty(json);
+        ToolkitLog.Info(
+            $"Warranty information loaded from Lenovo China API: " +
+            $"entitlements={result.Entitlements.Count}; " +
+            $"end={result.EndDate:yyyy-MM-dd}.");
+        return result;
+    }
 
-        if (!TryGetProperty(root, "data", out var data) ||
+    internal static WarrantyQueryResult ParseChinaWarranty(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (!TryGetProperty(root, "statusCode", out var status) ||
+            !status.TryGetInt32(out var statusCode) ||
+            statusCode != 200 ||
+            !TryGetProperty(root, "data", out var data) ||
             data.ValueKind != JsonValueKind.Object)
         {
-            var message = TryGetProperty(root, "message", out var error)
-                ? error.GetString()
-                : null;
             throw new InvalidOperationException(
-                string.IsNullOrWhiteSpace(message)
-                    ? "Baiying returned an invalid response."
-                    : message);
+                "Lenovo China did not return valid warranty data.");
         }
 
-        if (!TryGetProperty(data, "warrantyStartDate", out var startValue) ||
-            !TryGetProperty(data, "warrantyEndDate", out var endValue) ||
-            !TryParseDate(startValue.GetString(), out var startDate) ||
-            !TryParseDate(endValue.GetString(), out var endDate) ||
-            startDate >= endDate)
+        var items = new List<WarrantyEntitlement>();
+        AddEntitlements(items, data, "baseinfo", "Base");
+        if (TryGetProperty(data, "detailinfo", out var detail))
         {
-            throw new InvalidOperationException(
-                "Baiying did not return a valid warranty period.");
+            AddEntitlements(items, detail, "warranty", "Warranty");
+            AddEntitlements(items, detail, "onsite", "On-site");
+            AddEntitlements(items, detail, "other", "Other");
         }
-
-        return (startDate, endDate);
+        var distinct = items
+            .DistinctBy(item => new
+            {
+                item.Name,
+                item.ProductNumber,
+                item.StartDate,
+                item.EndDate
+            })
+            .OrderBy(item => item.StartDate)
+            .ThenBy(item => item.EndDate)
+            .ToArray();
+        if (distinct.Length == 0)
+            throw new InvalidOperationException(
+                "Lenovo China returned no warranty item with valid start and end dates.");
+        return new WarrantyQueryResult(
+            distinct.Min(item => item.StartDate),
+            distinct.Max(item => item.EndDate),
+            distinct);
     }
+
+    private static void AddEntitlements(
+        ICollection<WarrantyEntitlement> target,
+        JsonElement parent,
+        string property,
+        string category)
+    {
+        if (!TryGetProperty(parent, property, out var values) ||
+            values.ValueKind != JsonValueKind.Array)
+            return;
+        foreach (var value in values.EnumerateArray())
+        {
+            if (!TryReadDate(value, "StartDate", out var start) ||
+                !TryReadDate(value, "EndDate", out var end) ||
+                start >= end)
+                continue;
+            target.Add(new WarrantyEntitlement(
+                category,
+                Text(value, "ServiceProductName"),
+                Text(value, "ServiceProductNumber"),
+                start,
+                end,
+                Text(value, "ServiceProductSmallClass"),
+                Text(value, "Remark"),
+                OptionalDate(value, "PartStartDate"),
+                OptionalDate(value, "PartEndDate"),
+                OptionalDate(value, "LaborStartDate"),
+                OptionalDate(value, "LaborEndDate"),
+                OptionalDate(value, "OnSiteStartDate"),
+                OptionalDate(value, "OnSiteEndDate")));
+        }
+    }
+
+    private static string Text(JsonElement value, string property) =>
+        TryGetProperty(value, property, out var item) &&
+        item.ValueKind == JsonValueKind.String
+            ? item.GetString()?.Trim() ?? string.Empty
+            : string.Empty;
+
+    private static bool TryReadDate(
+        JsonElement value,
+        string property,
+        out DateOnly date)
+    {
+        date = default;
+        return TryGetProperty(value, property, out var item) &&
+               item.ValueKind == JsonValueKind.String &&
+               TryParseDate(item.GetString(), out date);
+    }
+
+    private static DateOnly? OptionalDate(
+        JsonElement value,
+        string property) =>
+        TryReadDate(value, property, out var date) ? date : null;
 
     private static async Task<(DateOnly StartDate, DateOnly EndDate)>
         FetchLenovoSupportWarrantyAsync(
@@ -560,10 +688,12 @@ internal static class WarrantyService
 
     private sealed class WarrantyCacheEntry
     {
+        public int SchemaVersion { get; set; }
         public string SerialHash { get; set; } = string.Empty;
         public string StartDate { get; set; } = string.Empty;
         public string EndDate { get; set; } = string.Empty;
         public DateTimeOffset StoredAtUtc { get; set; }
+        public List<WarrantyEntitlement> Entitlements { get; set; } = [];
 
         public bool IsFromToday() =>
             StoredAtUtc.ToLocalTime().Date == DateTimeOffset.Now.Date;
@@ -587,4 +717,9 @@ internal static class WarrantyService
             startDate < endDate;
         }
     }
+
+    internal sealed record WarrantyQueryResult(
+        DateOnly StartDate,
+        DateOnly EndDate,
+        IReadOnlyList<WarrantyEntitlement> Entitlements);
 }

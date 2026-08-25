@@ -106,13 +106,19 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             "#49BCE8");
         Add(
             OverviewCardIds.Fans,
-            ["fan1-speed", "fan2-speed"],
-            L("双风扇", "Dual fans"),
+            DeviceModelDetector.HasSecondFan()
+                ? ["fan1-speed", "fan2-speed"]
+                : ["fan1-speed"],
+            DeviceModelDetector.HasSecondFan()
+                ? L("双风扇", "Dual fans")
+                : L("风扇", "Fan"),
             nameof(OverviewViewModel.CompactFans),
-            SlashDetail(
-                OverviewCardIds.Fans,
-                ("fan1-speed", "FAN1"),
-                ("fan2-speed", "FAN2")),
+            DeviceModelDetector.HasSecondFan()
+                ? SlashDetail(
+                    OverviewCardIds.Fans,
+                    ("fan1-speed", "FAN1"),
+                    ("fan2-speed", "FAN2"))
+                : L("转速", "Speed"),
             "\uE9CA",
             "#56C2C9");
         Add(

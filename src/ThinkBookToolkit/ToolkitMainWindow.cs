@@ -89,6 +89,7 @@ internal sealed class ToolkitMainWindow : Window
         SnapsToDevicePixels = true;
         ApplyAppearance();
         Content = BuildLayout();
+        ModernTheme.RefreshWindow(this, _runtime.IsDark);
 
         _toastTimer.Tick += (_, _) =>
         {
@@ -774,6 +775,7 @@ internal sealed class ToolkitMainWindow : Window
         if (disposePages) DisposePages();
         Content = BuildLayout();
         UpdateResponsiveLayout(ActualWidth);
+        ModernTheme.RefreshWindow(this, _runtime.IsDark);
     }
 
     private void OnSnapshotChanged(object? sender, EventArgs args)
