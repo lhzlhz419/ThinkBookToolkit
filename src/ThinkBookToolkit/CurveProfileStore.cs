@@ -231,6 +231,15 @@ public static class CurveProfileStore
                 loaded.AlternativeFullSpeedMethodInitialized;
             defaults.ContinuouslyWriteFanTargets =
                 loaded.ContinuouslyWriteFanTargets;
+            defaults.UseNvApiGpuPower = loaded.UseNvApiGpuPower;
+            defaults.UseIntelMmioCpuPower = loaded.UseIntelMmioCpuPower;
+            defaults.UseAmdZenStatesCpuPower = loaded.UseAmdZenStatesCpuPower;
+            defaults.ShareDataWithOtherSoftware =
+                loaded.ShareDataWithOtherSoftware;
+            defaults.DataSharingPort = IsValidDataSharingPort(
+                    loaded.DataSharingPort)
+                ? loaded.DataSharingPort
+                : 2975;
             defaults.OverviewPageMode = Enum.IsDefined(
                     loaded.OverviewPageMode)
                 ? loaded.OverviewPageMode
@@ -271,6 +280,20 @@ public static class CurveProfileStore
             }
             defaults.PowerSettingsLocksByMode = NormalizePowerModeLocks(
                 loaded.PowerSettingsLocksByMode);
+            defaults.NvApiPowerSettingsLocksByMode = NormalizePowerModeLocks(
+                loaded.NvApiPowerSettingsLocksByMode);
+            if (loaded.UseNvApiGpuPower &&
+                defaults.NvApiPowerSettingsLocksByMode.Count == 0 &&
+                !settingsJson.Contains(
+                    "NvApiPowerSettingsLocksByMode",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                defaults.NvApiPowerSettingsLocksByMode =
+                    NormalizePowerModeLocks(loaded.PowerSettingsLocksByMode);
+                defaults.PowerSettingsLocksByMode =
+                    MigrateLegacyPowerModeLocksFromNvApi(
+                        loaded.PowerSettingsLocksByMode);
+            }
             defaults.GpuOverclock = GpuOverclockPolicy.Normalize(
                 loaded.GpuOverclock);
             defaults.Automations = AutomationSettingsDefaults.Normalize(
@@ -318,6 +341,25 @@ public static class CurveProfileStore
                 string.IsNullOrEmpty(defaults.PendingGpuModeSource)
                     ? null
                     : loaded.PendingGpuModeSourceUsesDirectGraphicsConfiguration;
+            defaults.PendingGpuModeProtocol = Enum.TryParse<GpuControlProtocol>(
+                loaded.PendingGpuModeProtocol,
+                out _)
+                ? loaded.PendingGpuModeProtocol
+                : string.Empty;
+            defaults.PendingGpuModeParentStaged =
+                !string.IsNullOrEmpty(defaults.PendingGpuMode) &&
+                loaded.PendingGpuModeParentStaged;
+            defaults.PendingGpuModeChildStaged =
+                !string.IsNullOrEmpty(defaults.PendingGpuMode) &&
+                loaded.PendingGpuModeChildStaged;
+            defaults.PendingGpuModePostBootAttempts = Math.Clamp(
+                loaded.PendingGpuModePostBootAttempts,
+                0,
+                30);
+            defaults.PendingGpuModeLastError =
+                loaded.PendingGpuModeLastError ?? string.Empty;
+            defaults.LastGpuModeFailure =
+                loaded.LastGpuModeFailure ?? string.Empty;
             defaults.PcManagerNormalDefaultTemperature =
                 NormalizeColorTemperature(
                     loaded.PcManagerNormalDefaultTemperature,
@@ -358,6 +400,10 @@ public static class CurveProfileStore
         }
         settings.PowerSettingsLocksByMode = NormalizePowerModeLocks(
             settings.PowerSettingsLocksByMode);
+        settings.NvApiPowerSettingsLocksByMode = NormalizePowerModeLocks(
+            settings.NvApiPowerSettingsLocksByMode);
+        if (!IsValidDataSharingPort(settings.DataSharingPort))
+            settings.DataSharingPort = 2975;
         settings.GpuOverclock = GpuOverclockPolicy.Normalize(
             settings.GpuOverclock);
         settings.Automations = AutomationSettingsDefaults.Normalize(
@@ -434,8 +480,16 @@ public static class CurveProfileStore
         var normalized = selection is null
             ? new PowerSettingsLockSelection()
             : selection with { };
-        if (target?.Atpp is null)
-            normalized.Atpp = false;
+        foreach (var setting in Enum.GetValues<PowerSetting>())
+        {
+            if (normalized.IsLocked(setting) &&
+                (target is null ||
+                 !target.IsAvailable(setting) ||
+                 !PowerSettingsController.Value(target, setting).HasValue))
+            {
+                normalized = normalized.With(setting, false);
+            }
+        }
         return normalized;
     }
 
@@ -470,6 +524,57 @@ public static class CurveProfileStore
             };
         }
         return normalized;
+    }
+
+    internal static Dictionary<string, PowerModeLockSettings>
+        MigrateLegacyPowerModeLocksFromNvApi(
+            IReadOnlyDictionary<string, PowerModeLockSettings>? profiles)
+    {
+        var migrated = new Dictionary<string, PowerModeLockSettings>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in profiles ??
+                 new Dictionary<string, PowerModeLockSettings>())
+        {
+            if (!Enum.TryParse<ItsMode>(
+                    pair.Key,
+                    ignoreCase: true,
+                    out var mode) ||
+                mode == ItsMode.Unknown || pair.Value?.Target is null)
+                continue;
+            var sourceLocks = pair.Value.Locks;
+            var locks = sourceLocks with
+            {
+                GpuPowerBoost = sourceLocks.GpuPowerBoost ||
+                                sourceLocks.NvPcfAcMaxGpuLimit,
+                GpuConfigurableTgp = sourceLocks.GpuConfigurableTgp ||
+                                     sourceLocks.NvPcfAcDefaultGpuLimit,
+                GpuToCpuDynamicBoost = sourceLocks.GpuToCpuDynamicBoost ||
+                                       sourceLocks.NvPcfAcMinGpuLimit,
+                Atpp = sourceLocks.Atpp ||
+                       sourceLocks.NvPcfAcTargetTppLimit,
+                GpuTemperatureLimit = sourceLocks.GpuTemperatureLimit ||
+                                      sourceLocks.NvApiGpuTemperatureLimit,
+                NvPcfAcTargetTppLimit = false,
+                NvPcfAcDefaultGpuLimit = false,
+                NvPcfAcMinGpuLimit = false,
+                NvPcfAcMaxGpuLimit = false,
+                NvPcfDynamicBoost = false,
+                NvApiGpuTemperatureLimit = false
+            };
+            var target = NvPcfPowerPolicy.ToLegacy(pair.Value.Target);
+            locks = NormalizePowerSettingsLocks(locks, target);
+            if (PowerSettingsController.IsValidLockConfiguration(
+                    locks,
+                    target))
+            {
+                migrated[mode.ToString()] = new PowerModeLockSettings
+                {
+                    Locks = locks,
+                    Target = target
+                };
+            }
+        }
+        return migrated;
     }
 
     internal static bool IsLegacyPowerSettingsLockEnabled(string json)
@@ -599,6 +704,9 @@ public static class CurveProfileStore
         seconds.Value >= 1 &&
         seconds.Value == Math.Truncate(seconds.Value) &&
         seconds.Value <= TimeSpan.MaxValue.TotalSeconds;
+
+    public static bool IsValidDataSharingPort(int port) =>
+        port is >= 1 and <= 65535;
 
     public static bool IsSupportedConfigurationVersion(string? version) =>
         string.IsNullOrWhiteSpace(version) ||

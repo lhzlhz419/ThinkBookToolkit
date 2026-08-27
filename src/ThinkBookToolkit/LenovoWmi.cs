@@ -86,6 +86,63 @@ internal static class LenovoWmi
         using var output = Invoke(instance, method, inputs);
     }
 
+    public static void InvokeChecked(
+        ManagementObject instance,
+        string method,
+        IReadOnlyDictionary<string, object>? inputs = null)
+    {
+        using var output = Invoke(instance, method, inputs);
+        if (output is null)
+            return;
+        ValidateReturnValue(output, method);
+    }
+
+    public static int InvokeCheckedInt(
+        ManagementObject instance,
+        string method,
+        IReadOnlyDictionary<string, object>? inputs,
+        params string[] outputNames)
+    {
+        using var output = Invoke(instance, method, inputs) ??
+                           throw new InvalidOperationException(
+                               $"{method} returned no result.");
+        ValidateReturnValue(output, method);
+        return checked((int)ReadUInt32(output, method, outputNames));
+    }
+
+    public static uint InvokeCheckedUInt32(
+        ManagementObject instance,
+        string method,
+        IReadOnlyDictionary<string, object>? inputs,
+        params string[] outputNames)
+    {
+        using var output = Invoke(instance, method, inputs) ??
+                           throw new InvalidOperationException(
+                               $"{method} returned no result.");
+        ValidateReturnValue(output, method);
+        return ReadUInt32(output, method, outputNames);
+    }
+
+    public static string InvokeCheckedString(
+        ManagementObject instance,
+        string method,
+        IReadOnlyDictionary<string, object>? inputs,
+        params string[] outputNames)
+    {
+        using var output = Invoke(instance, method, inputs) ??
+                           throw new InvalidOperationException(
+                               $"{method} returned no result.");
+        ValidateReturnValue(output, method);
+        foreach (var name in outputNames)
+        {
+            var property = FindProperty(output, name);
+            if (property?.Value is not null)
+                return Convert.ToString(property.Value) ?? string.Empty;
+        }
+        throw new InvalidOperationException(
+            $"{method} did not return [{string.Join(", ", outputNames)}].");
+    }
+
     public static int GetFeatureValue(uint id)
     {
         using var instance = GetActiveInstance("LENOVO_OTHER_METHOD");
@@ -149,6 +206,34 @@ internal static class LenovoWmi
             .Cast<PropertyData>()
             .FirstOrDefault(property =>
                 string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    private static void ValidateReturnValue(
+        ManagementBaseObject output,
+        string method)
+    {
+        var property = FindProperty(output, "ReturnValue");
+        if (property?.Value is null)
+            return;
+        var value = Convert.ToUInt32(property.Value);
+        if (value != 0)
+            throw new InvalidOperationException(
+                $"{method} failed with ReturnValue=0x{value:X8}.");
+    }
+
+    private static uint ReadUInt32(
+        ManagementBaseObject output,
+        string method,
+        params string[] outputNames)
+    {
+        foreach (var name in outputNames)
+        {
+            var property = FindProperty(output, name);
+            if (property?.Value is not null)
+                return Convert.ToUInt32(property.Value);
+        }
+        throw new InvalidOperationException(
+            $"{method} did not return [{string.Join(", ", outputNames)}].");
+    }
 
     private static object ConvertValue(object value, CimType type) =>
         type switch

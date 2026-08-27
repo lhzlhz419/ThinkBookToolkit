@@ -541,7 +541,7 @@ internal sealed class ToolkitMainWindow : Window
         if (report is null) return true;
         return page switch
         {
-            "performance" => report.AnyAvailable(FeatureIds.TemperatureMonitoring, FeatureIds.PerformanceMode, FeatureIds.GpuMode, FeatureIds.DiscreteGpuManagement, FeatureIds.GpuOverclock, FeatureIds.PowerSettings),
+            "performance" => report.AnyAvailable(FeatureIds.TemperatureMonitoring, FeatureIds.PerformanceMode, FeatureIds.GpuMode, FeatureIds.DiscreteGpuManagement, FeatureIds.GpuOverclock, FeatureIds.PowerSettings, FeatureIds.NvApiGpuPower, FeatureIds.IntelMmioCpuPower, FeatureIds.AmdZenStatesCpuPower),
             "cooling" => report.AnyAvailable(FeatureIds.FanControl),
             "battery" => report.AnyAvailable(FeatureIds.BatteryChargeMode, FeatureIds.OvernightCharging, FeatureIds.AlwaysOnUsb, FeatureIds.FlipToStart, FeatureIds.BatteryInformation),
             "display" => report.AnyAvailable(FeatureIds.DisplayRefreshRate, FeatureIds.VantageEyeCare, FeatureIds.PcManagerEyeCare, FeatureIds.ColorManagement),

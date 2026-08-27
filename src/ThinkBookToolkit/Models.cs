@@ -187,7 +187,13 @@ public enum PowerSetting
     GpuConfigurableTgp,
     GpuTemperatureLimit,
     GpuToCpuDynamicBoost,
-    Atpp
+    Atpp,
+    NvPcfAcTargetTppLimit,
+    NvPcfAcDefaultGpuLimit,
+    NvPcfAcMinGpuLimit,
+    NvPcfAcMaxGpuLimit,
+    NvPcfDynamicBoost,
+    NvApiGpuTemperatureLimit
 }
 
 public sealed record PowerSettingsLockSelection
@@ -201,12 +207,21 @@ public sealed record PowerSettingsLockSelection
     public bool GpuTemperatureLimit { get; set; }
     public bool GpuToCpuDynamicBoost { get; set; }
     public bool Atpp { get; set; }
+    public bool NvPcfAcTargetTppLimit { get; set; }
+    public bool NvPcfAcDefaultGpuLimit { get; set; }
+    public bool NvPcfAcMinGpuLimit { get; set; }
+    public bool NvPcfAcMaxGpuLimit { get; set; }
+    public bool NvPcfDynamicBoost { get; set; }
+    public bool NvApiGpuTemperatureLimit { get; set; }
 
     [JsonIgnore]
     public bool Any =>
         CpuPl1 || CpuPl2 || CpuTemperatureLimit || CpuTurboTimeLimit ||
         GpuPowerBoost || GpuConfigurableTgp || GpuTemperatureLimit ||
-        GpuToCpuDynamicBoost || Atpp;
+        GpuToCpuDynamicBoost || Atpp || NvPcfAcTargetTppLimit ||
+        NvPcfAcDefaultGpuLimit || NvPcfAcMinGpuLimit ||
+        NvPcfAcMaxGpuLimit || NvPcfDynamicBoost ||
+        NvApiGpuTemperatureLimit;
 
     public bool IsLocked(PowerSetting setting) => setting switch
     {
@@ -219,6 +234,12 @@ public sealed record PowerSettingsLockSelection
         PowerSetting.GpuTemperatureLimit => GpuTemperatureLimit,
         PowerSetting.GpuToCpuDynamicBoost => GpuToCpuDynamicBoost,
         PowerSetting.Atpp => Atpp,
+        PowerSetting.NvPcfAcTargetTppLimit => NvPcfAcTargetTppLimit,
+        PowerSetting.NvPcfAcDefaultGpuLimit => NvPcfAcDefaultGpuLimit,
+        PowerSetting.NvPcfAcMinGpuLimit => NvPcfAcMinGpuLimit,
+        PowerSetting.NvPcfAcMaxGpuLimit => NvPcfAcMaxGpuLimit,
+        PowerSetting.NvPcfDynamicBoost => NvPcfDynamicBoost,
+        PowerSetting.NvApiGpuTemperatureLimit => NvApiGpuTemperatureLimit,
         _ => false
     };
 
@@ -236,6 +257,12 @@ public sealed record PowerSettingsLockSelection
             case PowerSetting.GpuTemperatureLimit: copy.GpuTemperatureLimit = value; break;
             case PowerSetting.GpuToCpuDynamicBoost: copy.GpuToCpuDynamicBoost = value; break;
             case PowerSetting.Atpp: copy.Atpp = value; break;
+            case PowerSetting.NvPcfAcTargetTppLimit: copy.NvPcfAcTargetTppLimit = value; break;
+            case PowerSetting.NvPcfAcDefaultGpuLimit: copy.NvPcfAcDefaultGpuLimit = value; break;
+            case PowerSetting.NvPcfAcMinGpuLimit: copy.NvPcfAcMinGpuLimit = value; break;
+            case PowerSetting.NvPcfAcMaxGpuLimit: copy.NvPcfAcMaxGpuLimit = value; break;
+            case PowerSetting.NvPcfDynamicBoost: copy.NvPcfDynamicBoost = value; break;
+            case PowerSetting.NvApiGpuTemperatureLimit: copy.NvApiGpuTemperatureLimit = value; break;
         }
         return copy;
     }
@@ -251,6 +278,14 @@ public sealed record PowerSettingsLockSelection
         GpuTemperatureLimit = true,
         GpuToCpuDynamicBoost = true,
         Atpp = includeAtpp
+    };
+
+    public static PowerSettingsLockSelection AllNvPcf() => new()
+    {
+        NvPcfAcTargetTppLimit = true,
+        NvPcfAcDefaultGpuLimit = true,
+        NvPcfAcMinGpuLimit = true,
+        NvPcfAcMaxGpuLimit = true
     };
 }
 
@@ -309,6 +344,11 @@ public sealed class AppSettings
     public bool UseAlternativeFullSpeedMethod { get; set; }
     public bool AlternativeFullSpeedMethodInitialized { get; set; }
     public bool ContinuouslyWriteFanTargets { get; set; }
+    public bool UseNvApiGpuPower { get; set; }
+    public bool UseIntelMmioCpuPower { get; set; }
+    public bool UseAmdZenStatesCpuPower { get; set; }
+    public bool ShareDataWithOtherSoftware { get; set; }
+    public int DataSharingPort { get; set; } = 2975;
     public OverviewPageMode OverviewPageMode { get; set; } =
         OverviewPageMode.Detailed;
     public OverviewLayoutSettings OverviewLayout { get; set; } =
@@ -319,6 +359,8 @@ public sealed class AppSettings
     public int PowerSettingsLockIntervalSeconds { get; set; } = 2;
     public PowerSettingsState? PowerSettingsLockTarget { get; set; }
     public Dictionary<string, PowerModeLockSettings> PowerSettingsLocksByMode
+        { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, PowerModeLockSettings> NvApiPowerSettingsLocksByMode
         { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public GpuOverclockSettings GpuOverclock { get; set; } = new();
     public List<AutomationDefinition> Automations { get; set; } = [];
@@ -338,6 +380,12 @@ public sealed class AppSettings
     public string PendingGpuModeSource { get; set; } = "";
     public bool? PendingGpuModeSourceUsesDirectGraphicsConfiguration { get; set; }
     public string PendingGpuModeBootSessionId { get; set; } = "";
+    public string PendingGpuModeProtocol { get; set; } = "";
+    public bool PendingGpuModeParentStaged { get; set; }
+    public bool PendingGpuModeChildStaged { get; set; }
+    public int PendingGpuModePostBootAttempts { get; set; }
+    public string PendingGpuModeLastError { get; set; } = "";
+    public string LastGpuModeFailure { get; set; } = "";
     public int PcManagerNormalDefaultTemperature { get; set; } = 6600;
     public int PcManagerEyeCareDefaultTemperature { get; set; } = 3500;
 }

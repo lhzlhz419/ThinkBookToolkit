@@ -22,7 +22,8 @@
 
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Contracts\ThinkBookToolkit.FanBackend.Contracts.csproj" />
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Wmi\ThinkBookToolkit.FanBackend.Wmi.csproj" />
-
+    <ProjectReference Include="..\..\external\NvAPIWrapper\NvAPIWrapper\NvAPIWrapper.csproj"
+                      AdditionalProperties="Configuration=$(Configuration);Platform=AnyCPU;NoWarn=1591;NuGetAudit=false" />
     <Compile Include="..\ThinkBookToolkit.Guardian\Program.cs" Link="Guardian\GuardianEntryPoint.cs" />
     <Compile Include="..\ThinkBookToolkit.Guardian\FanWatchdogMarker.cs" Link="Guardian\FanWatchdogMarker.cs" />
     <Compile Include="..\ThinkBookToolkit.Guardian\GuardianLog.cs" Link="Guardian\GuardianLog.cs" />
@@ -59,12 +60,26 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <TargetPath>VantageAddins\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
     </Content>
+    <Content Include="$(ExternalDependenciesRoot)\IntelPower\IntelMSR.bin"
+             Condition="Exists('$(ExternalDependenciesRoot)\IntelPower\IntelMSR.bin')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>IntelMSR.bin</TargetPath>
+    </Content>
+    <Content Include="$(ExternalDependenciesRoot)\IntelPower\IntelMCHBAR.bin"
+             Condition="Exists('$(ExternalDependenciesRoot)\IntelPower\IntelMCHBAR.bin')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>IntelMCHBAR.bin</TargetPath>
+    </Content>
+    <Content Include="$(ExternalDependenciesRoot)\IntelPower\InpOutx64.dll"
+             Condition="Exists('$(ExternalDependenciesRoot)\IntelPower\InpOutx64.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>InpOutx64.dll</TargetPath>
+    </Content>
 
     <PackageReference Include="DiskInfoToolkit" Version="2.1.2" />
     <PackageReference Include="HidSharp" Version="2.6.4" />
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre717" />
     <PackageReference Include="LLT.WindowsDisplayAPI" Version="1.3.2-pre17" />
-    <PackageReference Include="LLT.NvAPIWrapper.Net" Version="1.0.0-pre8" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="Mono.Posix.NETStandard" Version="1.0.0" />
     <PackageReference Include="RAMSPDToolkit-NDD" Version="1.6.0" />

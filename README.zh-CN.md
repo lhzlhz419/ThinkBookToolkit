@@ -39,6 +39,7 @@ ThinkBook Toolkit 是面向部分 Lenovo ThinkBook 设备的 Windows 原生控�
 - Windows 11 x64，并以管理员权限运行；
 - 设备对应功能所需的联想驱动和服务；
 - 在已测试设备上，LibreHardwareMonitor 读取 CPU 温度需要系统已安装并能够使用 [PawnIO](https://pawnio.eu/)。PawnIO 是系统级组件，不随 Toolkit 或外置依赖目录提供；
+- Intel MMIO 功耗墙 Beta 还需要在程序目录提供 `IntelMSR.bin`、`IntelMCHBAR.bin` 和 `InpOutx64.dll`；AMD 功耗墙 Beta 通过独立 GPL Helper 使用 ZenStates-Core，并同样要求 PawnIO；
 - 使用自定义风扇控制时，应持续观察温度；
 - 使用可替换风扇后端前，应先确认能够可靠恢复固件自动控制。
 
@@ -124,7 +125,13 @@ Toolkit 会根据当前界面语言选择文本。用户可以只确认，也可
 
 ## 构建与测试
 
-安装 [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)，然后在仓库根目录运行：
+安装 [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)，然后先在仓库根目录初始化固定版本的 NvAPIWrapper 源码依赖：
+
+```powershell
+git submodule update --init --recursive
+```
+
+随后运行：
 
 ```powershell
 .\scripts\build.ps1

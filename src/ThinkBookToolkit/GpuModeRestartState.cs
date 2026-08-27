@@ -7,7 +7,11 @@ namespace ThinkBookToolkit;
 internal readonly record struct PendingGpuModeTransition(
     GpuWorkingMode Source,
     GpuWorkingMode Target,
-    bool SourceUsesDirectGraphicsConfiguration);
+    bool SourceUsesDirectGraphicsConfiguration,
+    GpuControlProtocol Protocol,
+    bool ParentStaged,
+    bool ChildStaged,
+    int PostBootAttempts);
 
 internal static class GpuModeRestartState
 {
@@ -47,10 +51,17 @@ internal static class GpuModeRestartState
             settings.PendingGpuModeSourceUsesDirectGraphicsConfiguration is
                 { } sourceUsesDirectGraphicsConfiguration)
         {
+            _ = Enum.TryParse<GpuControlProtocol>(
+                settings.PendingGpuModeProtocol,
+                out var protocol);
             transition = new(
                 source,
                 target,
-                sourceUsesDirectGraphicsConfiguration);
+                sourceUsesDirectGraphicsConfiguration,
+                protocol,
+                settings.PendingGpuModeParentStaged,
+                settings.PendingGpuModeChildStaged,
+                settings.PendingGpuModePostBootAttempts);
             return true;
         }
 
@@ -90,13 +101,21 @@ internal static class GpuModeRestartState
         GpuWorkingMode source,
         bool sourceUsesDirectGraphicsConfiguration,
         GpuWorkingMode target,
-        string bootSessionId)
+        string bootSessionId,
+        GpuModeApplyResult? result = null)
     {
         settings.PendingGpuMode = target.ToString();
         settings.PendingGpuModeSource = source.ToString();
         settings.PendingGpuModeSourceUsesDirectGraphicsConfiguration =
             sourceUsesDirectGraphicsConfiguration;
         settings.PendingGpuModeBootSessionId = bootSessionId;
+        settings.PendingGpuModeProtocol =
+            (result?.Protocol ?? GpuControlProtocol.Unsupported).ToString();
+        settings.PendingGpuModeParentStaged = result?.ParentStaged ?? true;
+        settings.PendingGpuModeChildStaged = result?.ChildStaged ?? false;
+        settings.PendingGpuModePostBootAttempts = 0;
+        settings.PendingGpuModeLastError = result?.Warning ?? string.Empty;
+        settings.LastGpuModeFailure = string.Empty;
     }
 
     public static void Clear(AppSettings settings)
@@ -105,6 +124,18 @@ internal static class GpuModeRestartState
         settings.PendingGpuModeSource = string.Empty;
         settings.PendingGpuModeSourceUsesDirectGraphicsConfiguration = null;
         settings.PendingGpuModeBootSessionId = string.Empty;
+        settings.PendingGpuModeProtocol = string.Empty;
+        settings.PendingGpuModeParentStaged = false;
+        settings.PendingGpuModeChildStaged = false;
+        settings.PendingGpuModePostBootAttempts = 0;
+        settings.PendingGpuModeLastError = string.Empty;
+        settings.LastGpuModeFailure = string.Empty;
+    }
+
+    public static void MarkFailed(AppSettings settings, string error)
+    {
+        Clear(settings);
+        settings.LastGpuModeFailure = error;
     }
 
     private static string ReadBootSessionId()

@@ -3767,17 +3767,19 @@ public sealed class MainWindow : Window
                     hasCurrentBootTransition
                         ? transition.SourceUsesDirectGraphicsConfiguration
                         : state!.UsesDirectGraphicsConfiguration;
-                requiresRestart = await Task.Run(() =>
+                var result = await Task.Run(() =>
                     GpuModeController.SetModeFromEffectiveState(
                         source,
                         sourceUsesDirectGraphicsConfiguration,
                         target));
+                requiresRestart = result.RequiresRestart;
                 if (requiresRestart)
                 {
                     SavePendingGpuMode(
                         source,
                         sourceUsesDirectGraphicsConfiguration,
-                        target);
+                        target,
+                        result);
                 }
                 else
                 {
@@ -3897,32 +3899,51 @@ public sealed class MainWindow : Window
                 return state;
             }
 
-            if (GpuModeController.IsHybridMode(pending) &&
-                !state.UsesDirectGraphicsConfiguration)
+            if (!GpuModeController.IsHybridMode(pending) ||
+                state.UsesDirectGraphicsConfiguration)
             {
-                var requiresAnotherRestart = await Task.Run(
-                    () => GpuModeController.SetMode(pending));
-                if (requiresAnotherRestart)
+                var reason = state.UsesDirectGraphicsConfiguration
+                    ? "The direct graphics parent mode remained active after restart."
+                    : $"GPU mode remained {state.CurrentMode} after restart.";
+                GpuModeRestartState.MarkFailed(_settings, reason);
+                CurveProfileStore.SaveSettings(_settings);
+                throw new InvalidOperationException(reason);
+            }
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+            Exception? lastError = null;
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                try
                 {
-                    SavePendingGpuMode(
-                        state.CurrentMode,
-                        state.UsesDirectGraphicsConfiguration,
-                        pending);
-                    return state;
-                }
-
-                var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
-                do
-                {
+                    _settings.PendingGpuModePostBootAttempts++;
+                    var applyResult = await Task.Run(
+                        () => GpuModeController.SetMode(pending));
+                    if (applyResult.RequiresRestart)
+                        throw new InvalidOperationException(
+                            "The child GPU mode requested another restart.");
                     await Task.Delay(500);
                     state = await Task.Run(GpuModeController.ReadState);
                     if (state.CurrentMode == pending)
-                        break;
-                } while (DateTimeOffset.UtcNow < deadline);
+                    {
+                        ClearPendingGpuMode();
+                        return state;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    _settings.PendingGpuModeLastError =
+                        ex.GetBaseException().Message;
+                    await Task.Delay(750);
+                }
             }
-
-            if (state.CurrentMode == pending)
-                ClearPendingGpuMode();
+            var timeout = "GPU post-boot mode application timed out" +
+                          (lastError is null
+                              ? "."
+                              : ": " + lastError.GetBaseException().Message);
+            GpuModeRestartState.MarkFailed(_settings, timeout);
+            CurveProfileStore.SaveSettings(_settings);
+            throw new TimeoutException(timeout);
         }
         catch (Exception ex)
         {
@@ -3944,14 +3965,16 @@ public sealed class MainWindow : Window
     private void SavePendingGpuMode(
         GpuWorkingMode source,
         bool sourceUsesDirectGraphicsConfiguration,
-        GpuWorkingMode target)
+        GpuWorkingMode target,
+        GpuModeApplyResult? result = null)
     {
         GpuModeRestartState.MarkPending(
             _settings,
             source,
             sourceUsesDirectGraphicsConfiguration,
             target,
-            _bootSessionId);
+            _bootSessionId,
+            result);
         CurveProfileStore.SaveSettings(_settings);
         _pendingGpuMode = target;
         _pendingGpuModeLoadedAtStartup = false;

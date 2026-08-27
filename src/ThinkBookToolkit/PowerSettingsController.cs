@@ -18,7 +18,14 @@ public enum PowerSettingAvailability
     GpuTemperatureLimit = 1 << 6,
     GpuToCpuDynamicBoost = 1 << 7,
     Atpp = 1 << 8,
-    All = (1 << 9) - 1
+    NvPcfAcTargetTppLimit = 1 << 9,
+    NvPcfAcDefaultGpuLimit = 1 << 10,
+    NvPcfAcMinGpuLimit = 1 << 11,
+    NvPcfAcMaxGpuLimit = 1 << 12,
+    NvPcfDynamicBoost = 1 << 13,
+    NvApiGpuTemperatureLimit = 1 << 14,
+    LegacyAll = (1 << 9) - 1,
+    All = (1 << 15) - 1
 }
 
 public sealed record PowerSettingsState(
@@ -33,10 +40,18 @@ public sealed record PowerSettingsState(
     int? Atpp = null)
 {
     public PowerSettingAvailability AvailableSettings { get; init; } =
-        PowerSettingAvailability.All;
+        PowerSettingAvailability.LegacyAll;
 
     public bool IsAvailable(PowerSetting setting) =>
         (AvailableSettings & PowerSettingsController.Flag(setting)) != 0;
+
+    public int? NvPcfAcTargetTppLimit { get; init; }
+    public int? NvPcfAcDefaultGpuLimit { get; init; }
+    public int? NvPcfAcMinGpuLimit { get; init; }
+    public int? NvPcfAcMaxGpuLimit { get; init; }
+    public bool? NvPcfDynamicBoostEnabled { get; init; }
+    public int? NvApiGpuTemperatureLimit { get; init; }
+    public BetaCpuPowerKind? BetaCpuPowerKind { get; init; }
 }
 
 internal enum PowerDeviceKind
@@ -117,7 +132,7 @@ internal static class PowerSettingsController
         var baseRules = G6Rules();
         if (DeviceModelDetector.ModelMatches(model, DeviceModelDetector.ThinkBook16pG6Iax))
             return new(PowerDeviceKind.ThinkBook16pG6Iax, true, true,
-                PowerSettingAvailability.All, 5, 50, baseRules);
+                PowerSettingAvailability.LegacyAll, 5, 50, baseRules);
 
         if (DeviceModelDetector.ModelMatches(model, DeviceModelDetector.ThinkBook16pG5Irx))
         {
@@ -133,7 +148,7 @@ internal static class PowerSettingsController
             };
             return new(
                 is4050 ? PowerDeviceKind.ThinkBook16pG5IrxRtx4050 : PowerDeviceKind.ThinkBook16pG5Irx,
-                true, true, PowerSettingAvailability.All, 0, 55, rules);
+                true, true, PowerSettingAvailability.LegacyAll, 0, 55, rules);
         }
 
         if (DeviceModelDetector.ModelMatches(model, DeviceModelDetector.ThinkBook14G6PlusImh))
@@ -158,7 +173,7 @@ internal static class PowerSettingsController
         }
 
         return new(PowerDeviceKind.ReadOnly, false, false,
-            PowerSettingAvailability.All, 0, 0,
+            PowerSettingAvailability.LegacyAll, 0, 0,
             new Dictionary<PowerSetting, PowerSettingRule>());
     }
 
@@ -260,7 +275,23 @@ internal static class PowerSettingsController
     {
         if (state is null)
             return false;
-        try { Validate(state, profile); return true; }
+        try
+        {
+            var nvPcfAvailable =
+                (state.AvailableSettings & NvPcfPowerPolicy.NvPcfMask) != 0;
+            if (nvPcfAvailable && !NvPcfPowerPolicy.IsValid(state))
+                return false;
+            if (state.BetaCpuPowerKind.HasValue &&
+                (state.CpuPl1 <= 0 || state.CpuPl2 <= 0 ||
+                 state.CpuTurboTimeLimit <= 0 ||
+                 state.BetaCpuPowerKind != ThinkBookToolkit.BetaCpuPowerKind.IntelMmio &&
+                 state.IsAvailable(PowerSetting.CpuTemperatureLimit) &&
+                 state.CpuTemperatureLimit is < 70 or > 100))
+                return false;
+            if (profile.Writable)
+                Validate(state, profile);
+            return profile.Writable || nvPcfAvailable;
+        }
         catch (ArgumentException) { return false; }
         catch (OverflowException) { return false; }
     }
@@ -275,7 +306,10 @@ internal static class PowerSettingsController
         PowerSettingsState? target,
         PowerDeviceProfile profile) =>
         selection is { Any: true } && IsValidState(target, profile) &&
-        (!selection.Atpp || target!.Atpp.HasValue);
+        Enum.GetValues<PowerSetting>()
+            .Where(selection.IsLocked)
+            .All(setting => target!.IsAvailable(setting) &&
+                            Value(target, setting).HasValue);
 
     public static PowerSettingsState WithSetting(
         PowerSettingsState destination,
@@ -291,6 +325,12 @@ internal static class PowerSettingsController
             PowerSetting.GpuTemperatureLimit => destination with { GpuTemperatureLimit = source.GpuTemperatureLimit },
             PowerSetting.GpuToCpuDynamicBoost => destination with { GpuToCpuDynamicBoost = source.GpuToCpuDynamicBoost },
             PowerSetting.Atpp => destination with { Atpp = source.Atpp },
+            PowerSetting.NvPcfAcTargetTppLimit => destination with { NvPcfAcTargetTppLimit = source.NvPcfAcTargetTppLimit },
+            PowerSetting.NvPcfAcDefaultGpuLimit => destination with { NvPcfAcDefaultGpuLimit = source.NvPcfAcDefaultGpuLimit },
+            PowerSetting.NvPcfAcMinGpuLimit => destination with { NvPcfAcMinGpuLimit = source.NvPcfAcMinGpuLimit },
+            PowerSetting.NvPcfAcMaxGpuLimit => destination with { NvPcfAcMaxGpuLimit = source.NvPcfAcMaxGpuLimit },
+            PowerSetting.NvPcfDynamicBoost => destination with { NvPcfDynamicBoostEnabled = source.NvPcfDynamicBoostEnabled },
+            PowerSetting.NvApiGpuTemperatureLimit => destination with { NvApiGpuTemperatureLimit = source.NvApiGpuTemperatureLimit },
             _ => destination
         };
 
@@ -334,7 +374,8 @@ internal static class PowerSettingsController
             using var other = GetActiveOtherMethod();
             foreach (var setting in Settings)
             {
-                if (selection.IsLocked(setting) && current.IsAvailable(setting) &&
+                if (CurrentProfile.IsExpected(setting) &&
+                    selection.IsLocked(setting) && current.IsAvailable(setting) &&
                     target.IsAvailable(setting) &&
                     Value(current, setting) is int currentValue &&
                     Value(target, setting) is int targetValue &&
@@ -361,7 +402,13 @@ internal static class PowerSettingsController
                 PowerSetting.GpuPowerBoost => "GPU Power Boost",
                 PowerSetting.GpuTemperatureLimit => "GPU temperature limit",
                 PowerSetting.GpuToCpuDynamicBoost => "GPU to CPU Dynamic Boost",
-                PowerSetting.Atpp => "ATPP",
+                PowerSetting.Atpp => "ATPP offset",
+                PowerSetting.NvPcfAcTargetTppLimit => "AC Target TPP Limit",
+                PowerSetting.NvPcfAcDefaultGpuLimit => "AC Default GPU Limit",
+                PowerSetting.NvPcfAcMinGpuLimit => "AC Min GPU Limit",
+                PowerSetting.NvPcfAcMaxGpuLimit => "AC Max GPU Limit",
+                PowerSetting.NvPcfDynamicBoost => "Dynamic Boost",
+                PowerSetting.NvApiGpuTemperatureLimit => "GPU temperature limit",
                 _ => setting.ToString()
             };
 
@@ -434,32 +481,45 @@ internal static class PowerSettingsController
             throw new NotSupportedException("Power settings are read-only on this device.");
         foreach (var setting in Settings)
         {
+            if (state.BetaCpuPowerKind.HasValue && setting is
+                PowerSetting.CpuPl1 or PowerSetting.CpuPl2 or
+                PowerSetting.CpuTurboTimeLimit or
+                PowerSetting.CpuTemperatureLimit)
+                continue;
             if (!profile.IsExpected(setting) || !state.IsAvailable(setting))
                 continue;
             var value = Value(state, setting);
             if (!value.HasValue)
                 throw new ArgumentException($"{setting} is required.");
-            if (setting == PowerSetting.CpuTurboTimeLimit)
-            {
-                if (!TurboTimeLimits.Contains(value.Value))
-                    throw new ArgumentOutOfRangeException(nameof(state.CpuTurboTimeLimit));
-                continue;
-            }
-            if (!profile.Rules.TryGetValue(setting, out var rule))
-                continue;
-            if (rule.ManualMinimum.HasValue)
-            {
-                if (value.Value < rule.ManualMinimum.Value)
-                    throw new ArgumentOutOfRangeException(setting.ToString());
-            }
-            else if (value.Value < rule.SliderMinimum || value.Value > rule.SliderMaximum)
-            {
-                throw new ArgumentOutOfRangeException(setting.ToString());
-            }
+            ValidateSetting(setting, value.Value, profile);
         }
     }
 
-    private static int? Value(PowerSettingsState state, PowerSetting setting) => setting switch
+    private static void ValidateSetting(
+        PowerSetting setting,
+        int value,
+        PowerDeviceProfile profile)
+    {
+        if (setting == PowerSetting.CpuTurboTimeLimit)
+        {
+            if (!TurboTimeLimits.Contains(value))
+                throw new ArgumentOutOfRangeException(setting.ToString());
+            return;
+        }
+        if (!profile.Rules.TryGetValue(setting, out var rule))
+            return;
+        if (rule.ManualMinimum.HasValue)
+        {
+            if (value < rule.ManualMinimum.Value)
+                throw new ArgumentOutOfRangeException(setting.ToString());
+        }
+        else if (value < rule.SliderMinimum || value > rule.SliderMaximum)
+        {
+            throw new ArgumentOutOfRangeException(setting.ToString());
+        }
+    }
+
+    internal static int? Value(PowerSettingsState state, PowerSetting setting) => setting switch
     {
         PowerSetting.CpuPl1 => state.CpuPl1,
         PowerSetting.CpuPl2 => state.CpuPl2,
@@ -470,6 +530,14 @@ internal static class PowerSettingsController
         PowerSetting.GpuTemperatureLimit => state.GpuTemperatureLimit,
         PowerSetting.GpuToCpuDynamicBoost => state.GpuToCpuDynamicBoost,
         PowerSetting.Atpp => state.Atpp,
+        PowerSetting.NvPcfAcTargetTppLimit => state.NvPcfAcTargetTppLimit,
+        PowerSetting.NvPcfAcDefaultGpuLimit => state.NvPcfAcDefaultGpuLimit,
+        PowerSetting.NvPcfAcMinGpuLimit => state.NvPcfAcMinGpuLimit,
+        PowerSetting.NvPcfAcMaxGpuLimit => state.NvPcfAcMaxGpuLimit,
+        PowerSetting.NvPcfDynamicBoost => state.NvPcfDynamicBoostEnabled.HasValue
+            ? state.NvPcfDynamicBoostEnabled.Value ? 1 : 0
+            : null,
+        PowerSetting.NvApiGpuTemperatureLimit => state.NvApiGpuTemperatureLimit,
         _ => null
     };
 

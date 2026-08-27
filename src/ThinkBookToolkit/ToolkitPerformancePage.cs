@@ -76,6 +76,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     private readonly Button _defaultPower;
     private readonly Button _togglePowerEditor;
     private readonly Dictionary<PowerSetting, CheckBox> _powerLockToggles = [];
+    private readonly CheckBox _nvDynamicBoost = new();
     private readonly ComboBox _powerLockInterval = new() { MinWidth = 96 };
     private readonly StackPanel _powerEditorPanel = new();
     private readonly Border _powerEditorHost = new();
@@ -176,7 +177,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         {
             root.Children.Add(BuildFanPerformanceLinkCard());
         }
-        if (!_coolingOnly && Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
+        if (!_coolingOnly && Runtime.CanReadPowerSettings)
             root.Children.Add(BuildPowerCard());
         if (root.Children.Count == 0)
             root.Children.Add(EmptyState(L("此设备没有可用的性能调节功能。", "No performance controls are available on this device.")));
@@ -1012,26 +1013,75 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     private UIElement BuildPowerCard()
     {
         var profile = PowerSettingsController.CurrentProfile;
+        var nvPcf = Runtime.NvApiGpuPowerEnabled;
+        var betaCpu = Runtime.BetaCpuPowerKind;
+        var cpuNames = betaCpu switch
+        {
+            BetaCpuPowerKind.AmdPbo => ("PPT", "TDC", "EDC", "TctlMax"),
+            BetaCpuPowerKind.AmdApu => ("STAPM", "Fast", "Slow", "TctlMax"),
+            _ => ("CPU PL1", "CPU PL2", "CPU Turbo Time Limit", L("CPU 温度上限", "CPU temperature limit"))
+        };
         var panel = new StackPanel();
         var current = new AdaptiveUniformPanel
         {
             MinimumItemWidth = 180,
             Spacing = 8
         };
-        AddPowerReadout(current, "CpuPl1", PowerSetting.CpuPl1, "CPU PL1", "W");
-        AddPowerReadout(current, "CpuPl2", PowerSetting.CpuPl2, "CPU PL2", "W");
-        AddPowerReadout(current, "CpuTemperature", PowerSetting.CpuTemperatureLimit, L("CPU 温度上限", "CPU temperature limit"), "°C");
-        AddPowerReadout(current, "TurboTime", PowerSetting.CpuTurboTimeLimit, "CPU Turbo Time Limit", "s");
-        AddPowerReadout(current, "GpuBoost", PowerSetting.GpuPowerBoost, "GPU Power Boost", "W");
-        AddPowerReadout(current, "GpuTgp", PowerSetting.GpuConfigurableTgp, profile.Writable ? "GPU TGP" : "GPU Configurable TGP", "W");
-        AddPowerReadout(current, "GpuTemperature", PowerSetting.GpuTemperatureLimit, L("GPU 温度上限", "GPU temperature limit"), "°C");
-        AddPowerReadout(current, "GpuToCpu", PowerSetting.GpuToCpuDynamicBoost, "GPU to CPU Dynamic Boost", "W");
-        _atppReadout = AddPowerReadout(current, "Atpp", PowerSetting.Atpp, "ATPP", "W");
-        _atppReadout.Visibility = Visibility.Collapsed;
+        AddPowerReadout(current, "CpuPl1", PowerSetting.CpuPl1, cpuNames.Item1, "W");
+        AddPowerReadout(current, "CpuPl2", PowerSetting.CpuPl2, cpuNames.Item2,
+            betaCpu == BetaCpuPowerKind.AmdPbo ? "A" : "W");
+        if (betaCpu is BetaCpuPowerKind.AmdPbo or BetaCpuPowerKind.AmdApu)
+        {
+            AddPowerReadout(current, "TurboTime",
+                PowerSetting.CpuTurboTimeLimit, cpuNames.Item3,
+                betaCpu == BetaCpuPowerKind.AmdPbo ? "A" : "W");
+            AddPowerReadout(current, "CpuTemperature",
+                PowerSetting.CpuTemperatureLimit, cpuNames.Item4, "°C");
+        }
+        else
+        {
+            AddPowerReadout(current, "CpuTemperature",
+                PowerSetting.CpuTemperatureLimit, cpuNames.Item4, "°C");
+            AddPowerReadout(current, "TurboTime",
+                PowerSetting.CpuTurboTimeLimit, cpuNames.Item3, "s");
+        }
+        if (nvPcf)
+        {
+            if (NvPcfPowerController.CachedTemperatureBounds.HasValue)
+                AddPowerReadout(current, "NvGpuTemperature",
+                    PowerSetting.NvApiGpuTemperatureLimit,
+                    L("GPU 温度上限", "GPU temperature limit"), "°C");
+            else
+                AddPowerReadout(current, "GpuTemperature",
+                    PowerSetting.GpuTemperatureLimit,
+                    L("GPU 温度上限", "GPU temperature limit"), "°C");
+            AddPowerReadout(current, "NvTargetTpp", PowerSetting.NvPcfAcTargetTppLimit,
+                L("ATPP（整机功耗）", "AC Target TPP Limit"), "W");
+            AddPowerReadout(current, "NvDefaultGpu", PowerSetting.NvPcfAcDefaultGpuLimit,
+                L("默认 GPU TGP", "AC Default GPU Limit"), "W");
+            AddPowerReadout(current, "NvMinGpu", PowerSetting.NvPcfAcMinGpuLimit,
+                L("最小 GPU TGP", "AC Min GPU Limit"), "W");
+            AddPowerReadout(current, "NvMaxGpu", PowerSetting.NvPcfAcMaxGpuLimit,
+                L("最大 GPU TGP", "AC Max GPU Limit"), "W");
+            AddPowerReadout(current, "NvDynamicBoost",
+                PowerSetting.NvPcfDynamicBoost,
+                "Dynamic Boost", "");
+        }
+        else
+        {
+            AddPowerReadout(current, "GpuTemperature",
+                PowerSetting.GpuTemperatureLimit,
+                L("GPU 温度上限", "GPU temperature limit"), "°C");
+            AddPowerReadout(current, "GpuBoost", PowerSetting.GpuPowerBoost, "GPU Power Boost", "W");
+            AddPowerReadout(current, "GpuTgp", PowerSetting.GpuConfigurableTgp, profile.Writable ? "GPU TGP" : "GPU Configurable TGP", "W");
+            AddPowerReadout(current, "GpuToCpu", PowerSetting.GpuToCpuDynamicBoost, "GPU to CPU Dynamic Boost", "W");
+            _atppReadout = AddPowerReadout(current, "Atpp", PowerSetting.Atpp, "ATPP offset", "W");
+            _atppReadout.Visibility = Visibility.Collapsed;
+        }
         panel.Children.Add(current);
         panel.Children.Add(_powerStatus);
 
-        if (profile.Writable)
+        if (Runtime.CanWritePowerSettings)
         {
             BuildPowerEditorPanel();
             var adjustment = new StackPanel();
@@ -1113,40 +1163,128 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     private void BuildPowerEditorPanel()
     {
         var profile = PowerSettingsController.CurrentProfile;
+        var nvPcf = Runtime.NvApiGpuPowerEnabled;
+        var betaCpu = Runtime.BetaCpuPowerKind;
         PowerSettingRule Rule(PowerSetting setting) => profile.Rules[setting];
-        var rule = Rule(PowerSetting.CpuPl1);
-        AddPowerEditor(_powerEditorPanel, "CpuPl1", PowerSetting.CpuPl1, "CPU PL1", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-        rule = Rule(PowerSetting.CpuPl2);
-        AddPowerEditor(_powerEditorPanel, "CpuPl2", PowerSetting.CpuPl2, "CPU PL2", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-        rule = Rule(PowerSetting.CpuTemperatureLimit);
-        AddPowerEditor(_powerEditorPanel, "CpuTemperature", PowerSetting.CpuTemperatureLimit, L("CPU 温度上限", "CPU temperature limit"), rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-        foreach (var value in PowerSettingsController.TurboTimeLimits)
-            AddChoice(_turboTime, $"{value}", value);
-        var turboRow = SettingRow(
-            "CPU Turbo Time Limit",
-            L("选择固件支持的持续时间。", "Choose a firmware-supported duration."),
-            PowerLockControl(PowerSetting.CpuTurboTimeLimit, _turboTime));
-        _powerEditorRows[PowerSetting.CpuTurboTimeLimit] = turboRow;
-        _powerEditorPanel.Children.Add(turboRow);
-        rule = Rule(PowerSetting.GpuPowerBoost);
-        AddPowerEditor(_powerEditorPanel, "GpuBoost", PowerSetting.GpuPowerBoost, "GPU Power Boost", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-        rule = Rule(PowerSetting.GpuConfigurableTgp);
-        AddPowerEditor(_powerEditorPanel, "GpuTgp", PowerSetting.GpuConfigurableTgp, "GPU TGP", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-        if (profile.Rules.TryGetValue(PowerSetting.GpuTemperatureLimit, out rule))
-            AddPowerEditor(_powerEditorPanel, "GpuTemperature", PowerSetting.GpuTemperatureLimit, L("GPU 温度上限", "GPU temperature limit"), rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-        rule = Rule(PowerSetting.GpuToCpuDynamicBoost);
-        AddPowerEditor(_powerEditorPanel, "GpuToCpu", PowerSetting.GpuToCpuDynamicBoost, "GPU to CPU Dynamic Boost", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-        if (profile.Rules.TryGetValue(PowerSetting.Atpp, out rule))
-        _atppEditorRow = AddPowerEditor(
-            _powerEditorPanel,
-            "Atpp",
-            PowerSetting.Atpp,
-            "ATPP",
-            rule.SliderMinimum,
-            rule.SliderMaximum,
-            rule.ManualMinimum);
-        if (_atppEditorRow is not null)
-            _atppEditorRow.Visibility = Visibility.Collapsed;
+        PowerSettingRule rule;
+        if (betaCpu.HasValue)
+        {
+            var names = betaCpu.Value switch
+            {
+                BetaCpuPowerKind.AmdPbo => ("PPT", "TDC", "EDC", "TctlMax"),
+                BetaCpuPowerKind.AmdApu => ("STAPM", "Fast", "Slow", "TctlMax"),
+                _ => ("CPU PL1", "CPU PL2", "CPU Turbo Time Limit", L("CPU 温度上限", "CPU temperature limit"))
+            };
+            AddPowerEditor(_powerEditorPanel, "CpuPl1", PowerSetting.CpuPl1,
+                names.Item1, 30, 150, 1);
+            AddPowerEditor(_powerEditorPanel, "CpuPl2", PowerSetting.CpuPl2,
+                names.Item2, 30, 150, 1);
+            AddPowerEditor(_powerEditorPanel, "TurboTime",
+                PowerSetting.CpuTurboTimeLimit, names.Item3,
+                betaCpu == BetaCpuPowerKind.IntelMmio ? 20 : 30,
+                betaCpu == BetaCpuPowerKind.IntelMmio ? 160 : 150, 1);
+            if (betaCpu != BetaCpuPowerKind.IntelMmio)
+                AddPowerEditor(_powerEditorPanel, "CpuTemperature",
+                    PowerSetting.CpuTemperatureLimit, names.Item4, 70, 100);
+            else if (profile.Writable && profile.Rules.TryGetValue(
+                         PowerSetting.CpuTemperatureLimit, out var wmiTemp))
+                AddPowerEditor(_powerEditorPanel, "CpuTemperature",
+                    PowerSetting.CpuTemperatureLimit, names.Item4,
+                    wmiTemp.SliderMinimum, wmiTemp.SliderMaximum,
+                    wmiTemp.ManualMinimum);
+        }
+        else if (profile.Writable &&
+            Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
+        {
+            rule = Rule(PowerSetting.CpuPl1);
+            AddPowerEditor(_powerEditorPanel, "CpuPl1", PowerSetting.CpuPl1, "CPU PL1", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
+            rule = Rule(PowerSetting.CpuPl2);
+            AddPowerEditor(_powerEditorPanel, "CpuPl2", PowerSetting.CpuPl2, "CPU PL2", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
+            rule = Rule(PowerSetting.CpuTemperatureLimit);
+            AddPowerEditor(_powerEditorPanel, "CpuTemperature", PowerSetting.CpuTemperatureLimit, L("CPU 温度上限", "CPU temperature limit"), rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
+            foreach (var value in PowerSettingsController.TurboTimeLimits)
+                AddChoice(_turboTime, $"{value}", value);
+            var turboRow = SettingRow(
+                "CPU Turbo Time Limit",
+                L("选择固件支持的持续时间。", "Choose a firmware-supported duration."),
+                PowerLockControl(PowerSetting.CpuTurboTimeLimit, _turboTime));
+            _powerEditorRows[PowerSetting.CpuTurboTimeLimit] = turboRow;
+            _powerEditorPanel.Children.Add(turboRow);
+            if (!nvPcf && profile.Rules.TryGetValue(
+                    PowerSetting.GpuTemperatureLimit,
+                    out var gpuTemperatureRule))
+                AddPowerEditor(_powerEditorPanel, "GpuTemperature", PowerSetting.GpuTemperatureLimit, L("GPU 温度上限", "GPU temperature limit"), gpuTemperatureRule.SliderMinimum, gpuTemperatureRule.SliderMaximum, gpuTemperatureRule.ManualMinimum);
+        }
+
+        if (nvPcf)
+        {
+            if (NvPcfPowerController.CachedTemperatureBounds is { } thermal)
+                AddPowerEditor(_powerEditorPanel, "NvGpuTemperature",
+                    PowerSetting.NvApiGpuTemperatureLimit,
+                    L("GPU 温度上限", "GPU temperature limit"),
+                    thermal.MinimumC, thermal.MaximumC);
+            else if (profile.Writable && profile.Rules.TryGetValue(
+                         PowerSetting.GpuTemperatureLimit,
+                         out var fallbackGpuTemperatureRule))
+                AddPowerEditor(_powerEditorPanel, "GpuTemperature",
+                    PowerSetting.GpuTemperatureLimit,
+                    L("GPU 温度上限", "GPU temperature limit"),
+                    fallbackGpuTemperatureRule.SliderMinimum,
+                    fallbackGpuTemperatureRule.SliderMaximum,
+                    fallbackGpuTemperatureRule.ManualMinimum);
+            var bounds = NvPcfPowerController.CachedSliderBounds ?? (50, 250);
+            AddPowerEditor(_powerEditorPanel, "NvTargetTpp",
+                PowerSetting.NvPcfAcTargetTppLimit,
+                L("ATPP（整机功耗）", "AC Target TPP Limit"),
+                50, 250, 1);
+            AddPowerEditor(_powerEditorPanel, "NvDefaultGpu",
+                PowerSetting.NvPcfAcDefaultGpuLimit,
+                L("默认 GPU TGP", "AC Default GPU Limit"),
+                bounds.MinimumW, bounds.MaximumW, 1);
+            AddPowerEditor(_powerEditorPanel, "NvMinGpu",
+                PowerSetting.NvPcfAcMinGpuLimit,
+                L("最小 GPU TGP", "AC Min GPU Limit"),
+                bounds.MinimumW, bounds.MaximumW, 1);
+            AddPowerEditor(_powerEditorPanel, "NvMaxGpu",
+                PowerSetting.NvPcfAcMaxGpuLimit,
+                L("最大 GPU TGP", "AC Max GPU Limit"),
+                bounds.MinimumW, bounds.MaximumW, 1);
+            _nvDynamicBoost.Content = L("启用 Dynamic Boost", "Enable Dynamic Boost");
+            _nvDynamicBoost.VerticalAlignment = VerticalAlignment.Center;
+            _nvDynamicBoost.Click += (_, _) => MarkPowerDirty();
+            var dynamicBoostRow = SettingRow(
+                "Dynamic Boost",
+                L(
+                    "左侧开关控制 Dynamic Boost；最右侧开关只锁定当前状态。",
+                    "The left switch controls Dynamic Boost; the far-right switch only locks its current state."),
+                PowerLockControl(
+                    PowerSetting.NvPcfDynamicBoost,
+                    _nvDynamicBoost));
+            _powerEditorRows[PowerSetting.NvPcfDynamicBoost] = dynamicBoostRow;
+            _powerEditorPanel.Children.Add(dynamicBoostRow);
+        }
+        else if (profile.Writable)
+        {
+            rule = Rule(PowerSetting.GpuPowerBoost);
+            AddPowerEditor(_powerEditorPanel, "GpuBoost", PowerSetting.GpuPowerBoost, "GPU Power Boost", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
+            rule = Rule(PowerSetting.GpuConfigurableTgp);
+            AddPowerEditor(_powerEditorPanel, "GpuTgp", PowerSetting.GpuConfigurableTgp, "GPU TGP", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
+            rule = Rule(PowerSetting.GpuToCpuDynamicBoost);
+            AddPowerEditor(_powerEditorPanel, "GpuToCpu", PowerSetting.GpuToCpuDynamicBoost, "GPU to CPU Dynamic Boost", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
+            if (profile.Rules.TryGetValue(
+                    PowerSetting.Atpp,
+                    out var atppRule))
+                _atppEditorRow = AddPowerEditor(
+                    _powerEditorPanel,
+                    "Atpp",
+                    PowerSetting.Atpp,
+                    "ATPP offset",
+                    atppRule.SliderMinimum,
+                    atppRule.SliderMaximum,
+                    atppRule.ManualMinimum);
+            if (_atppEditorRow is not null)
+                _atppEditorRow.Visibility = Visibility.Collapsed;
+        }
         foreach (var value in PowerSettingsController.LockIntervals)
         {
             AddChoice(
@@ -1172,7 +1310,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         buttons.Children.Add(_applyPower);
         buttons.Children.Add(_discardPower);
         buttons.Children.Add(_defaultPower);
-        _defaultPower.Visibility = profile.SupportsDefaults
+        _defaultPower.Content = nvPcf
+            ? L("恢复默认值", "Restore defaults")
+            : L("载入当前模式默认值", "Load current-mode defaults");
+        _defaultPower.Visibility = nvPcf || profile.SupportsDefaults
             ? Visibility.Visible
             : Visibility.Collapsed;
         footer.Children.Add(buttons);
@@ -1507,9 +1648,36 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         _discardPower.Click += (_, _) => ApplyPowerState(_confirmedPower);
         _powerLockInterval.SelectionChanged += (_, _) =>
             ChangePowerSettingsLockInterval();
-        _defaultPower.Click += (_, _) =>
+        _defaultPower.Click += async (_, _) =>
         {
-            var defaults = PowerSettingsController.GetDefaultState(Runtime.Snapshot.ItsMode);
+            if (Runtime.NvApiGpuPowerEnabled)
+            {
+                _defaultPower.IsEnabled = false;
+                _powerStatus.Text = L(
+                    "正在恢复 nvpcf 和当前模式默认值……",
+                    "Restoring nvpcf and current-mode defaults…");
+                try
+                {
+                    var restoredState = await Runtime.RestoreDefaultPowerSettingsAsync(
+                        Runtime.Snapshot.ItsMode);
+                    ApplyPowerState(restoredState);
+                    _powerStatus.Text = string.Empty;
+                }
+                catch (Exception ex)
+                {
+                    _powerStatus.Text = L(
+                        "恢复默认值失败：",
+                        "Could not restore defaults: ") + ex.Message;
+                }
+                finally
+                {
+                    _defaultPower.IsEnabled = true;
+                }
+                return;
+            }
+
+            var defaults = Runtime.GetDefaultPowerSettingsState(
+                Runtime.Snapshot.ItsMode);
             if (defaults is null)
             {
                 _powerStatus.Text = L("无法确定当前性能模式，不能载入默认值。", "The current performance mode is unknown, so defaults cannot be loaded.");
@@ -1546,7 +1714,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             ReloadFanDrafts();
         SyncRuntimeControls();
         if (!_coolingOnly &&
-            Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
+            Runtime.CanReadPowerSettings)
             await LoadPowerAsync();
     }
 
@@ -1995,7 +2163,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     {
         if (_disposed ||
             _powerRefreshInProgress ||
-            Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) != true)
+            !Runtime.CanReadPowerSettings)
         {
             return;
         }
@@ -2086,7 +2254,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             }
         }
         var turboAvailable = confirmed.IsAvailable(PowerSetting.CpuTurboTimeLimit);
-        if (turboAvailable && Selected<int>(_turboTime) is not { })
+        if (turboAvailable && !_powerEditors.ContainsKey("TurboTime") &&
+            Selected<int>(_turboTime) is not { })
         {
             error = L("请选择 CPU Turbo Time Limit。", "Select a CPU Turbo Time Limit.");
             return false;
@@ -2099,7 +2268,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             Editor("CpuPl1", confirmed.CpuPl1),
             Editor("CpuPl2", confirmed.CpuPl2),
             Editor("CpuTemperature", confirmed.CpuTemperatureLimit),
-            turboAvailable ? Selected<int>(_turboTime)!.Value : confirmed.CpuTurboTimeLimit,
+            _powerEditors.ContainsKey("TurboTime")
+                ? Editor("TurboTime", confirmed.CpuTurboTimeLimit)
+                : turboAvailable ? Selected<int>(_turboTime)!.Value : confirmed.CpuTurboTimeLimit,
             Editor("GpuBoost", confirmed.GpuPowerBoost),
             Editor("GpuTgp", confirmed.GpuConfigurableTgp),
             Editor("GpuTemperature", confirmed.GpuTemperatureLimit),
@@ -2107,7 +2278,24 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             confirmed.IsAvailable(PowerSetting.Atpp) && _powerEditors.TryGetValue("Atpp", out var atpp)
                 ? atpp.Value
                 : confirmed.Atpp)
-        { AvailableSettings = confirmed.AvailableSettings };
+        {
+            AvailableSettings = confirmed.AvailableSettings,
+            NvPcfAcTargetTppLimit =
+                Editor("NvTargetTpp", confirmed.NvPcfAcTargetTppLimit ?? 0),
+            NvPcfAcDefaultGpuLimit =
+                Editor("NvDefaultGpu", confirmed.NvPcfAcDefaultGpuLimit ?? 0),
+            NvPcfAcMinGpuLimit =
+                Editor("NvMinGpu", confirmed.NvPcfAcMinGpuLimit ?? 0),
+            NvPcfAcMaxGpuLimit =
+                Editor("NvMaxGpu", confirmed.NvPcfAcMaxGpuLimit ?? 0),
+            NvPcfDynamicBoostEnabled = confirmed.IsAvailable(
+                    PowerSetting.NvPcfDynamicBoost)
+                ? _nvDynamicBoost.IsChecked == true
+                : confirmed.NvPcfDynamicBoostEnabled,
+            NvApiGpuTemperatureLimit =
+                Editor("NvGpuTemperature",
+                    confirmed.NvApiGpuTemperatureLimit ?? 0)
+        };
         error = string.Empty;
         return true;
     }
@@ -2127,7 +2315,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         SetEditor("CpuPl1", PowerSetting.CpuPl1, state.CpuPl1);
         SetEditor("CpuPl2", PowerSetting.CpuPl2, state.CpuPl2);
         SetEditor("CpuTemperature", PowerSetting.CpuTemperatureLimit, state.CpuTemperatureLimit);
-        if (state.IsAvailable(PowerSetting.CpuTurboTimeLimit))
+        if (_powerEditors.ContainsKey("TurboTime"))
+            SetEditor("TurboTime", PowerSetting.CpuTurboTimeLimit,
+                state.CpuTurboTimeLimit);
+        else if (state.IsAvailable(PowerSetting.CpuTurboTimeLimit))
             Select(_turboTime, state.CpuTurboTimeLimit);
         SetEditor("GpuBoost", PowerSetting.GpuPowerBoost, state.GpuPowerBoost);
         SetEditor("GpuTgp", PowerSetting.GpuConfigurableTgp, state.GpuConfigurableTgp);
@@ -2135,6 +2326,18 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         SetEditor("GpuToCpu", PowerSetting.GpuToCpuDynamicBoost, state.GpuToCpuDynamicBoost);
         if (state.Atpp.HasValue && _powerEditors.TryGetValue("Atpp", out var atpp))
             atpp.SetValue(state.Atpp.Value);
+        SetNullableEditor("NvTargetTpp", PowerSetting.NvPcfAcTargetTppLimit,
+            state.NvPcfAcTargetTppLimit);
+        SetNullableEditor("NvDefaultGpu", PowerSetting.NvPcfAcDefaultGpuLimit,
+            state.NvPcfAcDefaultGpuLimit);
+        SetNullableEditor("NvMinGpu", PowerSetting.NvPcfAcMinGpuLimit,
+            state.NvPcfAcMinGpuLimit);
+        SetNullableEditor("NvMaxGpu", PowerSetting.NvPcfAcMaxGpuLimit,
+            state.NvPcfAcMaxGpuLimit);
+        SetNullableEditor("NvGpuTemperature",
+            PowerSetting.NvApiGpuTemperatureLimit,
+            state.NvApiGpuTemperatureLimit);
+        _nvDynamicBoost.IsChecked = state.NvPcfDynamicBoostEnabled;
         _syncing = false;
         if (confirmed) _confirmedPower = state;
         _powerDirty = !confirmed;
@@ -2145,6 +2348,15 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             if (state.IsAvailable(setting) && _powerEditors.TryGetValue(key, out var editor))
                 editor.SetValue(value);
         }
+
+        void SetNullableEditor(
+            string key,
+            PowerSetting setting,
+            int? value)
+        {
+            if (value.HasValue)
+                SetEditor(key, setting, value.Value);
+        }
     }
 
     private void UpdatePowerReadouts(PowerSettingsState state)
@@ -2153,10 +2365,26 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         _powerReadouts["CpuPl2"].Text = state.CpuPl2.ToString(CultureInfo.InvariantCulture);
         _powerReadouts["CpuTemperature"].Text = state.CpuTemperatureLimit.ToString(CultureInfo.InvariantCulture);
         _powerReadouts["TurboTime"].Text = state.CpuTurboTimeLimit.ToString(CultureInfo.InvariantCulture);
-        _powerReadouts["GpuBoost"].Text = state.GpuPowerBoost.ToString(CultureInfo.InvariantCulture);
-        _powerReadouts["GpuTgp"].Text = state.GpuConfigurableTgp.ToString(CultureInfo.InvariantCulture);
-        _powerReadouts["GpuTemperature"].Text = state.GpuTemperatureLimit.ToString(CultureInfo.InvariantCulture);
-        _powerReadouts["GpuToCpu"].Text = state.GpuToCpuDynamicBoost.ToString(CultureInfo.InvariantCulture);
+        SetReadout("GpuBoost", state.GpuPowerBoost);
+        SetReadout("GpuTgp", state.GpuConfigurableTgp);
+        SetReadout("GpuTemperature",
+            state.IsAvailable(PowerSetting.GpuTemperatureLimit)
+                ? state.GpuTemperatureLimit
+                : null);
+        SetReadout("GpuToCpu", state.GpuToCpuDynamicBoost);
+        SetReadout("NvTargetTpp", state.NvPcfAcTargetTppLimit);
+        SetReadout("NvDefaultGpu", state.NvPcfAcDefaultGpuLimit);
+        SetReadout("NvMinGpu", state.NvPcfAcMinGpuLimit);
+        SetReadout("NvMaxGpu", state.NvPcfAcMaxGpuLimit);
+        SetReadout("NvGpuTemperature", state.NvApiGpuTemperatureLimit);
+        if (_powerReadouts.TryGetValue("NvDynamicBoost", out var dynamicBoost))
+        {
+            dynamicBoost.Text = state.NvPcfDynamicBoostEnabled.HasValue
+                ? state.NvPcfDynamicBoostEnabled.Value
+                    ? L("开启", "On")
+                    : L("关闭", "Off")
+                : "--";
+        }
         foreach (var pair in _powerReadoutRows)
             pair.Value.Visibility = state.IsAvailable(pair.Key)
                 ? Visibility.Visible
@@ -2176,6 +2404,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             _atppEditorRow.Visibility = atppAvailable
                 ? Visibility.Visible
                 : Visibility.Collapsed;
+
+        void SetReadout(string key, int? value)
+        {
+            if (_powerReadouts.TryGetValue(key, out var readout))
+                readout.Text = value?.ToString(CultureInfo.InvariantCulture) ?? "--";
+        }
     }
 
     private void SyncRuntimeControls()
@@ -2415,8 +2649,10 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             pair.Value.IsEnabled = enabled &&
                 (selection.IsLocked(pair.Key) ||
                  _confirmedPower is not null &&
-                 (pair.Key != PowerSetting.Atpp ||
-                  _confirmedPower.Atpp.HasValue));
+                 _confirmedPower.IsAvailable(pair.Key) &&
+                 PowerSettingsController.Value(
+                     _confirmedPower,
+                     pair.Key).HasValue);
         }
         _powerLockInterval.IsEnabled = enabled;
     }
@@ -2425,6 +2661,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     {
         foreach (var editor in _powerEditors.Values) editor.View.IsEnabled = value;
         _turboTime.IsEnabled = value;
+        _nvDynamicBoost.IsEnabled = value;
         _defaultPower.IsEnabled = value;
         _applyPower.IsEnabled = value && _powerDirty;
         _discardPower.IsEnabled = value && _powerDirty;

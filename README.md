@@ -71,6 +71,9 @@ is available in Settings.
   LibreHardwareMonitor to read CPU temperature on the tested device. PawnIO
   is a system-level component and is not bundled with Toolkit or the external
   dependency directory.
+- Intel MMIO power control additionally needs `IntelMSR.bin`,
+  `IntelMCHBAR.bin`, and `InpOutx64.dll` beside the application. AMD Beta
+  power control uses ZenStates-Core through a separate GPL helper process.
 - Continuous temperature monitoring whenever custom fan control is active.
 - A verified way to return fan control to firmware automatic mode before relying
   on a replacement fan backend.
@@ -173,7 +176,12 @@ implemented by writing a maximum RPM value.
 ## Build and test
 
 Install the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0), then
-run from the repository root:
+initialize the pinned NvAPIWrapper source dependency and run from the
+repository root:
+
+```powershell
+git submodule update --init --recursive
+```
 
 ```powershell
 .\scripts\build.ps1

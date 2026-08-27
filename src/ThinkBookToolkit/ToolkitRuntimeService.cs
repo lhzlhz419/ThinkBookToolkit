@@ -79,6 +79,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly LenovoFnKeyManager _fnKeyManager;
     private readonly AutomationRunner _automationRunner;
     private readonly KeyboardMacroService _macroService;
+    private readonly LocalDataSharingService _dataSharing;
     private MainWindow? _fanRuntime;
     private TemperatureReader? _temperatureReader;
     private ToolkitMainWindow? _window;
@@ -125,12 +126,29 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _bootSessionId = GpuModeRestartState.CurrentBootSessionId;
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
+        _dataSharing = new LocalDataSharingService(() => Snapshot);
         _pollTimer.Tick += async (_, _) => await RefreshAsync();
         _powerSettingsLockTimer.Tick += async (_, _) =>
             await EnforcePowerSettingsLockAsync();
         _hybridAutoGpu.PresenceChanged += OnDiscreteGpuPresenceChanged;
+        GpuTelemetryControl.ModeChanged += OnGpuTelemetryModeChanged;
         SyncPollingInterval();
         SyncSystemThemeSubscription();
+        if (settings.ShareDataWithOtherSoftware)
+        {
+            try
+            {
+                _dataSharing.Start(settings.DataSharingPort);
+            }
+            catch (Exception ex)
+            {
+                ToolkitLog.Error(
+                    "Local data sharing could not be started from the saved settings.",
+                    ex);
+                settings.ShareDataWithOtherSoftware = false;
+                try { CurveProfileStore.SaveSettings(settings); } catch { }
+            }
+        }
     }
 
     public AppSettings Settings { get; }
@@ -150,6 +168,32 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public ToolkitRuntimeSnapshot Snapshot { get; private set; }
 
     public MainWindow? FanRuntime => _fanRuntime;
+
+    internal bool NvApiGpuPowerEnabled =>
+        Settings.UseNvApiGpuPower &&
+        Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true;
+    internal bool IntelMmioCpuPowerEnabled =>
+        Settings.UseIntelMmioCpuPower &&
+        Report?.IsAvailable(FeatureIds.IntelMmioCpuPower) == true;
+    internal bool AmdZenStatesCpuPowerEnabled =>
+        Settings.UseAmdZenStatesCpuPower &&
+        Report?.IsAvailable(FeatureIds.AmdZenStatesCpuPower) == true;
+    internal BetaCpuPowerKind? BetaCpuPowerKind => IntelMmioCpuPowerEnabled
+        ? ThinkBookToolkit.BetaCpuPowerKind.IntelMmio
+        : AmdZenStatesCpuPowerEnabled
+            ? AmdZenStatesPowerController.CachedKind
+            : null;
+
+    internal bool CanReadPowerSettings =>
+        Report?.IsAvailable(FeatureIds.PowerSettings) == true ||
+        NvApiGpuPowerEnabled || IntelMmioCpuPowerEnabled ||
+        AmdZenStatesCpuPowerEnabled;
+
+    internal bool CanWritePowerSettings =>
+        PowerSettingsController.CurrentProfile.Writable &&
+        Report?.IsAvailable(FeatureIds.PowerSettings) == true ||
+        NvApiGpuPowerEnabled || IntelMmioCpuPowerEnabled ||
+        AmdZenStatesCpuPowerEnabled;
 
     public TimeSpan? FanBackendMinimumReadInterval =>
         _fanRuntime?.RuntimeBackendMinimumReadInterval;
@@ -957,7 +1001,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         await _powerSettingsGate.WaitAsync();
         try
         {
-            return await Task.Run(PowerSettingsController.ReadState);
+            return await Task.Run(ReadPowerSettingsCore);
         }
         finally
         {
@@ -971,31 +1015,569 @@ internal sealed class ToolkitRuntimeService : IDisposable
         await _powerSettingsGate.WaitAsync();
         try
         {
-            var confirmed = await Task.Run(
-                () => PowerSettingsController.WriteAndReadState(state));
-            var modeLock = CurrentPowerModeLock(create: false);
-            if (modeLock?.Locks is { Any: true })
-            {
-                modeLock.Target = confirmed;
-                Settings.PowerSettingsLocks = modeLock.Locks;
-                Settings.PowerSettingsLockTarget = confirmed;
-                try
-                {
-                    CurveProfileStore.SaveSettings(Settings);
-                }
-                catch (Exception ex)
-                {
-                    SetStatus(L(
-                        "功耗设置已应用，但新的锁定目标无法保存：",
-                        "Power settings were applied, but the new lock target could not be saved: ") + ex.Message);
-                }
-            }
+            var confirmed = await Task.Run(() =>
+                ApplyPowerSettingsCore(state));
+            UpdatePowerLockTargetAfterApply(confirmed);
             return confirmed;
         }
         finally
         {
             _powerSettingsGate.Release();
         }
+    }
+
+    internal PowerSettingsState? GetDefaultPowerSettingsState(ItsMode mode)
+    {
+        var state = PowerSettingsController.GetDefaultState(mode);
+        return state is null || !NvApiGpuPowerEnabled
+            ? state
+            : NvPcfPowerPolicy.FromLegacy(state);
+    }
+
+    public async Task<PowerSettingsState> RestoreDefaultPowerSettingsAsync(
+        ItsMode mode)
+    {
+        if (!NvApiGpuPowerEnabled)
+            throw new NotSupportedException(
+                "NVAPI GPU power control is not enabled.");
+        await _powerSettingsGate.WaitAsync();
+        try
+        {
+            var confirmed = await Task.Run(() =>
+            {
+                NvPcfPowerController.ResetToDefaults();
+                PowerSettingsState? wmi = null;
+                var defaults = PowerSettingsController.GetDefaultState(mode);
+                if (defaults is not null &&
+                    PowerSettingsController.CurrentProfile.Writable)
+                {
+                    try
+                    {
+                        var wmiDefaults = defaults with
+                        {
+                            AvailableSettings =
+                                defaults.AvailableSettings &
+                                ~NvPcfPowerPolicy.LegacyGpuMask
+                        };
+                        wmi = PowerSettingsController.WriteAndReadState(
+                            wmiDefaults);
+                    }
+                    catch (Exception ex)
+                    {
+                        ToolkitLog.Warning(
+                            "nvpcf was reset, but Lenovo WMI defaults could " +
+                            "not be restored: " + ex.Message);
+                        wmi = TryReadWmiPowerSettings();
+                    }
+                }
+                else
+                {
+                    wmi = TryReadWmiPowerSettings();
+                }
+                return NvPcfPowerPolicy.Merge(
+                    wmi,
+                    NvPcfPowerController.ReadAfterReset());
+            });
+            _cachedPowerSettings = confirmed;
+            UpdatePowerLockTargetAfterApply(confirmed);
+            return confirmed;
+        }
+        finally
+        {
+            _powerSettingsGate.Release();
+        }
+    }
+
+    public async Task<string?> SetNvApiGpuPowerEnabledAsync(bool enabled)
+    {
+        if (enabled == Settings.UseNvApiGpuPower)
+            return null;
+        if (enabled &&
+            Report?.IsAvailable(FeatureIds.NvApiGpuPower) != true)
+        {
+            return L(
+                "当前设备无法读取全部四项 NVPCF 功耗参数。",
+                "All four NVPCF power values are unavailable on this device.");
+        }
+
+        _powerSettingsLockTimer.Stop();
+        await _powerSettingsGate.WaitAsync();
+        var changed = false;
+        string? failure = null;
+        _ = CurrentPowerModeLock(create: false);
+        var previousEnabled = Settings.UseNvApiGpuPower;
+        var previousLegacyProfiles = ClonePowerModeLocks(
+            Settings.PowerSettingsLocksByMode);
+        var previousNvApiProfiles = ClonePowerModeLocks(
+            Settings.NvApiPowerSettingsLocksByMode);
+        var previousLocks = Settings.PowerSettingsLocks;
+        var previousTarget = Settings.PowerSettingsLockTarget;
+        try
+        {
+            var source = await Task.Run(ReadPowerSettingsCore);
+            PowerSettingsState confirmed;
+            if (enabled)
+                confirmed = await EnableNvApiGpuPowerCoreAsync(source);
+            else
+                confirmed = await DisableNvApiGpuPowerCoreAsync(source);
+            Settings.UseNvApiGpuPower = enabled;
+            _cachedPowerSettings = confirmed;
+            SyncLegacyPowerLockFields();
+            CurveProfileStore.SaveSettings(Settings);
+            changed = true;
+            ToolkitLog.Info(
+                $"NVAPI GPU power control changed: enabled={enabled}.");
+        }
+        catch (Exception ex)
+        {
+            Settings.UseNvApiGpuPower = previousEnabled;
+            Settings.PowerSettingsLocksByMode = previousLegacyProfiles;
+            Settings.NvApiPowerSettingsLocksByMode = previousNvApiProfiles;
+            Settings.PowerSettingsLocks = previousLocks;
+            Settings.PowerSettingsLockTarget = previousTarget;
+            ToolkitLog.Error(
+                "NVAPI GPU power control could not be changed.",
+                ex);
+            failure = ex.GetBaseException().Message;
+        }
+        finally
+        {
+            _powerSettingsGate.Release();
+            SyncPowerSettingsLockTimer();
+        }
+
+        if (changed)
+        {
+            OverviewLayoutChanged?.Invoke(this, EventArgs.Empty);
+            await RefreshAsync(force: true);
+        }
+        return failure;
+    }
+
+    public string? SetBetaCpuPowerEnabled(bool intel, bool enabled)
+    {
+        var feature = intel ? FeatureIds.IntelMmioCpuPower :
+            FeatureIds.AmdZenStatesCpuPower;
+        if (enabled && Report?.IsAvailable(feature) != true)
+        {
+            var detail = Report?.Items.FirstOrDefault(item =>
+                item.Id == feature)?.Detail;
+            return L("当前 CPU Beta 功耗接口不可用：",
+                       "The CPU Beta power interface is unavailable: ") +
+                   (string.IsNullOrWhiteSpace(detail)
+                       ? L("未通过功能检测。", "capability detection failed.")
+                       : detail);
+        }
+        var oldIntel = Settings.UseIntelMmioCpuPower;
+        var oldAmd = Settings.UseAmdZenStatesCpuPower;
+        try
+        {
+            Settings.UseIntelMmioCpuPower = intel && enabled;
+            Settings.UseAmdZenStatesCpuPower = !intel && enabled;
+            CurveProfileStore.SaveSettings(Settings);
+            _cachedPowerSettings = null;
+            OverviewLayoutChanged?.Invoke(this, EventArgs.Empty);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Settings.UseIntelMmioCpuPower = oldIntel;
+            Settings.UseAmdZenStatesCpuPower = oldAmd;
+            return ex.Message;
+        }
+    }
+
+    private async Task<PowerSettingsState> EnableNvApiGpuPowerCoreAsync(
+        PowerSettingsState legacy)
+    {
+        if (legacy.Atpp is null &&
+            PowerSettingsController.GetDefaultState(Snapshot.ItsMode) is
+            { Atpp: { } defaultAtpp })
+        {
+            legacy = legacy with { Atpp = defaultAtpp };
+        }
+        var nvSnapshot = await Task.Run(NvPcfPowerController.Read);
+        var current = NvPcfPowerPolicy.Merge(
+            legacy,
+            nvSnapshot);
+        var converted = NvPcfPowerPolicy.FromLegacy(legacy);
+        var profile = PowerModeLock(
+            Settings.NvApiPowerSettingsLocksByMode,
+            Snapshot.ItsMode,
+            create: true) ?? new PowerModeLockSettings();
+        var settings = new[]
+        {
+            PowerSetting.NvPcfAcTargetTppLimit,
+            PowerSetting.NvPcfAcDefaultGpuLimit,
+            PowerSetting.NvPcfAcMinGpuLimit,
+            PowerSetting.NvPcfAcMaxGpuLimit,
+            PowerSetting.NvApiGpuTemperatureLimit
+        };
+        var desired = ApplyConvertedOrLockedValues(
+            current,
+            converted,
+            profile,
+            settings,
+            out var selection);
+        var written = selection.Any
+            ? await Task.Run(() =>
+                NvPcfPowerController.WriteAndRead(desired, selection))
+            : nvSnapshot;
+        var confirmed = NvPcfPowerPolicy.Merge(
+            legacy,
+            written);
+        profile.Target = UpdateProfileTarget(
+            profile.Target,
+            confirmed,
+            settings,
+            profile.Locks);
+        return confirmed;
+    }
+
+    private async Task<PowerSettingsState> DisableNvApiGpuPowerCoreAsync(
+        PowerSettingsState nvState)
+    {
+        var converted = NvPcfPowerPolicy.ToLegacy(nvState);
+        try
+        {
+            await Task.Run(NvPcfPowerController.ResetAllPowerOverrides);
+        }
+        catch (Exception ex)
+        {
+            NvPcfPowerController.Shutdown();
+            ToolkitLog.Error(
+                "NVAPI GPU power overrides could not be reset while " +
+                "disabling the feature; the feature will still be disabled.",
+                ex);
+            SetStatus(L(
+                "NVAPI 功耗调整已关闭，但恢复 NVIDIA 默认功耗设置失败：",
+                "NVAPI power control was disabled, but NVIDIA defaults could not be restored: ") +
+                ex.GetBaseException().Message);
+        }
+        return TryReadWmiPowerSettings() ?? converted;
+    }
+
+    private static PowerSettingsState ApplyConvertedOrLockedValues(
+        PowerSettingsState current,
+        PowerSettingsState converted,
+        PowerModeLockSettings profile,
+        IEnumerable<PowerSetting> settings,
+        out PowerSettingsLockSelection selection)
+    {
+        var desired = current;
+        selection = new PowerSettingsLockSelection();
+        foreach (var setting in settings)
+        {
+            if (!current.IsAvailable(setting))
+                continue;
+            var source = profile.Locks.IsLocked(setting) &&
+                         profile.Target is { } target &&
+                         target.IsAvailable(setting) &&
+                         PowerSettingsController.Value(target, setting).HasValue
+                ? target
+                : converted;
+            if (!source.IsAvailable(setting) ||
+                !PowerSettingsController.Value(source, setting).HasValue)
+                continue;
+            desired = PowerSettingsController.WithSetting(
+                desired,
+                source,
+                setting);
+            selection = selection.With(setting, true);
+        }
+        return desired;
+    }
+
+    private static PowerSettingsState? UpdateProfileTarget(
+        PowerSettingsState? previous,
+        PowerSettingsState current,
+        IEnumerable<PowerSetting> settings,
+        PowerSettingsLockSelection locks)
+    {
+        if (!locks.Any)
+            return null;
+        var target = PowerSettingsController.IsValidState(previous)
+            ? previous!
+            : current;
+        foreach (var setting in settings)
+        {
+            if (!locks.IsLocked(setting) && current.IsAvailable(setting))
+                target = PowerSettingsController.WithSetting(
+                    target,
+                    current,
+                    setting);
+        }
+        return target;
+    }
+
+    private PowerSettingsState ReadPowerSettingsCore()
+    {
+        var wmi = TryReadWmiPowerSettings();
+        if (IntelMmioCpuPowerEnabled)
+            wmi = MergeBetaCpu(wmi, IntelMmioPowerController.Read());
+        else if (AmdZenStatesCpuPowerEnabled)
+            wmi = MergeBetaCpu(wmi, AmdZenStatesPowerController.Read());
+        if (NvApiGpuPowerEnabled)
+        {
+            if (GpuTelemetryControl.Mode != GpuTelemetryMode.Full)
+            {
+                if (_cachedPowerSettings is { } cached &&
+                    NvPcfPowerPolicy.TryValues(
+                        cached,
+                        out var target,
+                        out var @default,
+                        out var minimum,
+                        out var maximum))
+                {
+                    var bounds = NvPcfPowerController.CachedSliderBounds ??
+                                 (@default, maximum);
+                    return NvPcfPowerPolicy.Merge(
+                        wmi,
+                        new NvPcfPowerSnapshot(
+                            target,
+                            @default,
+                            minimum,
+                            maximum,
+                            bounds.MinimumW,
+                            bounds.MaximumW,
+                            cached.NvPcfDynamicBoostEnabled,
+                            cached.NvApiGpuTemperatureLimit,
+                            NvPcfPowerController.CachedTemperatureBounds?.MinimumC,
+                            NvPcfPowerController.CachedTemperatureBounds?.MaximumC,
+                            "Cached while dGPU is unavailable"));
+                }
+                return wmi ?? throw new InvalidOperationException(
+                    "The discrete GPU is unavailable, so NVPCF values cannot be read.");
+            }
+            return NvPcfPowerPolicy.Merge(wmi, NvPcfPowerController.Read());
+        }
+        return wmi ?? throw new InvalidOperationException(
+            "No power values could be read.");
+    }
+
+    private PowerSettingsState ApplyPowerSettingsCore(
+        PowerSettingsState state)
+    {
+        BetaCpuPowerSnapshot? beta = null;
+        if (IntelMmioCpuPowerEnabled)
+            beta = IntelMmioPowerController.Write(
+                state.CpuPl1, state.CpuPl2, state.CpuTurboTimeLimit);
+        else if (AmdZenStatesCpuPowerEnabled)
+        {
+            var names = BetaCpuPowerKind == ThinkBookToolkit.BetaCpuPowerKind.AmdPbo
+                ? new[] { "ppt", "tdc", "edc" }
+                : new[] { "stapm", "fast", "slow" };
+            _ = AmdZenStatesPowerController.Write(names[0], state.CpuPl1);
+            _ = AmdZenStatesPowerController.Write(names[1], state.CpuPl2);
+            _ = AmdZenStatesPowerController.Write(names[2], state.CpuTurboTimeLimit);
+            if (state.IsAvailable(PowerSetting.CpuTemperatureLimit))
+                _ = AmdZenStatesPowerController.Write("tctlmax", state.CpuTemperatureLimit);
+            beta = AmdZenStatesPowerController.Read();
+        }
+        if (!NvApiGpuPowerEnabled && beta is null)
+            return PowerSettingsController.WriteAndReadState(state);
+        if (!NvApiGpuPowerEnabled)
+        {
+            var draft = state with { AvailableSettings =
+                state.AvailableSettings & ~BetaCpuMask() };
+            var wmiOnly = PowerSettingsController.CurrentProfile.Writable &&
+                          Report?.IsAvailable(FeatureIds.PowerSettings) == true
+                ? PowerSettingsController.WriteAndReadState(draft)
+                : TryReadWmiPowerSettings();
+            return MergeBetaCpu(wmiOnly, beta!);
+        }
+        if (GpuTelemetryControl.Mode != GpuTelemetryMode.Full)
+            throw new InvalidOperationException(
+                "The discrete GPU is unavailable, so NVPCF values cannot be written.");
+        if (!NvPcfPowerPolicy.IsValid(state))
+            throw new ArgumentException(
+                "All four NVPCF power values must be positive integers.",
+                nameof(state));
+
+        PowerSettingsState? wmi = null;
+        if (PowerSettingsController.CurrentProfile.Writable &&
+            Report?.IsAvailable(FeatureIds.PowerSettings) == true)
+        {
+            try
+            {
+                var wmiDraft = state with
+                {
+                    AvailableSettings =
+                        state.AvailableSettings &
+                        ~NvPcfPowerPolicy.NvPcfMask &
+                        ~NvPcfPowerPolicy.LegacyGpuMask &
+                        ~BetaCpuMask()
+                };
+                wmi = PowerSettingsController.WriteAndReadState(wmiDraft);
+            }
+            catch (Exception ex)
+            {
+                ToolkitLog.Warning(
+                    "Lenovo WMI power values could not be written while " +
+                    "NVAPI GPU power control remains active: " + ex.Message);
+                SetStatus(L(
+                    "联想功耗接口写入失败；NVAPI GPU 功耗参数将继续应用。",
+                    "Lenovo power values could not be written; the NVAPI GPU power values will still be applied."));
+                wmi = TryReadWmiPowerSettings();
+            }
+        }
+        else
+        {
+            wmi = TryReadWmiPowerSettings();
+        }
+        var nvPcf = NvPcfPowerController.WriteAndRead(state);
+        var result = NvPcfPowerPolicy.Merge(wmi, nvPcf);
+        return beta is null ? result : MergeBetaCpu(result, beta);
+    }
+
+    private PowerSettingAvailability BetaCpuMask() =>
+        IntelMmioCpuPowerEnabled
+            ? PowerSettingsController.Flag(PowerSetting.CpuPl1) |
+              PowerSettingsController.Flag(PowerSetting.CpuPl2) |
+              PowerSettingsController.Flag(PowerSetting.CpuTurboTimeLimit)
+            : AmdZenStatesCpuPowerEnabled
+                ? PowerSettingsController.Flag(PowerSetting.CpuPl1) |
+                  PowerSettingsController.Flag(PowerSetting.CpuPl2) |
+                  PowerSettingsController.Flag(PowerSetting.CpuTurboTimeLimit) |
+                  PowerSettingsController.Flag(PowerSetting.CpuTemperatureLimit)
+                : PowerSettingAvailability.None;
+
+    private static PowerSettingsState MergeBetaCpu(
+        PowerSettingsState? state,
+        BetaCpuPowerSnapshot beta)
+    {
+        state ??= new PowerSettingsState(0, 0, 0, 0, 0, 0, 0, 0)
+        { AvailableSettings = PowerSettingAvailability.None };
+        var names = beta.Kind == ThinkBookToolkit.BetaCpuPowerKind.AmdPbo
+            ? new[] { "ppt", "tdc", "edc" }
+            : beta.Kind == ThinkBookToolkit.BetaCpuPowerKind.AmdApu
+                ? new[] { "stapm", "fast", "slow" }
+                : new[] { "pl1", "pl2", "turbo" };
+        var available = state.AvailableSettings |
+            PowerSettingsController.Flag(PowerSetting.CpuPl1) |
+            PowerSettingsController.Flag(PowerSetting.CpuPl2) |
+            PowerSettingsController.Flag(PowerSetting.CpuTurboTimeLimit);
+        if (beta.TctlMax.HasValue)
+            available |= PowerSettingsController.Flag(PowerSetting.CpuTemperatureLimit);
+        return state with
+        {
+            CpuPl1 = beta.Values[names[0]], CpuPl2 = beta.Values[names[1]],
+            CpuTurboTimeLimit = beta.Values[names[2]],
+            CpuTemperatureLimit = beta.TctlMax ?? state.CpuTemperatureLimit,
+            AvailableSettings = available,
+            BetaCpuPowerKind = beta.Kind
+        };
+    }
+
+    private PowerSettingsState? TryReadWmiPowerSettings()
+    {
+        if (Report?.IsAvailable(FeatureIds.PowerSettings) != true)
+            return null;
+        try
+        {
+            return PowerSettingsController.ReadState();
+        }
+        catch (Exception ex)
+        {
+            if (!NvApiGpuPowerEnabled)
+                throw;
+            ToolkitLog.Warning(
+                "WMI power values are unavailable while NVAPI GPU power " +
+                "control remains usable: " + ex.Message);
+            return null;
+        }
+    }
+
+    private void UpdatePowerLockTargetAfterApply(
+        PowerSettingsState confirmed)
+    {
+        var modeLock = CurrentPowerModeLock(create: false);
+        if (modeLock?.Locks is not { Any: true })
+            return;
+        modeLock.Target = confirmed;
+        var inactiveProfiles = Settings.UseNvApiGpuPower
+            ? Settings.PowerSettingsLocksByMode
+            : Settings.NvApiPowerSettingsLocksByMode;
+        var inactive = PowerModeLock(
+            inactiveProfiles,
+            Snapshot.ItsMode,
+            create: false);
+        if (inactive is not null)
+        {
+            var inactiveTarget = PowerSettingsController.IsValidState(
+                inactive.Target)
+                ? inactive.Target!
+                : confirmed;
+            foreach (var setting in new[]
+                     {
+                         PowerSetting.CpuPl1,
+                         PowerSetting.CpuPl2,
+                         PowerSetting.CpuTemperatureLimit,
+                         PowerSetting.CpuTurboTimeLimit
+                     })
+            {
+                if (inactive.Locks.IsLocked(setting))
+                    inactiveTarget = PowerSettingsController.WithSetting(
+                        inactiveTarget,
+                        confirmed,
+                        setting);
+            }
+            inactive.Target = inactive.Locks.Any ? inactiveTarget : null;
+        }
+        Settings.PowerSettingsLocks = modeLock.Locks;
+        Settings.PowerSettingsLockTarget = confirmed;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+        }
+        catch (Exception ex)
+        {
+            SetStatus(L(
+                "功耗设置已应用，但新的锁定目标无法保存：",
+                "Power settings were applied, but the new lock target could not be saved: ") + ex.Message);
+        }
+    }
+
+    private static Dictionary<string, PowerModeLockSettings> ClonePowerModeLocks(
+        Dictionary<string, PowerModeLockSettings>? source)
+    {
+        var result = new Dictionary<string, PowerModeLockSettings>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in source ?? [])
+        {
+            result[pair.Key] = new PowerModeLockSettings
+            {
+                Locks = pair.Value.Locks with { },
+                Target = pair.Value.Target
+            };
+        }
+        return result;
+    }
+
+    private static PowerModeLockSettings? PowerModeLock(
+        Dictionary<string, PowerModeLockSettings> profiles,
+        ItsMode mode,
+        bool create)
+    {
+        if (mode == ItsMode.Unknown)
+            return null;
+        var key = mode.ToString();
+        if (profiles.TryGetValue(key, out var profile))
+            return profile;
+        if (!create)
+            return null;
+        profile = new PowerModeLockSettings();
+        profiles[key] = profile;
+        return profile;
+    }
+
+    private void SyncLegacyPowerLockFields()
+    {
+        var modeLock = CurrentPowerModeLock(create: false);
+        if (modeLock is null)
+            return;
+        Settings.PowerSettingsLocks = modeLock.Locks with { };
+        Settings.PowerSettingsLockTarget = modeLock.Target;
     }
 
     public Task<GpuWorkerCommandResponse>
@@ -1115,9 +1697,14 @@ internal sealed class ToolkitRuntimeService : IDisposable
         PowerSettingsState? target,
         out string? error)
     {
+        var previousLegacyProfiles = ClonePowerModeLocks(
+            Settings.PowerSettingsLocksByMode);
+        var previousNvApiProfiles = ClonePowerModeLocks(
+            Settings.NvApiPowerSettingsLocksByMode);
         if (enabled &&
             (!PowerSettingsController.IsValidState(target) ||
-             setting == PowerSetting.Atpp && !target!.Atpp.HasValue))
+             !target!.IsAvailable(setting) ||
+             !PowerSettingsController.Value(target, setting).HasValue))
         {
             error = L(
                 "请先成功读取当前功耗设置。",
@@ -1151,6 +1738,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             modeLock.Target = null;
         }
+        MirrorCommonPowerLock(setting, enabled, target);
         Settings.PowerSettingsLocks = modeLock.Locks;
         Settings.PowerSettingsLockTarget = modeLock.Target;
         try
@@ -1162,13 +1750,45 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         catch (Exception ex)
         {
-            modeLock.Locks = previousSelection;
-            modeLock.Target = previousTarget;
+            Settings.PowerSettingsLocksByMode = previousLegacyProfiles;
+            Settings.NvApiPowerSettingsLocksByMode = previousNvApiProfiles;
             Settings.PowerSettingsLocks = previousSelection;
             Settings.PowerSettingsLockTarget = previousTarget;
             SyncPowerSettingsLockTimer();
             error = ex.Message;
             return false;
+        }
+    }
+
+    private void MirrorCommonPowerLock(
+        PowerSetting setting,
+        bool enabled,
+        PowerSettingsState? target)
+    {
+        if (setting is not (PowerSetting.CpuPl1 or PowerSetting.CpuPl2 or
+            PowerSetting.CpuTemperatureLimit or
+            PowerSetting.CpuTurboTimeLimit))
+            return;
+        var inactiveProfiles = Settings.UseNvApiGpuPower
+            ? Settings.PowerSettingsLocksByMode
+            : Settings.NvApiPowerSettingsLocksByMode;
+        var inactive = PowerModeLock(
+            inactiveProfiles,
+            Snapshot.ItsMode,
+            create: enabled);
+        if (inactive is null)
+            return;
+        inactive.Locks = inactive.Locks.With(setting, enabled);
+        if (enabled && target is not null)
+        {
+            inactive.Target = PowerSettingsController.IsValidState(inactive.Target)
+                ? PowerSettingsController.WithSetting(
+                    inactive.Target!, target, setting)
+                : target;
+        }
+        else if (!inactive.Locks.Any)
+        {
+            inactive.Target = null;
         }
     }
 
@@ -1252,16 +1872,25 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 }
                 battery = _cachedBattery;
             }
-            if (Report?.IsAvailable(FeatureIds.PowerSettings) == true)
+            if (CanReadPowerSettings)
             {
-                try
+                if (await _powerSettingsGate.WaitAsync(0))
                 {
-                    _cachedPowerSettings = await Task.Run(
-                        PowerSettingsController.ReadState);
-                }
-                catch (Exception ex)
-                {
-                    ToolkitLog.Warning("Power values could not be refreshed: " + ex.Message);
+                    try
+                    {
+                        _cachedPowerSettings = await Task.Run(
+                            ReadPowerSettingsCore);
+                    }
+                    catch (Exception ex)
+                    {
+                        ToolkitLog.Warning(
+                            "Power values could not be refreshed: " +
+                            ex.Message);
+                    }
+                    finally
+                    {
+                        _powerSettingsGate.Release();
+                    }
                 }
             }
 
@@ -1553,6 +2182,22 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     {
                         _confirmedPerformanceModeDuringRefresh = null;
                     }
+                    _powerSettingsLockTimer.Stop();
+                    try
+                    {
+                        await ResetNvPcfAfterPerformanceModeChangeAsync(mode);
+                    }
+                    catch (Exception ex)
+                    {
+                        ToolkitLog.Error(
+                            "NVPCF defaults could not be restored " +
+                            $"after switching to {mode}.",
+                            ex);
+                        SetStatus(L(
+                            "性能模式已切换，但 NVAPI GPU 功耗恢复默认失败：",
+                            "The performance mode changed, but the NVAPI GPU power defaults could not be restored: ") +
+                            ex.GetBaseException().Message);
+                    }
                     SyncPowerSettingsLockTimer();
                     await EnforcePowerSettingsLockAsync();
                     return null;
@@ -1565,6 +2210,37 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             ToolkitLog.Error("Performance-mode switch failed.", ex);
             return ex.Message;
+        }
+    }
+
+    private async Task ResetNvPcfAfterPerformanceModeChangeAsync(
+        ItsMode mode)
+    {
+        if (!NvApiGpuPowerEnabled ||
+            GpuTelemetryControl.Mode != GpuTelemetryMode.Full)
+        {
+            return;
+        }
+        await _powerSettingsGate.WaitAsync();
+        try
+        {
+            var confirmed = await Task.Run(() =>
+            {
+                NvPcfPowerController.ResetToDefaults();
+                return NvPcfPowerPolicy.Merge(
+                    TryReadWmiPowerSettings(),
+                    NvPcfPowerController.ReadAfterReset());
+            });
+            _cachedPowerSettings = confirmed;
+            Snapshot = Snapshot with { PowerSettings = confirmed };
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            ToolkitLog.Info(
+                $"NVPCF defaults were restored after switching to {mode}; " +
+                "locked values will now be reapplied.");
+        }
+        finally
+        {
+            _powerSettingsGate.Release();
         }
     }
 
@@ -1835,19 +2511,24 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 hasCurrentBootTransition
                     ? transition.SourceUsesDirectGraphicsConfiguration
                     : state!.UsesDirectGraphicsConfiguration;
-            var requiresRestart = await Task.Run(() =>
+            var result = await Task.Run(() =>
                 GpuModeController.SetModeFromEffectiveState(
                     source,
                     sourceUsesDirectGraphicsConfiguration,
                     target));
-            if (requiresRestart)
+            if (result.RequiresRestart)
             {
                 GpuModeRestartState.MarkPending(
                     Settings,
                     source,
                     sourceUsesDirectGraphicsConfiguration,
                     target,
-                    _bootSessionId);
+                    _bootSessionId,
+                    result);
+                if (!string.IsNullOrWhiteSpace(result.Warning))
+                    ToolkitLog.Warning(
+                        "GPU parent mode was staged, but the child mode " +
+                        "will need post-boot completion: " + result.Warning);
             }
             else
             {
@@ -2193,6 +2874,55 @@ internal sealed class ToolkitRuntimeService : IDisposable
             current => Settings.ContinuouslyWriteFanTargets = current,
             value,
             out error);
+
+    public bool TrySetDataSharing(
+        bool enabled,
+        int port,
+        out string? error)
+    {
+        if (!CurveProfileStore.IsValidDataSharingPort(port))
+        {
+            error = L(
+                "端口号必须为 1 到 65535 之间的整数。",
+                "The port must be an integer between 1 and 65535.");
+            return false;
+        }
+
+        var previousEnabled = Settings.ShareDataWithOtherSoftware;
+        var previousPort = Settings.DataSharingPort;
+        try
+        {
+            if (enabled)
+                _dataSharing.Start(port);
+            else
+                _dataSharing.Stop();
+            Settings.ShareDataWithOtherSoftware = enabled;
+            Settings.DataSharingPort = port;
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.ShareDataWithOtherSoftware = previousEnabled;
+            Settings.DataSharingPort = previousPort;
+            try
+            {
+                if (previousEnabled)
+                    _dataSharing.Start(previousPort);
+                else
+                    _dataSharing.Stop();
+            }
+            catch (Exception rollbackException)
+            {
+                ToolkitLog.Error(
+                    "Local data sharing could not be rolled back.",
+                    rollbackException);
+            }
+            error = ex.GetBaseException().Message;
+            return false;
+        }
+    }
 
     public bool TrySetOverviewLayout(
         OverviewLayoutSettings layout,
@@ -2643,63 +3373,75 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return;
         }
 
-        try
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        Exception? lastError = null;
+        while (DateTimeOffset.UtcNow < deadline)
         {
-            var state = await Task.Run(GpuModeController.ReadState);
-            if (GpuModeRestartState.ShouldClearAfterReadback(
-                    Settings.PendingGpuMode,
-                    Settings.PendingGpuModeBootSessionId,
-                    _bootSessionId,
-                    state.CurrentMode))
+            try
             {
-                GpuModeRestartState.Clear(Settings);
-                CurveProfileStore.SaveSettings(Settings);
-                return;
-            }
-
-            if (GpuModeController.IsHybridMode(pending) &&
-                !state.UsesDirectGraphicsConfiguration)
-            {
-                var requiresAnotherRestart = await Task.Run(
-                    () => GpuModeController.SetMode(pending));
-                if (requiresAnotherRestart)
+                var state = await Task.Run(GpuModeController.ReadState);
+                if (state.CurrentMode == pending)
                 {
-                    GpuModeRestartState.MarkPending(
-                        Settings,
-                        state.CurrentMode,
-                        state.UsesDirectGraphicsConfiguration,
-                        pending,
-                        _bootSessionId);
+                    GpuModeRestartState.Clear(Settings);
                     CurveProfileStore.SaveSettings(Settings);
                     return;
                 }
-
-                var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
-                do
+                if (!GpuModeController.IsHybridMode(pending))
                 {
-                    await Task.Delay(500);
-                    state = await Task.Run(GpuModeController.ReadState);
-                    if (state.CurrentMode == pending)
-                    {
-                        GpuModeRestartState.Clear(Settings);
-                        CurveProfileStore.SaveSettings(Settings);
-                        return;
-                    }
-                } while (DateTimeOffset.UtcNow < deadline);
+                    FailPendingGpuMode(
+                        $"GPU mode remained {state.CurrentMode} after restart.");
+                    return;
+                }
+                if (state.UsesDirectGraphicsConfiguration)
+                {
+                    FailPendingGpuMode(
+                        "GPU mode transition failed: the system is still " +
+                        "using a direct graphics configuration after restart.");
+                    return;
+                }
+
+                Settings.PendingGpuModePostBootAttempts++;
+                var result = await Task.Run(() =>
+                    GpuModeController.SetMode(pending));
+                if (result.RequiresRestart)
+                {
+                    FailPendingGpuMode(
+                        "GPU child mode could not be applied without " +
+                        "requesting another restart.");
+                    return;
+                }
+                await Task.Delay(500);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                Settings.PendingGpuModeLastError =
+                    ex.GetBaseException().Message;
+                await Task.Delay(750);
             }
         }
-        catch (Exception ex)
-        {
-            SetStatus(L("等待重启的 GPU 模式应用失败：", "Pending GPU mode failed: ") + ex.Message);
-        }
+        FailPendingGpuMode(
+            "GPU post-boot mode application timed out" +
+            (lastError is null
+                ? "."
+                : ": " + lastError.GetBaseException().Message));
+    }
+
+    private void FailPendingGpuMode(string error)
+    {
+        ToolkitLog.Error("Pending GPU mode transition failed: " + error);
+        GpuModeRestartState.MarkFailed(Settings, error);
+        CurveProfileStore.SaveSettings(Settings);
+        PublishGpuTransitionState();
+        SetStatus(L("GPU 模式切换失败：", "GPU mode switch failed: ") +
+                  error);
     }
 
     private async Task EnforcePowerSettingsLockAsync()
     {
         if (_disposed ||
             _powerSettingsLockBusy ||
-            !PowerSettingsController.CurrentProfile.Writable ||
-            Report?.IsAvailable(FeatureIds.PowerSettings) != true)
+            !CanWritePowerSettings)
         {
             return;
         }
@@ -2713,14 +3455,27 @@ internal sealed class ToolkitRuntimeService : IDisposable
             var selection = modeLock is null
                 ? new PowerSettingsLockSelection()
                 : modeLock.Locks with { };
+            var effectiveSelection = selection;
+            if (GpuTelemetryControl.Mode != GpuTelemetryMode.Full)
+            {
+                effectiveSelection = effectiveSelection with
+                {
+                    NvPcfAcTargetTppLimit = false,
+                    NvPcfAcDefaultGpuLimit = false,
+                    NvPcfAcMinGpuLimit = false,
+                    NvPcfAcMaxGpuLimit = false,
+                    NvPcfDynamicBoost = false,
+                    NvApiGpuTemperatureLimit = false
+                };
+            }
             if (!PowerSettingsController.IsValidLockConfiguration(
-                    selection,
+                    effectiveSelection,
                     target))
             {
                 return;
             }
 
-            var current = await Task.Run(PowerSettingsController.ReadState);
+            var current = await Task.Run(ReadPowerSettingsCore);
             var active = CurrentPowerModeLock(create: false);
             if (active?.Locks != selection || active?.Target != target)
             {
@@ -2730,19 +3485,88 @@ internal sealed class ToolkitRuntimeService : IDisposable
             if (PowerSettingsController.RequiresLockReapply(
                     current,
                     target!,
-                    selection))
+                    effectiveSelection))
             {
-                await Task.Run(() => PowerSettingsController.WriteLockedState(
-                    current,
-                    target!,
-                    selection));
                 var restored = PowerSettingsController.ApplyLockedValues(
                     current,
                     target!,
-                    selection);
+                    effectiveSelection);
+                Exception? wmiLockError = null;
+                BetaCpuPowerSnapshot? betaReadback = null;
+                await Task.Run(() =>
+                {
+                    var wmiSelection = effectiveSelection;
+                    if (IntelMmioCpuPowerEnabled || AmdZenStatesCpuPowerEnabled)
+                        wmiSelection = wmiSelection with
+                        {
+                            CpuPl1 = false, CpuPl2 = false,
+                            CpuTurboTimeLimit = false,
+                            CpuTemperatureLimit = IntelMmioCpuPowerEnabled &&
+                                effectiveSelection.CpuTemperatureLimit
+                        };
+                    if (PowerSettingsController.CurrentProfile.Writable &&
+                        Report?.IsAvailable(FeatureIds.PowerSettings) == true &&
+                        wmiSelection.Any)
+                    {
+                        try
+                        {
+                            PowerSettingsController.WriteLockedState(
+                                current,
+                                target!,
+                                wmiSelection);
+                        }
+                        catch (Exception ex)
+                        {
+                            wmiLockError = ex;
+                        }
+                    }
+                    if (IntelMmioCpuPowerEnabled &&
+                        (effectiveSelection.CpuPl1 || effectiveSelection.CpuPl2 ||
+                         effectiveSelection.CpuTurboTimeLimit))
+                        betaReadback = IntelMmioPowerController.Write(
+                            restored.CpuPl1, restored.CpuPl2,
+                            restored.CpuTurboTimeLimit);
+                    else if (AmdZenStatesCpuPowerEnabled &&
+                             (effectiveSelection.CpuPl1 || effectiveSelection.CpuPl2 ||
+                              effectiveSelection.CpuTurboTimeLimit ||
+                              effectiveSelection.CpuTemperatureLimit))
+                    {
+                        var names = BetaCpuPowerKind == ThinkBookToolkit.BetaCpuPowerKind.AmdPbo
+                            ? new[] { "ppt", "tdc", "edc" }
+                            : new[] { "stapm", "fast", "slow" };
+                        _ = AmdZenStatesPowerController.Write(names[0], restored.CpuPl1);
+                        _ = AmdZenStatesPowerController.Write(names[1], restored.CpuPl2);
+                        _ = AmdZenStatesPowerController.Write(names[2], restored.CpuTurboTimeLimit);
+                        if (effectiveSelection.CpuTemperatureLimit)
+                            _ = AmdZenStatesPowerController.Write("tctlmax", restored.CpuTemperatureLimit);
+                        betaReadback = AmdZenStatesPowerController.Read();
+                    }
+                    if (NvApiGpuPowerEnabled &&
+                        (effectiveSelection.NvPcfAcTargetTppLimit ||
+                         effectiveSelection.NvPcfAcDefaultGpuLimit ||
+                         effectiveSelection.NvPcfAcMinGpuLimit ||
+                         effectiveSelection.NvPcfAcMaxGpuLimit ||
+                         effectiveSelection.NvPcfDynamicBoost ||
+                         effectiveSelection.NvApiGpuTemperatureLimit))
+                    {
+                        _ = NvPcfPowerController.WriteAndRead(
+                            restored,
+                            effectiveSelection);
+                    }
+                });
+                if (wmiLockError is not null)
+                {
+                    throw new InvalidOperationException(
+                        "NVAPI GPU locks were applied, but Lenovo WMI power " +
+                        "locks could not be restored.",
+                        wmiLockError);
+                }
+                if (betaReadback is not null)
+                    restored = MergeBetaCpu(restored, betaReadback);
                 _cachedPowerSettings = restored;
                 Snapshot = Snapshot with { PowerSettings = restored };
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                UpdatePowerLockTargetAfterApply(restored);
             }
             _lastPowerSettingsLockError = string.Empty;
         }
@@ -2776,12 +3600,22 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 ? Settings.PowerSettingsLockIntervalSeconds
                 : 2);
         var modeLock = CurrentPowerModeLock(create: false);
+        var hasLocksUsableWithCurrentGpuState = modeLock is not null &&
+            (GpuTelemetryControl.Mode == GpuTelemetryMode.Full ||
+             modeLock.Locks.CpuPl1 || modeLock.Locks.CpuPl2 ||
+             modeLock.Locks.CpuTemperatureLimit ||
+             modeLock.Locks.CpuTurboTimeLimit ||
+             modeLock.Locks.GpuPowerBoost ||
+             modeLock.Locks.GpuConfigurableTgp ||
+             modeLock.Locks.GpuTemperatureLimit ||
+             modeLock.Locks.GpuToCpuDynamicBoost ||
+             modeLock.Locks.Atpp);
         if (!_disposed && modeLock is not null &&
+            hasLocksUsableWithCurrentGpuState &&
             PowerSettingsController.IsValidLockConfiguration(
                 modeLock.Locks,
                 modeLock.Target) &&
-            PowerSettingsController.CurrentProfile.Writable &&
-            Report?.IsAvailable(FeatureIds.PowerSettings) == true)
+            CanWritePowerSettings)
         {
             _powerSettingsLockTimer.Start();
         }
@@ -2795,10 +3629,16 @@ internal sealed class ToolkitRuntimeService : IDisposable
         Settings.PowerSettingsLocksByMode ??=
             new Dictionary<string, PowerModeLockSettings>(
                 StringComparer.OrdinalIgnoreCase);
+        Settings.NvApiPowerSettingsLocksByMode ??=
+            new Dictionary<string, PowerModeLockSettings>(
+                StringComparer.OrdinalIgnoreCase);
+        var profiles = Settings.UseNvApiGpuPower
+            ? Settings.NvApiPowerSettingsLocksByMode
+            : Settings.PowerSettingsLocksByMode;
         var key = mode.ToString();
-        if (Settings.PowerSettingsLocksByMode.TryGetValue(key, out var profile))
+        if (profiles.TryGetValue(key, out var profile))
             return profile;
-        var migrateLegacy = Settings.PowerSettingsLocksByMode.Count == 0 &&
+        var migrateLegacy = profiles.Count == 0 &&
                             Settings.PowerSettingsLocks is { Any: true };
         if (!create && !migrateLegacy)
             return null;
@@ -2811,7 +3651,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 ? Settings.PowerSettingsLockTarget
                 : null
         };
-        Settings.PowerSettingsLocksByMode[key] = profile;
+        profiles[key] = profile;
         return profile;
     }
 
@@ -2935,6 +3775,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     message,
                     Forms.ToolTipIcon.Info);
             }));
+    }
+
+    private static void OnGpuTelemetryModeChanged(GpuTelemetryMode mode)
+    {
+        if (mode != GpuTelemetryMode.Full)
+            NvPcfPowerController.Shutdown();
     }
 
     private void OnUserPreferenceChanged(
@@ -3113,12 +3959,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
             _powerModeSubscribed = false;
         }
         _hybridAutoGpu.PresenceChanged -= OnDiscreteGpuPresenceChanged;
+        GpuTelemetryControl.ModeChanged -= OnGpuTelemetryModeChanged;
         _fnKeyManager.Dispose();
         _macroService.Dispose();
+        _dataSharing.Dispose();
         try { _fnKeyNotification?.Close(); } catch { }
         _fnKeyNotification = null;
         _fnKeyNotificationDark = null;
         _temperatureReader?.Dispose();
+        NvPcfPowerController.Shutdown();
         _hybridAutoGpu.Dispose();
         try { _fanRuntime?.Close(); } catch { }
         _fanRuntime = null;

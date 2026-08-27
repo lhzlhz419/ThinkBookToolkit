@@ -5,7 +5,7 @@ License 2.0. The components listed below are separate works and remain subject
 to their own copyright notices and license terms. This file is informational
 and does not replace or modify those terms.
 
-## NuGet components used by the build
+## Third-party components used by the build
 
 | Component | Resolved version | License | Source |
 | --- | ---: | --- | --- |
@@ -15,7 +15,8 @@ and does not replace or modify those terms.
 | BlackSharp.Core | 1.1.4 | MPL-2.0 | <https://github.com/Blacktempel/BlackSharp> |
 | HidSharp | 2.6.4 | Apache-2.0 | <https://www.zer7.com/software/hidsharp> |
 | LLT.WindowsDisplayAPI | 1.3.2-pre17 | LGPL-3.0-only | <https://github.com/LenovoLegionToolkit-Team/WindowsDisplayAPI> |
-| LLT.NvAPIWrapper.Net | 1.0.0-pre8 | LGPL-3.0 | <https://github.com/LenovoLegionToolkit-Team/NvAPIWrapper> |
+| NvAPIWrapper source submodule | commit `a024687` | LGPL-3.0 | <https://github.com/LenovoLegionToolkit-Team/NvAPIWrapper> |
+| ZenStates-Core source submodule | v1.90 (`999cdb6`) | GPL-3.0 | <https://github.com/irusanov/ZenStates-Core> |
 | NAudio.Wasapi / NAudio.Core | 2.2.1 | MIT | <https://github.com/naudio/NAudio> |
 | Mono.Posix.NETStandard | 1.0.0 | MIT | <https://github.com/mono/mono> |
 | System.IO.Ports | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
@@ -32,6 +33,16 @@ complete resolved graph can be inspected with:
 ```powershell
 dotnet list .\src\ThinkBookToolkit\ThinkBookToolkit.csproj package --include-transitive
 ```
+
+The NvAPIWrapper source submodule is built as a separate assembly. Initialize
+the repository and this dependency with `git submodule update --init --recursive`.
+Toolkit does not modify the submodule source; its upstream license and history
+remain available at the repository linked above.
+
+ZenStates-Core is linked only by `ThinkBookToolkit.AmdPowerHelper`, a separate
+GPL-3.0-only executable that communicates with the MPL application through
+JSON standard output. Its source, license and history remain in the pinned
+submodule. The MPL application does not link to ZenStates-Core.
 
 The complete MPL-2.0 text is included in [LICENSE](LICENSE). The Apache-2.0,
 LGPL-3.0, and MIT license texts are available from the respective package
@@ -53,6 +64,11 @@ used to obtain CPU temperature telemetry on the device
 on which ThinkBook Toolkit was tested. PawnIO must be installed separately; its
 driver and utilities are not stored in this repository or in the
 `ThinkBookToolkit.Dependencies` directory.
+
+The Intel MMIO Beta controller additionally requires the official PawnIO
+`IntelMSR.bin` and `IntelMCHBAR.bin` modules plus an externally supplied
+`InpOutx64.dll` next to the application. These binaries are not committed to
+this repository. Modern Windows security policy may block InpOutx64.
 
 PawnIO is licensed under GPL-2.0-or-later with the additional exception stated
 in its [COPYING file](https://github.com/namazso/PawnIO/blob/master/COPYING).

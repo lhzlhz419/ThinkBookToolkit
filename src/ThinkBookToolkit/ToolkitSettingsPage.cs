@@ -27,6 +27,17 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly CheckBox _disableOnSleep = new();
     private readonly CheckBox _alternativeFullSpeed = new();
     private readonly CheckBox _continuousFanWrites = new();
+    private readonly CheckBox _useNvApiGpuPower = new();
+    private readonly CheckBox _useIntelMmioCpuPower = new();
+    private readonly CheckBox _useAmdZenStatesCpuPower = new();
+    private readonly CheckBox _shareDataWithOtherSoftware = new();
+    private readonly TextBox _dataSharingPort = new()
+    {
+        Width = 88,
+        MinHeight = 36,
+        TextAlignment = TextAlignment.Center,
+        VerticalContentAlignment = VerticalAlignment.Center
+    };
     private readonly Button _editOverview;
     private readonly Button _restartReaders;
     private readonly Button _checkUpdates;
@@ -188,12 +199,47 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("关闭按钮隐藏窗口；从托盘菜单选择退出才结束程序。", "The close button hides the window; Exit in the tray menu ends the app."),
             _closeToTray));
         startup.Children.Add(startupPrimary);
+        if (Runtime.Settings.UseNvApiGpuPower ||
+            Runtime.Report?.IsAvailable(FeatureIds.NvApiGpuPower) != false)
+        {
+            startup.Children.Add(SettingRow(
+                L(
+                    "使用 NVAPI 调整 GPU 功耗（Beta）",
+                    "Use NVAPI to adjust GPU power (Beta)"),
+                L(
+                    "使用 NVIDIA 接口调整 GPU 功耗、Dynamic Boost，以及受支持的 GPU 温度墙。",
+                    "Use NVIDIA APIs to adjust GPU power, Dynamic Boost, and the GPU thermal limit when supported."),
+                _useNvApiGpuPower));
+        }
+        if (CpuVendorDetector.IsIntel)
+            startup.Children.Add(SettingRow(
+                L("直接调整 CPU MMIO 功耗墙（Beta）",
+                    "Directly adjust CPU MMIO power limits (Beta)"),
+                L("通过 PawnIO 与经过验证的 InpOutx64 MMIO 路径调整 PL1、PL2 和 Turbo Time；CPU 温度墙仍使用 WMI。",
+                    "Adjust PL1, PL2 and Turbo Time through PawnIO and the verified InpOutx64 MMIO path; the CPU thermal limit remains on WMI."),
+                _useIntelMmioCpuPower));
+        if (CpuVendorDetector.IsAmd)
+            startup.Children.Add(SettingRow(
+                L("使用 ZenStates-Core 调整 CPU 功耗墙（Beta）",
+                    "Use ZenStates-Core for CPU power limits (Beta)"),
+                L("通过独立 GPL Helper 调整 PPT/TDC/EDC 或 STAPM/Fast/Slow 及 TctlMax。",
+                    "Use the separate GPL helper for PPT/TDC/EDC or STAPM/Fast/Slow and TctlMax."),
+                _useAmdZenStatesCpuPower));
+        startup.Children.Add(SettingRow(
+            L("向其他软件共享数据", "Share data with other software"),
+            L(
+                "仅通过本机 HTTP JSON 接口共享最近一次全局刷新结果；无法读取的数值为 null。",
+                "Expose the latest global-refresh snapshot through a loopback-only HTTP JSON endpoint; unavailable readings are null."),
+            BuildDataSharingEditor()));
         var fnKeyControls = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
             Tag = "KeepOnRight"
         };
+        _takeOverFnKeys.VerticalAlignment = VerticalAlignment.Center;
+        _takeOverFnKeys.Margin = new Thickness(0);
         _customizeFnKeys.Margin = new Thickness(0, 0, 12, 0);
         _discoverFnKeys.Margin = new Thickness(0, 0, 12, 0);
         fnKeyControls.Children.Add(_discoverFnKeys);
@@ -552,6 +598,64 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 : L("设置失败，已回滚：", "Setting failed and was rolled back: ") + error;
             SyncControls();
         };
+        _useNvApiGpuPower.Click += async (_, _) =>
+        {
+            if (_syncing)
+                return;
+            var enabled = _useNvApiGpuPower.IsChecked == true;
+            _useNvApiGpuPower.IsEnabled = false;
+            _viewModel.Status = string.Empty;
+            _status.Text = string.Empty;
+            try
+            {
+                var error = await Runtime.SetNvApiGpuPowerEnabledAsync(enabled);
+                var notification = string.IsNullOrWhiteSpace(error)
+                    ? enabled
+                        ? L(
+                            "NVAPI GPU 功耗调整已启用。",
+                            "NVAPI GPU power control is enabled.")
+                        : L(
+                            "NVAPI GPU 功耗调整已关闭，默认状态已恢复。",
+                            "NVAPI GPU power control is disabled and defaults were restored.")
+                    : L(
+                        "NVAPI GPU 功耗设置失败，已回滚：",
+                        "NVAPI GPU power setting failed and was rolled back: ") + error;
+                Runtime.SetStatus(notification);
+            }
+            catch (Exception ex)
+            {
+                ToolkitLog.Error(
+                    "Unexpected NVAPI GPU power toggle failure.",
+                    ex);
+                Runtime.SetStatus(L(
+                    "NVAPI GPU 功耗设置失败：",
+                    "NVAPI GPU power setting failed: ") +
+                    ex.GetBaseException().Message);
+            }
+            finally
+            {
+                _viewModel.Status = string.Empty;
+                SyncControls();
+            }
+        };
+        _useIntelMmioCpuPower.Click += (_, _) =>
+            ChangeBetaCpuPower(intel: true,
+                _useIntelMmioCpuPower.IsChecked == true);
+        _useAmdZenStatesCpuPower.Click += (_, _) =>
+            ChangeBetaCpuPower(intel: false,
+                _useAmdZenStatesCpuPower.IsChecked == true);
+        _shareDataWithOtherSoftware.Click += (_, _) =>
+            SaveDataSharingSettings();
+        _dataSharingPort.LostKeyboardFocus += (_, _) =>
+            SaveDataSharingSettings();
+        _dataSharingPort.KeyDown += (_, args) =>
+        {
+            if (args.Key != Key.Enter)
+                return;
+            SaveDataSharingSettings();
+            Keyboard.ClearFocus();
+            args.Handled = true;
+        };
         _editOverview.Click += (_, _) =>
         {
             ShowOverviewEditor();
@@ -600,6 +704,71 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         {
             _checkUpdates.IsEnabled = true;
         }
+    }
+
+    private void ChangeBetaCpuPower(bool intel, bool enabled)
+    {
+        if (_syncing) return;
+        var error = Runtime.SetBetaCpuPowerEnabled(intel, enabled);
+        Runtime.SetStatus(string.IsNullOrWhiteSpace(error)
+            ? enabled
+                ? L("CPU Beta 功耗调整已启用。", "CPU Beta power control is enabled.")
+                : L("CPU Beta 功耗调整已关闭。", "CPU Beta power control is disabled.")
+            : L("CPU Beta 功耗设置失败：", "CPU Beta power setting failed: ") + error);
+        SyncControls();
+    }
+
+    private UIElement BuildDataSharingEditor()
+    {
+        _dataSharingPort.Margin = new Thickness(8, 0, 14, 0);
+        _shareDataWithOtherSoftware.Margin = new Thickness(0);
+        _shareDataWithOtherSoftware.VerticalAlignment =
+            VerticalAlignment.Center;
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Tag = "KeepOnRight"
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Text = L("端口", "Port"),
+            Foreground = Brush(Palette.Muted),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        panel.Children.Add(_dataSharingPort);
+        panel.Children.Add(_shareDataWithOtherSoftware);
+        return panel;
+    }
+
+    private void SaveDataSharingSettings()
+    {
+        if (_syncing)
+            return;
+        if (!int.TryParse(
+                _dataSharingPort.Text,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var port))
+        {
+            Runtime.SetStatus(L(
+                "数据共享端口必须为 1 到 65535 之间的整数。",
+                "The data-sharing port must be an integer between 1 and 65535."));
+            SyncControls();
+            return;
+        }
+
+        var enabled = _shareDataWithOtherSoftware.IsChecked == true;
+        var succeeded = Runtime.TrySetDataSharing(enabled, port, out var error);
+        Runtime.SetStatus(succeeded
+            ? enabled
+                ? L(
+                    $"数据共享已启用：http://127.0.0.1:{port}/",
+                    $"Data sharing is available at http://127.0.0.1:{port}/")
+                : L("数据共享已关闭。", "Data sharing is disabled.")
+            : L("数据共享设置失败：", "Data-sharing setting failed: ") + error);
+        SyncControls();
     }
 
     private UIElement BuildUpdateActions()
@@ -680,6 +849,20 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 : settings.AttemptDisableControlOnSleepWhenUnsupported;
         _alternativeFullSpeed.IsChecked = settings.UseAlternativeFullSpeedMethod;
         _continuousFanWrites.IsChecked = settings.ContinuouslyWriteFanTargets;
+        _useNvApiGpuPower.IsChecked = settings.UseNvApiGpuPower;
+        _useNvApiGpuPower.IsEnabled =
+            Runtime.Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true ||
+            settings.UseNvApiGpuPower;
+        _useIntelMmioCpuPower.IsChecked = settings.UseIntelMmioCpuPower;
+        _useIntelMmioCpuPower.IsEnabled = true;
+        _useAmdZenStatesCpuPower.IsChecked = settings.UseAmdZenStatesCpuPower;
+        _useAmdZenStatesCpuPower.IsEnabled = true;
+        _shareDataWithOtherSoftware.IsChecked =
+            settings.ShareDataWithOtherSoftware;
+        _shareDataWithOtherSoftware.IsEnabled =
+            Runtime.Report?.IsAvailable(FeatureIds.DataSharing) != false;
+        _dataSharingPort.Text = settings.DataSharingPort.ToString(
+            CultureInfo.InvariantCulture);
         if (_disableOnSleepRow is not null)
         {
             _disableOnSleepRow.Visibility = Runtime.CanConfigureSleepFanControl
@@ -739,6 +922,13 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             var displayedItems = definition.Value
                 .Where(item => DeviceModelDetector.HasSecondFan() ||
                                item is not ("fan2-speed" or "fan2-target"))
+                .Where(item => definition.Key != OverviewCardIds.Power ||
+                    (Runtime.NvApiGpuPowerEnabled
+                        ? item is not ("gpu-boost" or "gpu-tgp" or
+                            "gpu-to-cpu" or "atpp")
+                        : item is not ("nv-target-tpp" or "nv-default-gpu" or
+                            "nv-min-gpu" or "nv-max-gpu" or
+                            "nv-gpu-temperature" or "nv-dynamic-boost")))
                 .ToArray();
             var items = new StackPanel { Margin = new Thickness(28, 5, 0, 0) };
             var cardToggle = new CheckBox
@@ -953,7 +1143,13 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             (OverviewCardIds.Power, "gpu-tgp") => "GPU TGP",
             (OverviewCardIds.Power, "gpu-temperature") => L("GPU 温度上限", "GPU temperature limit"),
             (OverviewCardIds.Power, "gpu-to-cpu") => "GPU to CPU Dynamic Boost",
-            (OverviewCardIds.Power, "atpp") => "ATPP",
+            (OverviewCardIds.Power, "atpp") => "ATPP offset",
+            (OverviewCardIds.Power, "nv-target-tpp") => L("ATPP（整机功耗）", "AC Target TPP Limit"),
+            (OverviewCardIds.Power, "nv-default-gpu") => L("默认 GPU TGP", "AC Default GPU Limit"),
+            (OverviewCardIds.Power, "nv-min-gpu") => L("最小 GPU TGP", "AC Min GPU Limit"),
+            (OverviewCardIds.Power, "nv-max-gpu") => L("最大 GPU TGP", "AC Max GPU Limit"),
+            (OverviewCardIds.Power, "nv-gpu-temperature") => L("GPU 温度墙", "GPU temperature limit"),
+            (OverviewCardIds.Power, "nv-dynamic-boost") => "Dynamic Boost",
             (OverviewCardIds.Warranty, "status") => L("保修状态", "Warranty status"),
             (OverviewCardIds.Warranty, "start-date") => L("开始日期", "Start date"),
             (OverviewCardIds.Warranty, "end-date") => L("结束日期", "End date"),
@@ -1118,6 +1314,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 "Discrete GPU status and applications",
             FeatureIds.GpuOverclock => "Discrete GPU overclocking",
             FeatureIds.PowerSettings => "Power limits",
+            FeatureIds.NvApiGpuPower => "NVAPI GPU power control (Beta)",
+            FeatureIds.IntelMmioCpuPower => "Direct CPU MMIO power limits (Beta)",
+            FeatureIds.AmdZenStatesCpuPower => "ZenStates-Core CPU power limits (Beta)",
             FeatureIds.BatteryChargeMode => "Charging mode",
             FeatureIds.OvernightCharging => "Overnight charging",
             FeatureIds.AlwaysOnUsb => "Always-on USB",
@@ -1150,6 +1349,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.Automation => "Automation and Fn-key mappings",
             FeatureIds.KeyboardMacros => "Keyboard macros",
             FeatureIds.UpdateCheck => "Software update check",
+            FeatureIds.DataSharing => "Local data sharing",
             _ => fallback
         };
     }
@@ -1169,6 +1369,10 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             {
                 FeatureIds.SleepFanControl => L("当前风扇控制方式不支持此功能。", "The current fan-control method does not support this feature."),
                 FeatureIds.PowerSettings => L("当前设备不支持查看或调整功耗参数。", "Power values cannot be viewed or changed on this device."),
+                FeatureIds.NvApiGpuPower => L("未能读取全部四项 NVPCF 功耗参数。", "All four NVPCF power values could not be read."),
+                FeatureIds.IntelMmioCpuPower => L("无法读取 Intel MMIO 功耗墙。", "Intel MMIO power limits could not be read."),
+                FeatureIds.AmdZenStatesCpuPower => L("无法通过 ZenStates-Core Helper 读取 CPU 功耗墙。", "CPU power limits could not be read through the ZenStates-Core helper."),
+                FeatureIds.DataSharing => L("当前运行环境不支持本机 HTTP 监听器。", "The local HTTP listener is unsupported in this environment."),
                 FeatureIds.WarrantyInformation => L("需要有效的序列号和网络连接。", "A valid serial number and network connection are required."),
                 FeatureIds.FanControl => L("当前设备上无法使用风扇监控与控制。", "Fan monitoring and control are unavailable on this device."),
                 FeatureIds.FanFullSpeed => L("当前风扇后端不支持原生风扇拉满。", "Native full fan speed is unavailable with the current backend."),

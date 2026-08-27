@@ -15,6 +15,7 @@ using System.Windows.Threading;
 using ThinkBookToolkit;
 using ThinkBookToolkit.FanBackend;
 using ThinkBookToolkit.Guardian;
+using NvAPIWrapper.GPU;
 
 namespace ThinkBookToolkit.UiSmokeTests;
 
@@ -57,6 +58,9 @@ internal static class Program
         VerifySingleInstanceUpdateExitSignal();
         VerifyPowerSettingsWindowManualInput();
         VerifyPowerDeviceProfiles();
+        VerifyNvPcfPowerControl();
+        VerifyBetaCpuPowerUi();
+        VerifyDataSharingContracts();
         VerifyOverviewLayoutSettings();
         VerifyAdaptiveUniformPanelCollapsedItems();
         VerifySystemShutdownPreparation();
@@ -91,7 +95,7 @@ internal static class Program
         using var runtime = new ToolkitRuntimeService(settings);
         ModernTheme.Apply(Application.Current, runtime.IsDark);
         var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false);
-        Assert(window.Title == "ThinkBook Toolkit v1.0.1",
+        Assert(window.Title == "ThinkBook Toolkit v1.0.2",
             "The native title bar does not show the current application version.");
         runtime.SetReportForTesting(CreateReport(_ => true));
         runtime.SetSnapshotForTesting(runtime.Snapshot with
@@ -188,7 +192,7 @@ internal static class Program
         using (var versionSettingsPage = new ToolkitSettingsPage(runtime))
         {
             Assert(ContainsText(versionSettingsPage, "当前版本") &&
-                   ContainsText(versionSettingsPage, "v1.0.1") &&
+                   ContainsText(versionSettingsPage, "v1.0.2") &&
                    ContainsButtonText(versionSettingsPage, "检查更新") &&
                    ContainsText(versionSettingsPage, "软件更新检查") &&
                    ContainsText(versionSettingsPage, "自定义游戏检测路径"),
@@ -214,9 +218,9 @@ internal static class Program
             [
                 new ApplicationRelease(
                     new Version(1, 0, 1),
-                    "v1.0.1",
+                    "v1.0.2",
                     new Uri(
-                        "https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.0.1"))
+                        "https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.0.2"))
             ]);
             Assert(GetPrivateField<TextBlock>(
                        versionSettingsPage,
@@ -473,7 +477,7 @@ internal static class Program
             PowerSettings = runtime.Snapshot.PowerSettings! with
             {
                 Atpp = null,
-                AvailableSettings = PowerSettingAvailability.All &
+                AvailableSettings = PowerSettingAvailability.LegacyAll &
                                     ~PowerSettingAvailability.Atpp
             }
         });
@@ -944,8 +948,8 @@ internal static class Program
                 performance,
                 "_powerLockToggles");
         Assert(powerLockToggles.Count == 9 &&
-               Enum.GetValues<PowerSetting>().All(
-                   setting => powerLockToggles.TryGetValue(setting, out var toggle) &&
+               powerLockToggles.All(pair =>
+                   pair.Value is { } toggle &&
                               toggle.IsChecked == false &&
                               Equals(toggle.Content, "锁定") &&
                               toggle.Parent is Grid lockLayout &&
@@ -1097,7 +1101,8 @@ internal static class Program
         var settingsPanels = Descendants(settingsPage)
             .OfType<AdaptiveUniformPanel>()
             .ToArray();
-        var globalSettings = settingsPanels.Single(panel => panel.Children.Count == 6);
+        var globalSettings = settingsPanels.Single(panel =>
+            ContainsText(panel, "状态刷新间隔"));
         var startupSettings = settingsPanels.Single(panel =>
             ContainsText(panel, "开机自启"));
         var fanBehaviorSettings = settingsPanels.Single(panel =>
@@ -1109,6 +1114,10 @@ internal static class Program
                SameRow(globalSettings.Children[1], globalSettings.Children[2]) &&
                SameRow(globalSettings.Children[3], globalSettings.Children[4]) &&
                SameRow(globalSettings.Children[4], globalSettings.Children[5]) &&
+               !ContainsText(globalSettings,
+                   "使用 NVAPI 调整 GPU 功耗（Beta）") &&
+               ContainsText(settingsPage,
+                   "使用 NVAPI 调整 GPU 功耗（Beta）") &&
                !SameRow(globalSettings.Children[2], globalSettings.Children[3]),
             "Global settings require too much width for the requested 3+3 layout.");
         Assert(SameRow(startupSettings.Children[0], startupSettings.Children[1]) &&
@@ -1350,11 +1359,11 @@ internal static class Program
                 "性能",
                 "功耗设置",
                 true,
-                "ATPP 可调整。",
-                EnglishDetail: "ATPP is adjustable.")
+                "ATPP offset 可调整。",
+                EnglishDetail: "ATPP offset is adjustable.")
         ]));
         using var atppSettingsPage = new ToolkitSettingsPage(atppRuntime);
-        Assert(ContainsText(atppSettingsPage, "ATPP 可调整。") &&
+        Assert(ContainsText(atppSettingsPage, "ATPP offset 可调整。") &&
                ContainsText(atppSettingsPage, "可用"),
             "Feature monitoring does not note that ATPP is adjustable.");
 
@@ -1696,6 +1705,28 @@ internal static class Program
                    runtime.CurrentPowerSettingsLockTarget!,
                    runtime.CurrentPowerSettingsLocks).CpuPl1 == 95,
             "Returning to a performance mode loses its locked power target.");
+        settings.NvApiPowerSettingsLocksByMode =
+            new Dictionary<string, PowerModeLockSettings>
+            {
+                [ItsMode.Intelligent.ToString()] = new()
+                {
+                    Locks = new PowerSettingsLockSelection
+                    {
+                        NvPcfAcDefaultGpuLimit = true
+                    },
+                    Target = NvPcfPowerPolicy.FromLegacy(confirmedPower)
+                }
+            };
+        settings.UseNvApiGpuPower = true;
+        Assert(runtime.CurrentPowerSettingsLocks.NvPcfAcDefaultGpuLimit &&
+               !runtime.CurrentPowerSettingsLocks.CpuPl1 &&
+               settings.PowerSettingsLocksByMode[ItsMode.Intelligent.ToString()]
+                   .Locks.CpuPl1,
+            "NVAPI and Lenovo GPU power locks are not maintained independently.");
+        settings.UseNvApiGpuPower = false;
+        Assert(runtime.CurrentPowerSettingsLocks.CpuPl1 &&
+               !runtime.CurrentPowerSettingsLocks.NvPcfAcDefaultGpuLimit,
+            "Returning to Lenovo power control did not restore its independent locks.");
         Assert(MainWindow.SuppressSmallTargetChanges(
                    new FanTargets(1599, 1600),
                    new FanTargets(1500, 1500)) ==
@@ -2654,17 +2685,66 @@ internal static class Program
         const string restartedBoot = "boot-b";
         var settings = new AppSettings();
 
+        Assert(
+            GpuModeController.ClassifyProtocol(
+                (0x10u << 16) | 0x04u,
+                capabilityRead: true,
+                supportsIgpuMode: true,
+                supportsGSync: true,
+                hasDirectSelections: true) ==
+            GpuControlProtocol.LegacyThreeMode,
+            "Advanced GPU capability major version 1 was not classified as the legacy three-mode protocol.");
+        Assert(
+            GpuModeController.ClassifyProtocol(
+                (0x20u << 16) | 0x04u,
+                capabilityRead: true,
+                supportsIgpuMode: true,
+                supportsGSync: true,
+                hasDirectSelections: true) ==
+            GpuControlProtocol.AdvancedBios,
+            "Advanced GPU capability major version 2 must retain the modern BIOS protocol.");
+        Assert(
+            GpuModeController.ResolveLegacyThreeModeState(
+                "Switchable Graphics", 2) == GpuWorkingMode.HybridAuto &&
+            GpuModeController.ResolveLegacyThreeModeState(
+                "Dynamic Graphics", 1) == GpuWorkingMode.IntegratedOnly &&
+            GpuModeController.ResolveLegacyThreeModeState(
+                "Discrete Graphics", 0) == GpuWorkingMode.Discrete,
+            "Legacy three-mode state priority or Dynamic Graphics alias handling is incorrect.");
+        Assert(GpuModeText.Name(GpuWorkingMode.Hybrid, true) == "混合模式" &&
+               GpuModeText.Name(GpuWorkingMode.IntegratedOnly, true) ==
+               "混合核显模式" &&
+               GpuModeText.Name(GpuWorkingMode.HybridAuto, true) ==
+               "混合自动模式",
+            "Legacy protocol routing changed the three established GPU mode names.");
+        Assert(GpuModeController.IsBiosAssistantSuccess(0x80000000u) &&
+               GpuModeController.IsBiosAssistantSuccess(0x80000002u) &&
+               !GpuModeController.IsBiosAssistantSuccess(0x00000002u),
+            "BIOS Assistant GPU changes do not validate the ReturnData success bit.");
+
+        var stagedResult = new GpuModeApplyResult(
+            true,
+            ParentStaged: true,
+            ChildStaged: false,
+            Protocol: GpuControlProtocol.LegacyThreeMode,
+            Warning: "provider not ready");
         GpuModeRestartState.MarkPending(
             settings,
             GpuWorkingMode.Discrete,
             true,
             GpuWorkingMode.HybridAuto,
-            originalBoot);
+            originalBoot,
+            stagedResult);
         Assert(
             settings.PendingGpuMode == nameof(GpuWorkingMode.HybridAuto) &&
             settings.PendingGpuModeSource == nameof(GpuWorkingMode.Discrete) &&
             settings.PendingGpuModeSourceUsesDirectGraphicsConfiguration == true &&
-            settings.PendingGpuModeBootSessionId == originalBoot,
+            settings.PendingGpuModeBootSessionId == originalBoot &&
+            settings.PendingGpuModeProtocol == nameof(
+                GpuControlProtocol.LegacyThreeMode) &&
+            settings.PendingGpuModeParentStaged &&
+            !settings.PendingGpuModeChildStaged &&
+            settings.PendingGpuModeLastError == "provider not ready",
             "A restart-required GPU change must persist its source, target, route, and boot session.");
         Assert(
             GpuModeRestartState.TryGetTransition(
@@ -2674,6 +2754,9 @@ internal static class Program
             transition.Target == GpuWorkingMode.HybridAuto &&
             transition.SourceUsesDirectGraphicsConfiguration,
             "The persisted GPU transition cannot be reconstructed.");
+        Assert(transition.Protocol == GpuControlProtocol.LegacyThreeMode &&
+               transition.ParentStaged && !transition.ChildStaged,
+            "The staged parent/child status was not reconstructed.");
         Assert(
             GpuModeRestartState.TryGetCurrentBootTransition(
                 settings,
@@ -2736,6 +2819,19 @@ internal static class Program
                 GpuWorkingMode.HybridAuto,
                 false),
             "Changing between live switchable-graphics modes must not require a restart.");
+        Assert(GpuModeController.ShouldCancelPendingDirectChange(
+                   transitionRequiresRestart: false,
+                   configurationWriteRequiresRestart: true,
+                   targetUsesDirectGraphicsConfiguration: false) &&
+               !GpuModeController.ShouldCancelPendingDirectChange(
+                   transitionRequiresRestart: true,
+                   configurationWriteRequiresRestart: true,
+                   targetUsesDirectGraphicsConfiguration: false) &&
+               !GpuModeController.ShouldCancelPendingDirectChange(
+                   transitionRequiresRestart: false,
+                   configurationWriteRequiresRestart: true,
+                   targetUsesDirectGraphicsConfiguration: true),
+            "Cancelling an unbooted direct-GPU transition has incorrect restart semantics.");
         Assert(
             GpuModeRestartState.HasRestartedSince(
                 string.Empty,
@@ -2753,8 +2849,23 @@ internal static class Program
             string.IsNullOrEmpty(settings.PendingGpuMode) &&
             string.IsNullOrEmpty(settings.PendingGpuModeSource) &&
             settings.PendingGpuModeSourceUsesDirectGraphicsConfiguration is null &&
-            string.IsNullOrEmpty(settings.PendingGpuModeBootSessionId),
+            string.IsNullOrEmpty(settings.PendingGpuModeBootSessionId) &&
+            string.IsNullOrEmpty(settings.PendingGpuModeProtocol) &&
+            !settings.PendingGpuModeParentStaged &&
+            !settings.PendingGpuModeChildStaged &&
+            settings.PendingGpuModePostBootAttempts == 0,
             "Clearing the restart state must clear every persisted transition field.");
+        GpuModeRestartState.MarkPending(
+            settings,
+            GpuWorkingMode.Discrete,
+            true,
+            GpuWorkingMode.Hybrid,
+            originalBoot,
+            stagedResult);
+        GpuModeRestartState.MarkFailed(settings, "parent remained discrete");
+        Assert(string.IsNullOrEmpty(settings.PendingGpuMode) &&
+               settings.LastGpuModeFailure == "parent remained discrete",
+            "A failed post-boot transition remains pending indefinitely.");
     }
 
     private static void VerifyLenovoDependencyDirectory()
@@ -2857,6 +2968,7 @@ internal static class Program
     {
         FeatureIds.DiscreteGpuManagement => "独立显卡状态与占用应用",
         FeatureIds.GpuOverclock => "独立显卡超频",
+        FeatureIds.NvApiGpuPower => "NVAPI GPU 功耗调整（Beta）",
         FeatureIds.FanFullSpeed => "风扇拉满",
         FeatureIds.DisplayRefreshRate => "笔记本屏幕刷新率切换",
         FeatureIds.FnKeyTakeover => "Fn 快捷键接管",
@@ -2867,6 +2979,7 @@ internal static class Program
         FeatureIds.Automation => "自动化与 Fn 快捷键映射",
         FeatureIds.KeyboardMacros => "键盘宏",
         FeatureIds.UpdateCheck => "软件更新检查",
+        FeatureIds.DataSharing => "向其他软件共享数据",
         _ => id
     };
 
@@ -2892,24 +3005,34 @@ internal static class Program
                ItsModeController.CommandForMode(
                    ItsMode.Performance,
                    ItsModeControlPath.LegacyLitssvc) == 148 &&
+               ItsModeController.CommandForMode(
+                   ItsMode.Geek,
+                   ItsModeControlPath.LegacyLitssvc) == 148 &&
+               ItsModeController.LegacyServiceCommandsForMode(
+                   ItsMode.Intelligent).SequenceEqual([0x87]) &&
+               ItsModeController.LegacyServiceCommandsForMode(
+                   ItsMode.PowerSaving).SequenceEqual([0x86, 0x92]) &&
+               ItsModeController.LegacyServiceCommandsForMode(
+                   ItsMode.Performance).SequenceEqual([0x86, 0x94]) &&
+               ItsModeController.LegacyServiceCommandsForMode(
+                   ItsMode.Geek).SequenceEqual([0x86, 0x94]) &&
+               ItsModeController.LegacyEnergyCommandForMode(
+                   ItsMode.Geek) == 0x001F100B &&
+               ItsModeController.LegacyEnergyCommandForMode(
+                   ItsMode.Performance) == 0x000F100B &&
+               ItsModeDetector.ResolveLegacyMode(1, 3, false) ==
+                   ItsMode.Performance &&
+               ItsModeDetector.ResolveLegacyMode(1, 3, true) ==
+                   ItsMode.Geek &&
+               ItsModeDetector.ResolveLegacyMode(1, 4, false) ==
+                   ItsMode.Geek &&
                ItsModeDetector.IsModeSupported(
                    ItsMode.Performance,
                    ItsModeControlPath.LegacyLitssvc) &&
-               !ItsModeDetector.IsModeSupported(
+               ItsModeDetector.IsModeSupported(
                    ItsMode.Geek,
                    ItsModeControlPath.LegacyLitssvc),
             "Modern and legacy ITS control paths or commands are incorrect.");
-        try
-        {
-            _ = ItsModeController.CommandForMode(
-                ItsMode.Geek,
-                ItsModeControlPath.LegacyLitssvc);
-            throw new InvalidOperationException(
-                "Legacy LITSSVC unexpectedly accepted Geek mode.");
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-        }
         Assert(PerformanceModeCycle.Next(
                    PerformanceModeCycle.DefaultOrder,
                    PerformanceModeCycle.DefaultOrder,
@@ -2918,13 +3041,13 @@ internal static class Program
                    mode => ItsModeDetector.IsModeSupported(
                        mode,
                        ItsModeControlPath.LegacyLitssvc)) ==
-               ItsMode.PowerSaving,
-            "Fn+Q does not skip modes unsupported by legacy LITSSVC.");
+               ItsMode.Geek,
+            "Fn+Q does not include Geek mode on the legacy LITSSVC path.");
     }
 
     private static void VerifyApplicationUpdateService()
     {
-        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.1",
+        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.2",
             "The application version is not the expected release version.");
         var release = ApplicationUpdateService.ParseReleaseJson(
             "{\"tag_name\":\"v1.1.0\",\"html_url\":" +
@@ -3960,7 +4083,7 @@ internal static class Program
                g5.Rules[PowerSetting.GpuPowerBoost] == new PowerSettingRule(0, 25) &&
                g5.Rules[PowerSetting.Atpp] == new PowerSettingRule(20, 95, 1) &&
                g5Defaults == new PowerSettingsState(125, 157, 97, 56, 10, 105, 87, 0, 75)
-               { AvailableSettings = PowerSettingAvailability.All },
+               { AvailableSettings = PowerSettingAvailability.LegacyAll },
             "ThinkBook 16p G5 IRX power profile is incorrect.");
         var g6 = PowerSettingsController.ResolveProfile(
             "ThinkBook 16p G6 IAX");
@@ -3970,7 +4093,7 @@ internal static class Program
         var g5Required =
             PowerSettingsController.RequiredSettingsForFullAvailability(g5);
         var g5WithoutAtpp =
-            PowerSettingAvailability.All & ~PowerSettingAvailability.Atpp;
+            PowerSettingAvailability.LegacyAll & ~PowerSettingAvailability.Atpp;
         Assert((g5Required & PowerSettingAvailability.Atpp) == 0 &&
                (g5WithoutAtpp & g5Required) == g5Required,
             "G5 IRX incorrectly requires ATPP for full power-setting availability.");
@@ -3999,6 +4122,471 @@ internal static class Program
         Assert(!readOnly.Writable && readOnly.CpuTemperatureOffset == 0 &&
                readOnly.GpuTgpOffset == 0,
             "Unknown devices must expose raw read-only power values.");
+    }
+
+    private static void VerifyNvPcfPowerControl()
+    {
+        var g6 = PowerSettingsController.ResolveProfile(
+            DeviceModelDetector.ThinkBook16pG6Iax);
+        var legacy = PowerSettingsController.GetDefaultState(
+                         ItsMode.Performance,
+                         g6) ??
+                     throw new InvalidOperationException(
+                         "The G6 performance default is unavailable.");
+        var converted = NvPcfPowerPolicy.FromLegacy(legacy);
+        Assert(converted.NvPcfAcTargetTppLimit == 185 &&
+               converted.NvPcfAcDefaultGpuLimit == 100 &&
+               converted.NvPcfAcMinGpuLimit == 100 &&
+               converted.NvPcfAcMaxGpuLimit == 115 &&
+               (converted.AvailableSettings &
+                NvPcfPowerPolicy.LegacyGpuMask) == 0 &&
+               (converted.AvailableSettings & NvPcfPowerPolicy.NvPcfMask) ==
+               NvPcfPowerPolicy.NvPcfMask,
+            "Legacy Lenovo GPU power defaults are not converted to NVPCF values correctly.");
+        var roundTrip = NvPcfPowerPolicy.ToLegacy(converted);
+        Assert(roundTrip.Atpp == legacy.Atpp &&
+               roundTrip.GpuConfigurableTgp == legacy.GpuConfigurableTgp &&
+               roundTrip.GpuToCpuDynamicBoost ==
+               legacy.GpuToCpuDynamicBoost &&
+               roundTrip.GpuPowerBoost == legacy.GpuPowerBoost,
+            "NVPCF GPU power values do not convert back to Lenovo values.");
+        var migratedLegacyLocks =
+            CurveProfileStore.MigrateLegacyPowerModeLocksFromNvApi(
+                new Dictionary<string, PowerModeLockSettings>
+                {
+                    [ItsMode.Performance.ToString()] = new()
+                    {
+                        Locks = new PowerSettingsLockSelection
+                        {
+                            NvPcfAcTargetTppLimit = true,
+                            NvPcfAcDefaultGpuLimit = true
+                        },
+                        Target = converted
+                    }
+                });
+        Assert(migratedLegacyLocks.TryGetValue(
+                   ItsMode.Performance.ToString(),
+                   out var migratedProfile) &&
+               migratedProfile.Locks.Atpp &&
+               migratedProfile.Locks.GpuConfigurableTgp &&
+               !migratedProfile.Locks.NvPcfAcTargetTppLimit &&
+               migratedProfile.Target?.Atpp == legacy.Atpp,
+            "The one-time migration cannot recover Lenovo lock values from the old combined NVAPI lock schema.");
+
+        var changedNvPcfTarget = converted with
+        {
+            NvPcfAcDefaultGpuLimit = 110
+        };
+        var oneNvPcfLock = new PowerSettingsLockSelection
+        {
+            NvPcfAcDefaultGpuLimit = true
+        };
+        Assert(PowerSettingsController.RequiresLockReapply(
+                   converted,
+                   changedNvPcfTarget,
+                   oneNvPcfLock) &&
+               PowerSettingsController.ApplyLockedValues(
+                       converted,
+                       changedNvPcfTarget,
+                       oneNvPcfLock)
+                   .NvPcfAcDefaultGpuLimit == 110,
+            "NVPCF values do not participate in per-setting power locking.");
+        Assert(NvPcfPowerController.WattsToMilliwatts(125) == 125000 &&
+               NvPcfPowerController.MilliwattsToWatts(125000) == 125 &&
+               NvPcfPowerController.ParseNvidiaSmiPowerBounds(
+                   "50.00, 125.00") == (50, 125) &&
+               NvPcfPowerController.CalculatePowerBoundsFromPcm(
+                   100000,
+                   250000,
+                   125) == (50, 125),
+            "NVPCF unit conversion or nvidia-smi power-limit parsing is incorrect.");
+        var wrapperValues = NvPcfPowerController.Values(converted);
+        var wrapperFields = NvPcfPowerController.Fields(new()
+        {
+            NvPcfAcTargetTppLimit = true,
+            NvPcfAcMaxGpuLimit = true
+        });
+        NvPcfPowerController.SetCachedSliderBoundsForTesting((50, 125));
+        var wrapperSnapshot = NvPcfPowerController.SnapshotForTesting(
+            new PcfPowerValues(185000, 50000, 45000, 125000),
+            PcfPowerLayout.V2,
+            controllerIndex: 3);
+        Assert(wrapperValues.ACTargetTPPLimitInMilliwatts == 185000 &&
+               typeof(PcfPowerController).GetMethod(
+                   nameof(PcfPowerController.ResetAllOverrides))
+                   is not null &&
+               typeof(PcfPowerController).GetMethod(
+                   nameof(PcfPowerController.SetPowerField))
+                   is not null &&
+               typeof(PcfPowerController).GetMethod(
+                   nameof(PcfPowerController.SetPowerLimits))
+                   is not null &&
+               typeof(PcfPowerController).GetMethod(
+                   nameof(PcfPowerController.GetDynamicBoostEnabled)) is not null &&
+               typeof(PcfPowerController).GetMethod(
+                   nameof(PcfPowerController.SetDynamicBoostEnabled)) is not null &&
+               wrapperValues.ACDefaultGPULimitInMilliwatts == 100000 &&
+               wrapperValues.ACMinGPULimitInMilliwatts == 100000 &&
+               wrapperValues.ACMaxGPULimitInMilliwatts == 115000 &&
+               wrapperFields ==
+                   (PcfPowerFields.ACTargetTPPLimit |
+                    PcfPowerFields.ACMaxGPULimit) &&
+               wrapperSnapshot.SliderMinimumW == 50 &&
+               wrapperSnapshot.SliderMaximumW == 125 &&
+               wrapperSnapshot.LayoutName.Contains(
+                   "V2; controller 3",
+                   StringComparison.Ordinal),
+            "Toolkit does not map power values, selected fields, or slider bounds through NvAPIWrapper correctly.");
+        var readOnly = PowerSettingsController.ResolveProfile("Unknown model");
+        PowerSettingsController.SetProfileForTesting(readOnly);
+        NvPcfPowerController.SetCachedSliderBoundsForTesting((50, 125));
+        NvPcfPowerController.SetCachedTemperatureBoundsForTesting((75, 90));
+        try
+        {
+            var settings = new AppSettings
+            {
+                Language = "zh-CN",
+                Theme = "dark",
+                UseNvApiGpuPower = true
+            };
+            using var runtime = new ToolkitRuntimeService(settings);
+            runtime.SetReportForTesting(new FeatureAvailabilityReport([
+                new FeatureAvailability(
+                    FeatureIds.NvApiGpuPower,
+                    "性能",
+                    "NVAPI GPU 功耗调整（Beta）",
+                    true,
+                    "smoke test available")
+            ]));
+            var state = NvPcfPowerPolicy.Merge(
+                null,
+                new NvPcfPowerSnapshot(
+                    185, 100, 80, 125, 50, 125,
+                    true, 87, 75, 90, "Test"));
+            Assert(PowerSettingsController.IsValidLockConfiguration(
+                       PowerSettingsLockSelection.AllNvPcf(),
+                       state),
+                "NVPCF-only devices cannot persist per-setting power locks.");
+            Assert(CurveProfileStore.NormalizePowerModeLocks(
+                       new Dictionary<string, PowerModeLockSettings>
+                       {
+                           [ItsMode.Performance.ToString()] = new()
+                           {
+                               Locks = PowerSettingsLockSelection.AllNvPcf(),
+                               Target = state
+                           }
+                       }).Count == 1,
+                "A valid NVPCF per-mode lock profile is discarded during configuration normalization.");
+            runtime.SetSnapshotForTesting(
+                ToolkitRuntimeSnapshot.Empty with
+                {
+                    ItsMode = ItsMode.Performance,
+                    PowerSettings = state
+                });
+            var overviewValues = new HardwareMonitorViewModel(runtime);
+            Assert(overviewValues.PowerNvTargetTpp == "185 W" &&
+                   overviewValues.PowerNvDefaultGpu == "100 W" &&
+                   overviewValues.PowerNvMinGpu == "80 W" &&
+                   overviewValues.PowerNvMaxGpu == "125 W" &&
+                   overviewValues.PowerNvGpuTemperature == "87 °C" &&
+                   overviewValues.PowerNvDynamicBoost == "开启" &&
+                   overviewValues.PowerNvTargetTppVisible &&
+                   !overviewValues.PowerGpuBoostVisible,
+                "Overview does not replace Lenovo GPU power values with the enabled NVPCF readings.");
+            using var page = new ToolkitPerformancePage(runtime);
+            Assert(ContainsText(page, "ATPP（整机功耗）") &&
+                   ContainsText(page, "默认 GPU TGP") &&
+                   ContainsText(page, "最小 GPU TGP") &&
+                   ContainsText(page, "最大 GPU TGP") &&
+                   ContainsText(page, "Dynamic Boost") &&
+                   !ContainsText(page, "GPU Power Boost") &&
+                   !ContainsText(page, "GPU to CPU Dynamic Boost"),
+                "The Beta power card does not replace the four Lenovo GPU power values.");
+            using var nvOverview = new ToolkitOverviewPage(runtime);
+            foreach (var label in new[]
+                     {
+                         "默认 GPU TGP", "最小 GPU TGP", "最大 GPU TGP"
+                     })
+            {
+                var labelBlock = Descendants(nvOverview)
+                    .OfType<TextBlock>()
+                    .Single(block => block.Text == label);
+                Assert(labelBlock.Parent is Grid row &&
+                       row.Parent is StackPanel,
+                    $"{label} is paired with another overview value instead of occupying its own row.");
+            }
+
+            GetPrivateField<Button>(page, "_togglePowerEditor")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            page.GetType().GetMethod(
+                    "ApplyPowerState",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(page, [state, true]);
+            var editorHost = GetPrivateField<Border>(page, "_powerEditorHost");
+            var sliders = Descendants(editorHost).OfType<Slider>().ToArray();
+            Assert(sliders.Length == 5 &&
+                   sliders.Count(slider =>
+                       slider.Minimum == 50 && slider.Maximum == 250) == 1 &&
+                   sliders.Count(slider =>
+                       slider.Minimum == 50 && slider.Maximum == 125) == 3 &&
+                   GetPrivateField<Dictionary<PowerSetting, CheckBox>>(
+                       page,
+                       "_powerLockToggles").Count == 6 &&
+                   GetPrivateField<CheckBox>(page, "_nvDynamicBoost") is
+                       { IsChecked: true } dynamicBoostSwitch &&
+                   !ReferenceEquals(
+                       dynamicBoostSwitch,
+                       GetPrivateField<Dictionary<PowerSetting, CheckBox>>(
+                           page,
+                           "_powerLockToggles")[PowerSetting.NvPcfDynamicBoost]) &&
+                   Equals(GetPrivateField<Button>(
+                       page,
+                       "_defaultPower").Content, "恢复默认值"),
+                "The Beta power editor does not use the required slider ranges, locks, or reset action.");
+
+            var gpuLimitSliders = sliders.Where(slider =>
+                slider.Minimum == 50 && slider.Maximum == 125).ToArray();
+            var gpuLimitTexts = gpuLimitSliders.Select(slider =>
+                    ((Panel)slider.Parent).Children.OfType<TextBox>().Single())
+                .ToArray();
+            foreach (var textBox in gpuLimitTexts)
+                textBox.Text = "140";
+            var targetSlider = sliders.Single(slider =>
+                slider.Minimum == 50 && slider.Maximum == 250);
+            var targetText = ((Panel)targetSlider.Parent)
+                .Children.OfType<TextBox>().Single();
+            targetText.Text = "300";
+            object?[] collectArguments = [null, null];
+            Assert((bool)page.GetType().GetMethod(
+                       "TryCollectPower",
+                       BindingFlags.Instance | BindingFlags.NonPublic)!
+                   .Invoke(page, collectArguments)! &&
+                   collectArguments[0] is PowerSettingsState collected &&
+                   collected.NvPcfAcDefaultGpuLimit == 140 &&
+                   collected.NvPcfAcTargetTppLimit == 300 &&
+                   collected.NvPcfDynamicBoostEnabled == true &&
+                   collected.NvApiGpuTemperatureLimit == 87 &&
+                   gpuLimitSliders.All(slider => slider.Value == 125) &&
+                   targetSlider.Value == 250,
+                "NVPCF GPU power manual input is incorrectly capped by its slider range.");
+            targetText.Text = "0";
+            collectArguments = [null, null];
+            Assert(!(bool)page.GetType().GetMethod(
+                       "TryCollectPower",
+                       BindingFlags.Instance | BindingFlags.NonPublic)!
+                   .Invoke(page, collectArguments)!,
+                "AC Target TPP Limit accepts a non-positive manual value.");
+            targetText.Text = "185";
+            gpuLimitTexts[0].Text = "0";
+            collectArguments = [null, null];
+            Assert(!(bool)page.GetType().GetMethod(
+                       "TryCollectPower",
+                       BindingFlags.Instance | BindingFlags.NonPublic)!
+                   .Invoke(page, collectArguments)!,
+                "NVPCF GPU power accepts a non-positive manual value.");
+
+            using var settingsPage = new ToolkitSettingsPage(runtime);
+            Assert(ContainsText(settingsPage,
+                       "使用 NVAPI 调整 GPU 功耗（Beta）") &&
+                   GetPrivateField<CheckBox>(
+                       settingsPage,
+                       "_useNvApiGpuPower").IsChecked == true,
+                "Settings does not expose the persisted NVAPI GPU power Beta switch.");
+        }
+        finally
+        {
+            NvPcfPowerController.SetCachedSliderBoundsForTesting(null);
+            NvPcfPowerController.SetCachedTemperatureBoundsForTesting(null);
+            PowerSettingsController.SetProfileForTesting(g6);
+        }
+
+    }
+
+    private static void VerifyBetaCpuPowerUi()
+    {
+        var settings = new AppSettings
+        {
+            Language = "zh-CN", Theme = "dark",
+            UseIntelMmioCpuPower = true
+        };
+        using var runtime = new ToolkitRuntimeService(settings);
+        runtime.SetReportForTesting(new FeatureAvailabilityReport([
+            new FeatureAvailability(FeatureIds.IntelMmioCpuPower, "性能",
+                "直接调整 CPU MMIO 功耗墙（Beta）", true, "test"),
+            new FeatureAvailability(FeatureIds.PowerSettings, "性能",
+                "功耗设置", true, "test")
+        ]));
+        runtime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty with
+        {
+            ItsMode = ItsMode.Performance,
+            PowerSettings = new PowerSettingsState(
+                45, 80, 95, 56, 0, 0, 0, 0)
+            {
+                AvailableSettings =
+                    PowerSettingsController.Flag(PowerSetting.CpuPl1) |
+                    PowerSettingsController.Flag(PowerSetting.CpuPl2) |
+                    PowerSettingsController.Flag(PowerSetting.CpuTurboTimeLimit),
+                BetaCpuPowerKind = BetaCpuPowerKind.IntelMmio
+            }
+        });
+        using var page = new ToolkitPerformancePage(runtime);
+        GetPrivateField<Button>(page, "_togglePowerEditor")
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        var sliders = Descendants(GetPrivateField<Border>(
+                page, "_powerEditorHost"))
+            .OfType<Slider>().ToArray();
+        Assert(sliders.Count(x => x.Minimum == 30 && x.Maximum == 150) >= 2 &&
+               sliders.Count(x => x.Minimum == 20 && x.Maximum == 160) == 1,
+            "Intel MMIO Beta slider and manual-input limits are incorrect.");
+        Assert(PowerSettingsController.IsValidState(
+                runtime.Snapshot.PowerSettings),
+            "A read-back Beta CPU state cannot be used as a lock target.");
+
+        AmdZenStatesPowerController.SetCachedKindForTesting(
+            BetaCpuPowerKind.AmdPbo);
+        try
+        {
+            var amdSettings = new AppSettings
+            {
+                Language = "zh-CN",
+                Theme = "dark",
+                UseAmdZenStatesCpuPower = true
+            };
+            using var amdRuntime = new ToolkitRuntimeService(amdSettings);
+            amdRuntime.SetReportForTesting(new FeatureAvailabilityReport([
+                new FeatureAvailability(
+                    FeatureIds.AmdZenStatesCpuPower,
+                    "性能",
+                    "使用 ZenStates-Core 调整 CPU 功耗墙（Beta）",
+                    true,
+                    "test")
+            ]));
+            var amdPower = new PowerSettingsState(
+                95, 90, 92, 105, 0, 0, 0, 0)
+            {
+                AvailableSettings =
+                    PowerSettingsController.Flag(PowerSetting.CpuPl1) |
+                    PowerSettingsController.Flag(PowerSetting.CpuPl2) |
+                    PowerSettingsController.Flag(
+                        PowerSetting.CpuTurboTimeLimit) |
+                    PowerSettingsController.Flag(
+                        PowerSetting.CpuTemperatureLimit),
+                BetaCpuPowerKind = BetaCpuPowerKind.AmdPbo
+            };
+            amdRuntime.SetSnapshotForTesting(
+                ToolkitRuntimeSnapshot.Empty with
+                {
+                    ItsMode = ItsMode.Performance,
+                    PowerSettings = amdPower
+                });
+            using var amdPage = new ToolkitPerformancePage(amdRuntime);
+            var readoutLabels = Descendants(amdPage).OfType<TextBlock>()
+                .Select(block => block.Text)
+                .ToList();
+            Assert(readoutLabels.IndexOf("PPT") < readoutLabels.IndexOf("TDC") &&
+                   readoutLabels.IndexOf("TDC") < readoutLabels.IndexOf("EDC") &&
+                   readoutLabels.IndexOf("EDC") < readoutLabels.IndexOf("TctlMax"),
+                "AMD ZenStates readouts do not place power/current limits before the temperature limit.");
+            using var amdOverview = new ToolkitOverviewPage(amdRuntime);
+            var overviewLabels = Descendants(amdOverview)
+                .OfType<TextBlock>()
+                .Select(block => block.Text)
+                .ToList();
+            Assert(overviewLabels.IndexOf("PPT") < overviewLabels.IndexOf("TDC") &&
+                   overviewLabels.IndexOf("TDC") < overviewLabels.IndexOf("EDC") &&
+                   overviewLabels.IndexOf("EDC") < overviewLabels.IndexOf("TctlMax"),
+                "AMD ZenStates overview values do not place power/current limits before the temperature limit.");
+
+            GetPrivateField<Button>(amdPage, "_togglePowerEditor")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var editorLabels = Descendants(GetPrivateField<Border>(
+                    amdPage,
+                    "_powerEditorHost"))
+                .OfType<TextBlock>()
+                .Select(block => block.Text)
+                .ToList();
+            Assert(editorLabels.IndexOf("PPT") < editorLabels.IndexOf("TDC") &&
+                   editorLabels.IndexOf("TDC") < editorLabels.IndexOf("EDC") &&
+                   editorLabels.IndexOf("EDC") < editorLabels.IndexOf("TctlMax"),
+                "AMD ZenStates editors do not place power/current limits before the temperature limit.");
+        }
+        finally
+        {
+            AmdZenStatesPowerController.SetCachedKindForTesting(null);
+        }
+    }
+
+    private static void VerifyDataSharingContracts()
+    {
+        Assert(new AppSettings() is
+               {
+                   ShareDataWithOtherSoftware: false,
+                   DataSharingPort: 2975
+               } &&
+               CurveProfileStore.IsValidDataSharingPort(1) &&
+               CurveProfileStore.IsValidDataSharingPort(65535) &&
+               !CurveProfileStore.IsValidDataSharingPort(0) &&
+               !CurveProfileStore.IsValidDataSharingPort(65536),
+            "Local data-sharing defaults or port validation are incorrect.");
+
+        var snapshot = ToolkitRuntimeSnapshot.Empty with
+        {
+            ItsMode = ItsMode.Performance,
+            Temperatures = new TemperatureSnapshot(
+                56.5, 43.25, null, 18.75, 11.5,
+                "CPU", "GPU", string.Empty),
+            Fans = new FanSnapshot(
+                DateTimeOffset.Now,
+                2400,
+                2200,
+                new Dictionary<string, FanLimit>())
+        };
+        var shared = LocalDataSharingService.BuildSnapshot(snapshot);
+        Assert(shared.CpuTemperatureC == 56.5 &&
+               shared.CpuPowerW == 18.75 &&
+               shared.GpuTemperatureC == 43.25 &&
+               shared.GpuPowerW == 11.5 &&
+               shared.Fan1Rpm == 2400 &&
+               shared.PerformanceMode == nameof(ItsMode.Performance),
+            "The local data-sharing payload does not expose the required readings.");
+        var missing = LocalDataSharingService.BuildSnapshot(
+            ToolkitRuntimeSnapshot.Empty);
+        Assert(missing.CpuTemperatureC is null &&
+               missing.CpuPowerW is null &&
+               missing.GpuTemperatureC is null &&
+               missing.GpuPowerW is null &&
+               missing.Fan1Rpm is null &&
+               missing.Fan2Rpm is null &&
+               missing.PerformanceMode is null,
+            "Unavailable shared readings are not represented as null.");
+
+        var settings = new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark",
+            DataSharingPort = 2975
+        };
+        using var runtime = new ToolkitRuntimeService(settings);
+        runtime.SetReportForTesting(new FeatureAvailabilityReport([
+            new FeatureAvailability(
+                FeatureIds.DataSharing,
+                "设置",
+                "向其他软件共享数据",
+                true,
+                "test")
+        ]));
+        using var page = new ToolkitSettingsPage(runtime);
+        Assert(ContainsText(page, "向其他软件共享数据") &&
+               GetPrivateField<TextBox>(page, "_dataSharingPort").Text ==
+               "2975" &&
+               GetPrivateField<CheckBox>(
+                   page,
+                   "_shareDataWithOtherSoftware").IsChecked == false &&
+               GetPrivateField<CheckBox>(page, "_takeOverFnKeys") is
+               {
+                   VerticalAlignment: VerticalAlignment.Center
+               } fnSwitch && fnSwitch.Margin == new Thickness(0),
+            "Data-sharing settings or the Fn takeover switch alignment are incorrect.");
     }
 
     private static void VerifyPerformanceFanLinkSettings()
@@ -4273,6 +4861,7 @@ internal static class Program
         Assert(!normalized.Cards[OverviewCardIds.Cpu].Enabled &&
                normalized.Cards[OverviewCardIds.Warranty].Enabled &&
                normalized.Cards[OverviewCardIds.Warranty].Items.Count == 5 &&
+               normalized.Cards[OverviewCardIds.Power].Items.Count == 15 &&
                OverviewLayoutDefaults.CompactCardDefinitions.Count == 6 &&
                OverviewLayoutDefaults.CompactCardDefinitions[
                    OverviewCardIds.Cpu].SequenceEqual(

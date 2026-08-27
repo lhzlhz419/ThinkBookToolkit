@@ -401,12 +401,26 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                 null,
                 new MonitorSection(null,
                 [
-                    new("CPU PL1", nameof(HardwareMonitorViewModel.PowerCpuPl1), false, "CPU PL2", nameof(HardwareMonitorViewModel.PowerCpuPl2),
+                    new(Runtime.BetaCpuPowerKind switch { BetaCpuPowerKind.AmdPbo => "PPT", BetaCpuPowerKind.AmdApu => "STAPM", _ => "CPU PL1" }, nameof(HardwareMonitorViewModel.PowerCpuPl1), false,
+                        Runtime.BetaCpuPowerKind switch { BetaCpuPowerKind.AmdPbo => "TDC", BetaCpuPowerKind.AmdApu => "Fast", _ => "CPU PL2" }, nameof(HardwareMonitorViewModel.PowerCpuPl2),
                         VisibilityProperty: nameof(HardwareMonitorViewModel.PowerCpuPl1Visible),
                         SecondaryVisibilityProperty: nameof(HardwareMonitorViewModel.PowerCpuPl2Visible)),
-                    new(L("CPU 温度墙", "CPU temperature limit"), nameof(HardwareMonitorViewModel.PowerCpuTemperature), false, "Turbo Time", nameof(HardwareMonitorViewModel.PowerTurboTime),
-                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerCpuTemperatureVisible),
-                        SecondaryVisibilityProperty: nameof(HardwareMonitorViewModel.PowerTurboTimeVisible)),
+                    new(Runtime.BetaCpuPowerKind switch { BetaCpuPowerKind.AmdPbo => "EDC", BetaCpuPowerKind.AmdApu => "Slow", _ => L("CPU 温度墙", "CPU temperature limit") },
+                        Runtime.BetaCpuPowerKind is BetaCpuPowerKind.AmdPbo or BetaCpuPowerKind.AmdApu
+                            ? nameof(HardwareMonitorViewModel.PowerTurboTime)
+                            : nameof(HardwareMonitorViewModel.PowerCpuTemperature), false,
+                        Runtime.BetaCpuPowerKind is BetaCpuPowerKind.AmdPbo or BetaCpuPowerKind.AmdApu
+                            ? "TctlMax"
+                            : "Turbo Time",
+                        Runtime.BetaCpuPowerKind is BetaCpuPowerKind.AmdPbo or BetaCpuPowerKind.AmdApu
+                            ? nameof(HardwareMonitorViewModel.PowerCpuTemperature)
+                            : nameof(HardwareMonitorViewModel.PowerTurboTime),
+                        VisibilityProperty: Runtime.BetaCpuPowerKind is BetaCpuPowerKind.AmdPbo or BetaCpuPowerKind.AmdApu
+                            ? nameof(HardwareMonitorViewModel.PowerTurboTimeVisible)
+                            : nameof(HardwareMonitorViewModel.PowerCpuTemperatureVisible),
+                        SecondaryVisibilityProperty: Runtime.BetaCpuPowerKind is BetaCpuPowerKind.AmdPbo or BetaCpuPowerKind.AmdApu
+                            ? nameof(HardwareMonitorViewModel.PowerCpuTemperatureVisible)
+                            : nameof(HardwareMonitorViewModel.PowerTurboTimeVisible)),
                     new("GPU Power Boost", nameof(HardwareMonitorViewModel.PowerGpuBoost),
                         VisibilityProperty: nameof(HardwareMonitorViewModel.PowerGpuBoostVisible)),
                     new(
@@ -419,8 +433,26 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                         SecondaryVisibilityProperty: nameof(HardwareMonitorViewModel.PowerGpuTemperatureVisible)),
                     new("GPU to CPU Dynamic Boost", nameof(HardwareMonitorViewModel.PowerGpuToCpu),
                         VisibilityProperty: nameof(HardwareMonitorViewModel.PowerGpuToCpuVisible)),
-                    new("ATPP", nameof(HardwareMonitorViewModel.PowerAtpp),
-                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerAtppVisible))
+                    new("ATPP offset", nameof(HardwareMonitorViewModel.PowerAtpp),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerAtppVisible)),
+                    new(L("ATPP（整机功耗）", "AC Target TPP Limit"),
+                        nameof(HardwareMonitorViewModel.PowerNvTargetTpp),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerNvTargetTppVisible)),
+                    new(L("默认 GPU TGP", "AC Default GPU Limit"),
+                        nameof(HardwareMonitorViewModel.PowerNvDefaultGpu),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerNvDefaultGpuVisible)),
+                    new(L("最小 GPU TGP", "AC Min GPU Limit"),
+                        nameof(HardwareMonitorViewModel.PowerNvMinGpu),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerNvMinGpuVisible)),
+                    new(L("最大 GPU TGP", "AC Max GPU Limit"),
+                        nameof(HardwareMonitorViewModel.PowerNvMaxGpu),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerNvMaxGpuVisible)),
+                    new(L("GPU 温度墙", "GPU temperature limit"),
+                        nameof(HardwareMonitorViewModel.PowerNvGpuTemperature), false,
+                        "Dynamic Boost",
+                        nameof(HardwareMonitorViewModel.PowerNvDynamicBoost),
+                        VisibilityProperty: nameof(HardwareMonitorViewModel.PowerNvGpuTemperatureVisible),
+                        SecondaryVisibilityProperty: nameof(HardwareMonitorViewModel.PowerNvDynamicBoostVisible))
                 ])), layout);
             Add(OverviewCardIds.Warranty, HardwareMonitorCard(
                 L("保修信息", "Warranty"),

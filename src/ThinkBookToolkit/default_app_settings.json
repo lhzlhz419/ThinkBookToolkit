@@ -82,6 +82,11 @@
   "UseAlternativeFullSpeedMethod": false,
   "AlternativeFullSpeedMethodInitialized": false,
   "ContinuouslyWriteFanTargets": false,
+  "UseNvApiGpuPower": false,
+  "UseIntelMmioCpuPower": false,
+  "UseAmdZenStatesCpuPower": false,
+  "ShareDataWithOtherSoftware": false,
+  "DataSharingPort": 2975,
   "OverviewPageMode": 1,
   "PerformanceFanLink": {
     "SwitchFanStrategyWithPerformanceMode": false,
@@ -108,11 +113,18 @@
     "GpuConfigurableTgp": false,
     "GpuTemperatureLimit": false,
     "GpuToCpuDynamicBoost": false,
-    "Atpp": false
+    "Atpp": false,
+    "NvPcfAcTargetTppLimit": false,
+    "NvPcfAcDefaultGpuLimit": false,
+    "NvPcfAcMinGpuLimit": false,
+    "NvPcfAcMaxGpuLimit": false,
+    "NvPcfDynamicBoost": false,
+    "NvApiGpuTemperatureLimit": false
   },
   "PowerSettingsLockIntervalSeconds": 2,
   "PowerSettingsLockTarget": null,
   "PowerSettingsLocksByMode": {},
+  "NvApiPowerSettingsLocksByMode": {},
   "GpuOverclock": {
     "Enabled": false,
     "CoreFrequencyOffsetEnabled": true,
@@ -140,6 +152,12 @@
   "PendingGpuModeSource": "",
   "PendingGpuModeSourceUsesDirectGraphicsConfiguration": null,
   "PendingGpuModeBootSessionId": "",
+  "PendingGpuModeProtocol": "",
+  "PendingGpuModeParentStaged": false,
+  "PendingGpuModeChildStaged": false,
+  "PendingGpuModePostBootAttempts": 0,
+  "PendingGpuModeLastError": "",
+  "LastGpuModeFailure": "",
   "PcManagerNormalDefaultTemperature": 6600,
   "PcManagerEyeCareDefaultTemperature": 3500
 }

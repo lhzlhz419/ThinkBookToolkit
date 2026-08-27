@@ -134,9 +134,18 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         " / ");
 
     public string PowerCpuPl1 => PowerValue(PowerSetting.CpuPl1, value => value.CpuPl1);
-    public string PowerCpuPl2 => PowerValue(PowerSetting.CpuPl2, value => value.CpuPl2);
+    public string PowerCpuPl2 => PowerValue(PowerSetting.CpuPl2,
+        value => value.CpuPl2,
+        Runtime.BetaCpuPowerKind == BetaCpuPowerKind.AmdPbo ? "A" : "W");
     public string PowerCpuTemperature => PowerValue(PowerSetting.CpuTemperatureLimit, value => value.CpuTemperatureLimit, "°C");
-    public string PowerTurboTime => PowerValue(PowerSetting.CpuTurboTimeLimit, value => value.CpuTurboTimeLimit, "s");
+    public string PowerTurboTime => PowerValue(PowerSetting.CpuTurboTimeLimit,
+        value => value.CpuTurboTimeLimit,
+        Runtime.BetaCpuPowerKind switch
+        {
+            BetaCpuPowerKind.AmdPbo => "A",
+            BetaCpuPowerKind.AmdApu => "W",
+            _ => "s"
+        });
     public string PowerGpuBoost => PowerValue(PowerSetting.GpuPowerBoost, value => value.GpuPowerBoost);
     public string PowerGpuTgp => PowerValue(PowerSetting.GpuConfigurableTgp, value => value.GpuConfigurableTgp);
     public string PowerGpuTemperature => PowerValue(PowerSetting.GpuTemperatureLimit, value => value.GpuTemperatureLimit, "°C");
@@ -145,6 +154,29 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
                                power.IsAvailable(PowerSetting.Atpp) &&
                                power.Atpp.HasValue
         ? $"{power.Atpp.Value} W"
+        : "--";
+    public string PowerNvTargetTpp => NvPcfPowerValue(
+        PowerSetting.NvPcfAcTargetTppLimit,
+        value => value.NvPcfAcTargetTppLimit);
+    public string PowerNvDefaultGpu => NvPcfPowerValue(
+        PowerSetting.NvPcfAcDefaultGpuLimit,
+        value => value.NvPcfAcDefaultGpuLimit);
+    public string PowerNvMinGpu => NvPcfPowerValue(
+        PowerSetting.NvPcfAcMinGpuLimit,
+        value => value.NvPcfAcMinGpuLimit);
+    public string PowerNvMaxGpu => NvPcfPowerValue(
+        PowerSetting.NvPcfAcMaxGpuLimit,
+        value => value.NvPcfAcMaxGpuLimit);
+    public string PowerNvGpuTemperature => NvPcfPowerValue(
+        PowerSetting.NvApiGpuTemperatureLimit,
+        value => value.NvApiGpuTemperatureLimit,
+        "°C");
+    public string PowerNvDynamicBoost => _snapshot.PowerSettings is { } power &&
+                                         power.IsAvailable(PowerSetting.NvPcfDynamicBoost) &&
+                                         power.NvPcfDynamicBoostEnabled.HasValue
+        ? power.NvPcfDynamicBoostEnabled.Value
+            ? Runtime.L("开启", "On")
+            : Runtime.L("关闭", "Off")
         : "--";
 
     public bool PowerCpuPl1Visible => PowerVisible(PowerSetting.CpuPl1, "cpu-pl1");
@@ -157,6 +189,18 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     public bool PowerGpuToCpuVisible => PowerVisible(PowerSetting.GpuToCpuDynamicBoost, "gpu-to-cpu");
     public bool PowerAtppVisible => PowerVisible(PowerSetting.Atpp, "atpp") &&
                                     _snapshot.PowerSettings?.Atpp.HasValue == true;
+    public bool PowerNvTargetTppVisible => PowerVisible(
+        PowerSetting.NvPcfAcTargetTppLimit, "nv-target-tpp");
+    public bool PowerNvDefaultGpuVisible => PowerVisible(
+        PowerSetting.NvPcfAcDefaultGpuLimit, "nv-default-gpu");
+    public bool PowerNvMinGpuVisible => PowerVisible(
+        PowerSetting.NvPcfAcMinGpuLimit, "nv-min-gpu");
+    public bool PowerNvMaxGpuVisible => PowerVisible(
+        PowerSetting.NvPcfAcMaxGpuLimit, "nv-max-gpu");
+    public bool PowerNvGpuTemperatureVisible => PowerVisible(
+        PowerSetting.NvApiGpuTemperatureLimit, "nv-gpu-temperature");
+    public bool PowerNvDynamicBoostVisible => PowerVisible(
+        PowerSetting.NvPcfDynamicBoost, "nv-dynamic-boost");
 
     public string WarrantyStatus => _snapshot.Warranty?.State switch
     {
@@ -271,6 +315,16 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         string unit = "W") =>
         _snapshot.PowerSettings is { } power && power.IsAvailable(setting)
             ? $"{value(power)} {unit}"
+            : "--";
+
+    private string NvPcfPowerValue(
+        PowerSetting setting,
+        Func<PowerSettingsState, int?> value,
+        string unit = "W") =>
+        _snapshot.PowerSettings is { } power &&
+        power.IsAvailable(setting) &&
+        value(power) is { } watts
+            ? $"{watts} {unit}"
             : "--";
 
     private bool PowerVisible(PowerSetting setting, string itemId) =>

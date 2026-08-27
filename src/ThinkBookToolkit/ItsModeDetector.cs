@@ -61,7 +61,7 @@ public sealed class ItsModeDetector
             PerformanceModeCycle.IsSelectableMode(mode),
         ItsModeControlPath.LegacyLitssvc =>
             mode is ItsMode.Intelligent or ItsMode.PowerSaving or
-                ItsMode.Performance,
+                ItsMode.Performance or ItsMode.Geek,
         _ => false
     };
 
@@ -105,7 +105,18 @@ public sealed class ItsModeDetector
         var auto = ReadInt(key, "AutomaticModeSetting", -1);
         var current = ReadInt(key, "CurrentSetting", -1);
 
-        return (auto, current) switch
+        return ResolveLegacyMode(
+            auto,
+            current,
+            ItsModeController.LegacyGeekOverlayActive);
+    }
+
+    internal static ItsMode ResolveLegacyMode(
+        int automaticModeSetting,
+        int currentSetting,
+        bool geekOverlayActive)
+    {
+        var mode = (automaticModeSetting, currentSetting) switch
         {
             (2, 0) => ItsMode.Intelligent,
             (1, 1) => ItsMode.PowerSaving,
@@ -113,6 +124,9 @@ public sealed class ItsModeDetector
             (1, 4) => ItsMode.Geek,
             _ => ItsMode.Unknown
         };
+        return mode == ItsMode.Performance && geekOverlayActive
+            ? ItsMode.Geek
+            : mode;
     }
 
     private static int ReadInt(RegistryKey key, string name, int fallback)

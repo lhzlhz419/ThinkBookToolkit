@@ -7,6 +7,63 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-27
+
+### Added
+
+- Added optional NVAPI GPU power control through the pinned LLT
+  NvAPIWrapper source dependency. It reads and writes the four NVPCF power
+  values together in milliwatts, supports Dynamic Boost and a supported GPU
+  thermal limit, keeps independent per-performance-mode locks, and restores
+  NVIDIA defaults through the wrapper's reset operation.
+- Added Beta CPU power control independent of Lenovo WMI: Intel systems can
+  write PL1, PL2 and Turbo Time through verified PawnIO/InpOut MMIO access,
+  while AMD systems use ZenStates-Core through an isolated GPL helper for
+  PPT/TDC/EDC or STAPM/Fast/Slow and TctlMax.
+- Added automatic acquisition and release packaging of the three
+  redistributable Intel power-control files required by the MMIO path and the
+  AMD helper.
+- Added optional loopback-only HTTP JSON data sharing. A configurable local
+  port exposes the latest global-refresh snapshot for CPU/GPU temperature and
+  power, fan RPM and the current performance mode, using JSON `null` for
+  unavailable readings.
+- Added independent feature detection and diagnostic logging for NVAPI GPU
+  power, Intel MMIO CPU power, AMD ZenStates CPU power and local data sharing.
+
+### Changed
+
+- Older ThinkBook GPU-mode switching now selects the appropriate legacy
+  three-mode, G-Sync or advanced-BIOS protocol while retaining the existing
+  Hybrid, Hybrid iGPU and Hybrid Auto names. Harmless legacy
+  `GetGsyncStatus` failures no longer prevent a supported mode change.
+- Legacy ITS systems now use the `LITSSVC` path for Geek-mode switching where
+  supported.
+- NVAPI and Lenovo-WMI GPU locks are maintained separately. Switching the
+  NVAPI option converts only unlocked values, preserves each side's lock
+  state, and reapplies mode defaults and locked values in the correct order.
+- AMD power readouts and editors now list power/current limits before TctlMax.
+  The three NVAPI GPU TGP values occupy separate Overview rows.
+- The Fn-key takeover switch and its adjacent actions now share one vertical
+  alignment.
+- Added pinned NvAPIWrapper and ZenStates-Core submodules, licensing notices,
+  and public-release packaging for the separate AMD helper.
+
+### Fixed
+
+- Fixed disabling NVAPI power control getting stuck, reporting an invalid
+  power-lock configuration, or leaving a persistent status message. Disabling
+  now uses the wrapper's `ResetAll` path and reports completion or failure as
+  a transient in-app notification.
+- Fixed NVAPI option changes rebuilding or flashing the current page.
+- Fixed GPU-mode regressions on newer machines and corrected restart-state
+  evaluation when switching away from and back to a pending mode before
+  rebooting.
+- Fixed the ZenStates option being unavailable on supported AMD systems and
+  verified its helper build, capability probe, persistence, write and
+  read-back path.
+- Fixed release publication conflicts caused by the Toolkit and
+  ZenStates-Core license files sharing the same output name.
+
 ## [1.0.1] - 2026-08-25
 
 ### Added
@@ -369,7 +426,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.7...v1.0.0
 [0.2.7]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.6...v0.2.7

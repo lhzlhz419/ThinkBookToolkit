@@ -58,6 +58,9 @@ internal static class FeatureIds
         "performance.discrete-gpu-management";
     public const string GpuOverclock = "performance.gpu-overclock";
     public const string PowerSettings = "performance.power";
+    public const string NvApiGpuPower = "performance.nvapi-gpu-power";
+    public const string IntelMmioCpuPower = "performance.intel-mmio-cpu-power";
+    public const string AmdZenStatesCpuPower = "performance.amd-zenstates-cpu-power";
     public const string BatteryChargeMode = "battery.charge";
     public const string OvernightCharging = "battery.overnight";
     public const string AlwaysOnUsb = "battery.usb";
@@ -89,6 +92,7 @@ internal static class FeatureIds
     public const string Automation = "automation.editor";
     public const string KeyboardMacros = "automation.keyboard-macros";
     public const string UpdateCheck = "settings.update-check";
+    public const string DataSharing = "settings.data-sharing";
 }
 
 internal static class FeatureAvailabilityCache
@@ -258,6 +262,87 @@ internal static class FeatureAvailabilityService
 
         try
         {
+            var nvPcf = NvPcfPowerController.Read();
+            var optionalChinese = string.Join("、", new[]
+            {
+                nvPcf.DynamicBoostEnabled.HasValue ? "Dynamic Boost" : null,
+                nvPcf.GpuTemperatureLimitC.HasValue ? "GPU 温度墙" : null
+            }.Where(value => value is not null));
+            var optionalEnglish = string.Join(", ", new[]
+            {
+                nvPcf.DynamicBoostEnabled.HasValue ? "Dynamic Boost" : null,
+                nvPcf.GpuTemperatureLimitC.HasValue ? "GPU thermal limit" : null
+            }.Where(value => value is not null));
+            result.Add(new(
+                FeatureIds.NvApiGpuPower,
+                "性能",
+                "NVAPI GPU 功耗调整（Beta）",
+                true,
+                $"已读取 4 项 NVPCF 功耗参数" +
+                (optionalChinese.Length > 0
+                    ? $"；附加可用：{optionalChinese}"
+                    : string.Empty) +
+                $"；布局：{nvPcf.LayoutName}",
+                EnglishDetail:
+                    "All four NVPCF power values are readable" +
+                    (optionalEnglish.Length > 0
+                        ? $"; additionally available: {optionalEnglish}"
+                        : string.Empty) +
+                    $"; layout: {nvPcf.LayoutName}"));
+        }
+        catch (Exception ex)
+        {
+            result.Add(new(
+                FeatureIds.NvApiGpuPower,
+                "性能",
+                "NVAPI GPU 功耗调整（Beta）",
+                false,
+                ExceptionDetail(ex)));
+        }
+        finally
+        {
+            // Capability detection must not retain an NVAPI client that could
+            // prevent Hybrid Auto or Hybrid iGPU mode from ejecting the dGPU.
+            NvPcfPowerController.Shutdown();
+        }
+
+        if (CpuVendorDetector.IsIntel)
+        {
+            try
+            {
+                var cpu = IntelMmioPowerController.Read();
+                result.Add(new(FeatureIds.IntelMmioCpuPower, "性能",
+                    "直接调整 CPU MMIO 功耗墙（Beta）", true,
+                    $"已读取 PL1、PL2 和 Turbo Time：" +
+                    string.Join(", ", cpu.Values.Select(x => $"{x.Key}={x.Value}"))));
+            }
+            catch (Exception ex)
+            {
+                result.Add(new(FeatureIds.IntelMmioCpuPower, "性能",
+                    "直接调整 CPU MMIO 功耗墙（Beta）", false,
+                    ExceptionDetail(ex)));
+            }
+        }
+        if (CpuVendorDetector.IsAmd)
+        {
+            try
+            {
+                var cpu = AmdZenStatesPowerController.Read();
+                result.Add(new(FeatureIds.AmdZenStatesCpuPower, "性能",
+                    "使用 ZenStates-Core 调整 CPU 功耗墙（Beta）", true,
+                    $"已读取 {cpu.Kind}：" +
+                    string.Join(", ", cpu.Values.Select(x => $"{x.Key}={x.Value}"))));
+            }
+            catch (Exception ex)
+            {
+                result.Add(new(FeatureIds.AmdZenStatesCpuPower, "性能",
+                    "使用 ZenStates-Core 调整 CPU 功耗墙（Beta）", false,
+                    ExceptionDetail(ex)));
+            }
+        }
+
+        try
+        {
             var power = PowerSettingsController.ReadState();
             var profile = PowerSettingsController.CurrentProfile;
             var readableCount = Enum.GetValues<PowerSetting>()
@@ -274,7 +359,7 @@ internal static class FeatureAvailabilityService
                 .ToArray();
             var powerDetail = fullyWritable
                 ? atppAvailable
-                    ? "功耗设置可用，ATPP 可调整。"
+                    ? "功耗设置可用，ATPP offset 可调整。"
                     : "功耗设置可用。"
                 : readableCount == 0
                     ? "没有功耗参数可读取。"
@@ -290,7 +375,7 @@ internal static class FeatureAvailabilityService
                 powerDetail,
                 PartiallyAvailable: readableCount > 0 && !fullyWritable,
                 EnglishDetail: fullyWritable && atppAvailable
-                    ? "ATPP is adjustable."
+                    ? "ATPP offset is adjustable."
                     : null));
         }
         catch (Exception ex)
@@ -600,6 +685,16 @@ internal static class FeatureAvailabilityService
             "软件更新检查",
             true,
             "通过 GitHub Releases 检查最新正式版本");
+
+        AddState(
+            result,
+            FeatureIds.DataSharing,
+            "设置",
+            "向其他软件共享数据",
+            System.Net.HttpListener.IsSupported,
+            System.Net.HttpListener.IsSupported
+                ? "本机回环 HTTP JSON 服务可用"
+                : "当前运行环境不支持 HTTP 监听器");
 
         AddState(
             result,
