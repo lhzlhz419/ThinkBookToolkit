@@ -24,6 +24,7 @@ internal sealed class GpuOverclockWindow : Window
     private readonly CheckBox _memoryOffsetEnabled = new();
     private readonly CheckBox _coreLimitEnabled = new();
     private readonly CheckBox _memoryLimitEnabled = new();
+    private readonly CheckBox _autoEnableOnStartup = new();
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Button _restore;
     private readonly Button _apply;
@@ -139,6 +140,27 @@ internal sealed class GpuOverclockWindow : Window
                 "Both limits must be positive integers; leave both blank for no limit. Supported on Ampere and newer architectures."),
             _memoryLimitEditor,
             _memoryLimitEnabled));
+        _autoEnableOnStartup.IsChecked =
+            runtime.Settings.AutoEnableGpuOverclockOnStartup;
+        _autoEnableOnStartup.Click += (_, _) =>
+        {
+            var requested = _autoEnableOnStartup.IsChecked == true;
+            if (_runtime.TrySetGpuOverclockStartupEnabled(
+                    requested,
+                    out var error))
+                return;
+            _autoEnableOnStartup.IsChecked = !requested;
+            _status.Foreground = Brush(_palette.Danger);
+            _status.Text = T(
+                "保存自动开启设置失败：",
+                "Failed to save automatic overclock setting: ") + error;
+        };
+        root.Children.Add(OptionField(
+            T("再次打开软件时自动打开超频",
+                "Automatically enable overclocking when Toolkit starts again"),
+            T("默认关闭；只影响下次启动时的超频开关，不会删除已保存的超频数值。",
+                "Off by default. This only controls the overclock switch on the next launch and does not remove saved values."),
+            _autoEnableOnStartup));
 
         _status.Foreground = Brush(_palette.Danger);
         _status.Margin = new Thickness(0, 10, 0, 0);
@@ -253,6 +275,54 @@ internal sealed class GpuOverclockWindow : Window
         enabled.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(enabled, 2);
         grid.Children.Add(enabled);
+        return new Border
+        {
+            Background = Brush(_palette.SurfaceRaised),
+            BorderBrush = Brush(_palette.Border),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14, 12, 14, 12),
+            Margin = new Thickness(0, 0, 0, 9),
+            Child = grid
+        };
+    }
+
+    private Border OptionField(
+        string title,
+        string description,
+        CheckBox toggle)
+    {
+        var grid = new Grid { MinHeight = 54 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star)
+        });
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = GridLength.Auto
+        });
+        var text = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 18, 0)
+        };
+        text.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontWeight = FontWeights.SemiBold
+        });
+        text.Children.Add(new TextBlock
+        {
+            Text = description,
+            Foreground = Brush(_palette.Muted),
+            FontSize = 12,
+            Margin = new Thickness(0, 3, 0, 0),
+            TextWrapping = TextWrapping.Wrap
+        });
+        grid.Children.Add(text);
+        toggle.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(toggle, 1);
+        grid.Children.Add(toggle);
         return new Border
         {
             Background = Brush(_palette.SurfaceRaised),

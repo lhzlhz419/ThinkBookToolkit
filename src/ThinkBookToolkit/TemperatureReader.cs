@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 
@@ -14,11 +15,20 @@ public sealed class TemperatureReader : IDisposable
     private readonly Computer _computer;
     private readonly GpuMonitorWorkerClient? _gpuMonitor;
     private readonly object _gpuReadSync = new();
+    private readonly HybridCoreTopology _hybridCoreTopology =
+        HybridCoreTopology.Detect();
     private Task<GpuMonitorWorkerSnapshot?>? _gpuReadTask;
     private GpuMonitorWorkerSnapshot? _latestGpuSnapshot;
     private StorageTemperatureReader? _storageTelemetry;
     private Task<StorageTemperatureReader?>? _storageInitialization;
     private TemperatureSnapshot? _lastSnapshot;
+    private readonly object _sampleLock = new();
+    private long _lastSuccessfulSample;
+    private readonly Dictionary<(string Name, string Identifier), int> _coreClockClasses = new();
+
+    internal static IReadOnlyDictionary<int, byte>
+        HybridCoreEfficiencyClassesForTesting() =>
+        HybridCoreTopology.Detect().EfficiencyClasses;
 
     public TemperatureReader(bool enableGpuTelemetry = true)
     {
@@ -39,6 +49,21 @@ public sealed class TemperatureReader : IDisposable
         ToolkitLog.Info(
             "LibreHardwareMonitor CPU/memory reader opened in " +
             $"{stopwatch.Elapsed.TotalMilliseconds:0} ms.");
+        if (_hybridCoreTopology.IsHybrid)
+        {
+            ToolkitLog.Info(
+                "Hybrid CPU core classes (LHM physical-core order): " +
+                string.Join(
+                    ", ",
+                    _hybridCoreTopology.EfficiencyClasses
+                        .OrderBy(pair => pair.Key)
+                        .Select(pair =>
+                            $"{pair.Key}=" +
+                            (pair.Value ==
+                             _hybridCoreTopology.PerformanceClass
+                                ? "P"
+                                : "E"))) + ".");
+        }
         if (_gpuMonitor is not null)
             _gpuReadTask = Task.Run(_gpuMonitor.Read);
 
@@ -46,10 +71,22 @@ public sealed class TemperatureReader : IDisposable
 
     public TemperatureSnapshot Read()
     {
+        lock (_sampleLock)
+        {
+            if (_lastSnapshot is not null && _lastSuccessfulSample != 0 &&
+                Stopwatch.GetElapsedTime(_lastSuccessfulSample) < TimeSpan.FromMilliseconds(200))
+                return _lastSnapshot;
+            return ReadUncached();
+        }
+    }
+
+    private TemperatureSnapshot ReadUncached()
+    {
         try
         {
             var snapshot = ReadCore();
             _lastSnapshot = snapshot;
+            _lastSuccessfulSample = Stopwatch.GetTimestamp();
             return snapshot;
         }
         catch (Exception ex)
@@ -150,6 +187,22 @@ public sealed class TemperatureReader : IDisposable
                 .Where(IsPlausibleClock)
                 .ToArray();
         }
+        var performanceCoreClocks = cpuSensors
+            .Where(sensor => sensor.SensorType == SensorType.Clock)
+            .Where(sensor => IsHybridCoreClock(
+                sensor,
+                performance: true))
+            .Select(sensor => sensor.Value)
+            .Where(IsPlausibleClock)
+            .ToArray();
+        var efficiencyCoreClocks = cpuSensors
+            .Where(sensor => sensor.SensorType == SensorType.Clock)
+            .Where(sensor => IsHybridCoreClock(
+                sensor,
+                performance: false))
+            .Select(sensor => sensor.Value)
+            .Where(IsPlausibleClock)
+            .ToArray();
 
         var memoryTemperatures = sensors
             .Where(sensor => sensor.SensorType == SensorType.Temperature)
@@ -190,6 +243,14 @@ public sealed class TemperatureReader : IDisposable
             CpuAverageClockMhz = cpuClocks.Length > 0
                 ? cpuClocks.Average()
                 : null,
+            CpuPerformanceCoreAverageClockMhz =
+                performanceCoreClocks.Length > 0
+                    ? performanceCoreClocks.Average()
+                    : null,
+            CpuEfficiencyCoreAverageClockMhz =
+                efficiencyCoreClocks.Length > 0
+                    ? efficiencyCoreClocks.Average()
+                    : null,
             CpuMaximumClockMhz = cpuClocks.Length > 0
                 ? cpuClocks.Max()
                 : null,
@@ -433,6 +494,67 @@ public sealed class TemperatureReader : IDisposable
             text.Contains(pattern, StringComparison.OrdinalIgnoreCase));
     }
 
+    private bool IsHybridCoreClock(
+        SensorReading sensor,
+        bool performance)
+    {
+        var key = (sensor.Name, sensor.Identifier);
+        if (!_coreClockClasses.TryGetValue(key, out var classification))
+        {
+            classification = ClassifyCoreClock(sensor);
+            _coreClockClasses[key] = classification;
+        }
+        return classification == (performance ? 1 : 2);
+    }
+
+    private int ClassifyCoreClock(SensorReading sensor)
+    {
+        var explicitlyPerformance = ContainsAny(
+            sensor,
+            ["p-core", "p core", "performance core"]);
+        var explicitlyEfficient = ContainsAny(
+            sensor,
+            ["e-core", "e core", "efficiency core", "efficient core"]);
+        // A labelled core must never fall through and be accepted by the
+        // opposite group because of a firmware/core-index mismatch.
+        if (explicitlyPerformance || explicitlyEfficient)
+            return explicitlyPerformance ? 1 : 2;
+        if (!_hybridCoreTopology.IsHybrid ||
+            !TryParseCpuCoreIndex(sensor.Name, sensor.Identifier, out var index) ||
+            !_hybridCoreTopology.EfficiencyClasses.TryGetValue(index, out var value))
+            return 0;
+        return value == _hybridCoreTopology.PerformanceClass ? 1 : 2;
+    }
+
+    internal static bool TryParseCpuCoreIndex(
+        string? name,
+        string? identifier,
+        out int index)
+    {
+        var match = Regex.Match(
+            name ?? string.Empty,
+            @"(?:core|核心)\s*#?\s*(\d+)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (match.Success &&
+            int.TryParse(match.Groups[1].Value, out var displayed) &&
+            displayed > 0)
+        {
+            index = displayed - 1;
+            return true;
+        }
+        var tail = (identifier ?? string.Empty)
+            .TrimEnd('/')
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault();
+        if (int.TryParse(tail, out displayed) && displayed > 0)
+        {
+            index = displayed - 1;
+            return true;
+        }
+        index = -1;
+        return false;
+    }
+
     private static bool IsGpu(HardwareType type) =>
         type is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel;
 
@@ -491,4 +613,116 @@ public sealed class TemperatureReader : IDisposable
         string Identifier,
         SensorType SensorType,
         double Value);
+
+    private sealed record HybridCoreTopology(
+        IReadOnlyDictionary<int, byte> EfficiencyClasses,
+        byte PerformanceClass)
+    {
+        public bool IsHybrid =>
+            EfficiencyClasses.Count > 0 &&
+            EfficiencyClasses.Values.Any(value =>
+                value != PerformanceClass);
+
+        public static HybridCoreTopology Detect()
+        {
+            if (!OperatingSystem.IsWindows())
+                return Empty;
+            try
+            {
+                uint length = 0;
+                _ = GetSystemCpuSetInformation(
+                    IntPtr.Zero,
+                    0,
+                    out length,
+                    IntPtr.Zero,
+                    0);
+                if (length == 0)
+                    return Empty;
+                var buffer = Marshal.AllocHGlobal(checked((int)length));
+                try
+                {
+                    if (!GetSystemCpuSetInformation(
+                            buffer,
+                            length,
+                            out length,
+                            IntPtr.Zero,
+                            0))
+                        return Empty;
+                    var physicalCores = new Dictionary<
+                        (ushort Group, byte CoreIndex),
+                        (byte FirstLogicalProcessor, byte EfficiencyClass)>();
+                    var offset = 0;
+                    while (offset + 20 <= length)
+                    {
+                        var address = IntPtr.Add(buffer, offset);
+                        var size = Marshal.ReadInt32(address, 0);
+                        if (size < 20 || offset + size > length)
+                            break;
+                        var type = Marshal.ReadInt32(address, 4);
+                        if (type == 0)
+                        {
+                            var group = unchecked((ushort)
+                                Marshal.ReadInt16(address, 12));
+                            var logicalProcessorIndex =
+                                Marshal.ReadByte(address, 14);
+                            var coreIndex = Marshal.ReadByte(address, 15);
+                            var efficiencyClass = Marshal.ReadByte(address, 18);
+                            var key = (group, coreIndex);
+                            if (!physicalCores.TryGetValue(key, out var current) ||
+                                logicalProcessorIndex <
+                                current.FirstLogicalProcessor)
+                            {
+                                physicalCores[key] = (
+                                    logicalProcessorIndex,
+                                    efficiencyClass);
+                            }
+                        }
+                        offset += size;
+                    }
+                    // LibreHardwareMonitor numbers its per-core clock sensors
+                    // by the order of CpuId core groups, which follows processor
+                    // group/logical-processor order. Windows CoreIndex is a
+                    // topology identifier and can be non-contiguous or ordered
+                    // very differently on hybrid CPUs, so it must not be used
+                    // directly as the sensor index.
+                    var classes = physicalCores
+                        .OrderBy(pair => pair.Key.Group)
+                        .ThenBy(pair => pair.Value.FirstLogicalProcessor)
+                        .Select((pair, index) => (
+                            Index: index,
+                            pair.Value.EfficiencyClass))
+                        .ToDictionary(
+                            pair => pair.Index,
+                            pair => pair.EfficiencyClass);
+                    var distinct = classes.Values.Distinct().OrderBy(value => value)
+                        .ToArray();
+                    return distinct.Length > 1
+                        ? new HybridCoreTopology(
+                            classes,
+                            distinct[^1])
+                        : Empty;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+            }
+            catch
+            {
+                return Empty;
+            }
+        }
+
+        private static HybridCoreTopology Empty { get; } =
+            new(new Dictionary<int, byte>(), 0);
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetSystemCpuSetInformation(
+        IntPtr information,
+        uint bufferLength,
+        out uint returnedLength,
+        IntPtr process,
+        uint flags);
 }

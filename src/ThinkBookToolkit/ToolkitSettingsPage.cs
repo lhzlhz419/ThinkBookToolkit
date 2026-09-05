@@ -15,6 +15,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly ComboBox _refresh = new() { MinWidth = 150 };
     private readonly ComboBox _language = new() { MinWidth = 150 };
     private readonly ComboBox _theme = new() { MinWidth = 170 };
+    private readonly ComboBox _hardwareAcceleration = new() { MinWidth = 190 };
     private readonly ComboBox _overviewMode = new() { MinWidth = 150 };
     private readonly ComboBox _startupMode = new() { MinWidth = 170 };
     private readonly CheckBox _startToTray = new();
@@ -24,13 +25,22 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly Button _customizeFnKeys;
     private readonly Button _discoverFnKeys;
     private readonly Button _gameDetectionPaths;
+    private readonly Button _osdSettings;
+    private readonly Button _sensorRecordingSettings;
+    private readonly Button _sensorRecordingShow;
     private readonly CheckBox _disableOnSleep = new();
     private readonly CheckBox _alternativeFullSpeed = new();
     private readonly CheckBox _continuousFanWrites = new();
     private readonly CheckBox _useNvApiGpuPower = new();
     private readonly CheckBox _useIntelMmioCpuPower = new();
     private readonly CheckBox _useAmdZenStatesCpuPower = new();
-    private readonly CheckBox _shareDataWithOtherSoftware = new();
+    private readonly ComboBox _softwareIntegrationMode = new()
+    {
+        MinWidth = 250
+    };
+    private readonly Button _softwareIntegrationHelp;
+    private readonly CheckBox _osdEnabled = new();
+    private readonly CheckBox _sensorRecordingEnabled = new();
     private readonly TextBox _dataSharingPort = new()
     {
         Width = 88,
@@ -39,6 +49,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         VerticalContentAlignment = VerticalAlignment.Center
     };
     private readonly Button _editOverview;
+    private readonly Button _backgroundImageSettings;
     private readonly Button _restartReaders;
     private readonly Button _checkUpdates;
     private readonly Button _downloadUpdate;
@@ -73,26 +84,44 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         VerticalContentAlignment = VerticalAlignment.Center
     };
     private readonly TextBlock _status;
+    private readonly HardwareAccelerationAvailability
+        _hardwareAccelerationAvailability;
+    private readonly bool _sensorIntegrationOnly;
     private bool _syncing;
 
-    public ToolkitSettingsPage(ToolkitRuntimeService runtime) : base(runtime)
+    public ToolkitSettingsPage(
+        ToolkitRuntimeService runtime,
+        bool sensorIntegrationOnly = false) : base(runtime)
     {
+        _sensorIntegrationOnly = sensorIntegrationOnly;
         _viewModel = new SettingsViewModel(runtime);
+        _hardwareAccelerationAvailability =
+            sensorIntegrationOnly
+                ? new HardwareAccelerationAvailability(false, false, [])
+                : HardwareAccelerationManager.DetectAvailability();
         DataContext = _viewModel;
         _status = StatusText();
         _editOverview = ActionButton(L("编辑概览页", "Edit overview"));
+        _backgroundImageSettings = ActionButton(L("设置", "Settings"));
         _customizeFnKeys = ActionButton(L("自定义", "Customize"));
         _discoverFnKeys = ActionButton(L("发现 Fn 按键", "Discover Fn keys"));
         _gameDetectionPaths = ActionButton(L("设置", "Settings"));
+        _osdSettings = ActionButton(L("设置", "Settings"));
+        _sensorRecordingSettings = ActionButton(L("设置", "Settings"));
+        _sensorRecordingShow = ActionButton(L("展示", "Show"));
+        _softwareIntegrationHelp = ActionButton(L("调用方法", "API usage"));
         _restartReaders = ActionButton(L("强制刷新读数", "Restart readers"));
         _checkUpdates = ActionButton(L("检查更新", "Check for updates"));
         _downloadUpdate = ActionButton(L("下载更新", "Download update"), primary: true);
         _downloadUpdate.Visibility = Visibility.Collapsed;
-        Content = BuildLayout();
+        InitializeControls();
+        Content = _sensorIntegrationOnly
+            ? BuildSensorIntegrationLayout()
+            : BuildLayout();
         SyncControls();
     }
 
-    private UIElement BuildLayout()
+    private void InitializeControls()
     {
         AddChoice(_refresh, L("0.5 秒", "0.5 seconds"), 0.5d);
         AddChoice(_refresh, L("1 秒", "1 second"), 1d);
@@ -104,6 +133,28 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         AddChoice(_theme, L("跟随系统", "Follow system"), "system");
         AddChoice(_theme, L("浅色", "Light"), "light");
         AddChoice(_theme, L("深色", "Dark"), "dark");
+        AddChoice(
+            _hardwareAcceleration,
+            L("关闭", "Off"),
+            HardwareAccelerationMode.Disabled);
+        AddChoice(
+            _hardwareAcceleration,
+            L("自动（Windows 决定）", "Automatic (Windows decides)"),
+            HardwareAccelerationMode.Automatic);
+        if (_hardwareAccelerationAvailability.HasIntegratedGpu)
+        {
+            AddChoice(
+                _hardwareAcceleration,
+                L("省电（核心显卡）", "Power saving (integrated GPU)"),
+                HardwareAccelerationMode.PowerSaving);
+        }
+        if (_hardwareAccelerationAvailability.HasDiscreteGpu)
+        {
+            AddChoice(
+                _hardwareAcceleration,
+                L("高性能（独立显卡）", "High performance (discrete GPU)"),
+                HardwareAccelerationMode.HighPerformance);
+        }
         AddChoice(
             _overviewMode,
             L("简洁模式", "Compact"),
@@ -124,8 +175,25 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             _startupMode,
             L("延迟启动", "Delayed start"),
             StartupLaunchMode.Delayed);
+        AddChoice(
+            _softwareIntegrationMode,
+            L("关闭", "Disabled"),
+            SoftwareIntegrationMode.Disabled);
+        AddChoice(
+            _softwareIntegrationMode,
+            L("仅共享数据", "Share data only"),
+            SoftwareIntegrationMode.ShareDataOnly);
+        AddChoice(
+            _softwareIntegrationMode,
+            L(
+                "允许共享数据和调整部分设置",
+                "Share data and control selected settings"),
+            SoftwareIntegrationMode.ShareDataAndControl);
         WireEvents();
+    }
 
+    private UIElement BuildLayout()
+    {
         var root = new StackPanel();
         var global = new AdaptiveUniformPanel
         {
@@ -162,6 +230,20 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("关闭并重新创建硬件数据读取组件。", "Close and recreate the hardware data readers."),
             _restartReaders,
             "\uE72C"));
+        global.Children.Add(SettingRow(
+            L("背景图像", "Background image"),
+            L(
+                "选择图像、GIF 或视频背景，并调整大小、透明度、模糊和播放速度。",
+                "Choose an image, GIF, or video background and adjust its size, transparency, blur, and playback speed."),
+            _backgroundImageSettings,
+            "\uEB9F"));
+        global.Children.Add(SettingRow(
+            L("硬件加速", "Hardware acceleration"),
+            L(
+                "更改后需要重启。混合模式下使用独立显卡加速会阻止独显卸载。",
+                "A restart is required after changing this setting. Using the discrete GPU for acceleration in hybrid mode prevents it from being disconnected."),
+            _hardwareAcceleration,
+            "\uE950"));
         var globalContent = new StackPanel();
         globalContent.Children.Add(SettingRow(
             L("当前版本", "Current version"),
@@ -225,12 +307,6 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 L("通过独立 GPL Helper 调整 PPT/TDC/EDC 或 STAPM/Fast/Slow 及 TctlMax。",
                     "Use the separate GPL helper for PPT/TDC/EDC or STAPM/Fast/Slow and TctlMax."),
                 _useAmdZenStatesCpuPower));
-        startup.Children.Add(SettingRow(
-            L("向其他软件共享数据", "Share data with other software"),
-            L(
-                "仅通过本机 HTTP JSON 接口共享最近一次全局刷新结果；无法读取的数值为 null。",
-                "Expose the latest global-refresh snapshot through a loopback-only HTTP JSON endpoint; unavailable readings are null."),
-            BuildDataSharingEditor()));
         var fnKeyControls = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -310,6 +386,70 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _status.Margin = new Thickness(4, 0, 4, 12);
         root.Children.Add(_status);
         root.Children.Add(BuildAvailabilityCard());
+        return root;
+    }
+
+    private UIElement BuildSensorIntegrationLayout()
+    {
+        var root = new StackPanel();
+        var sensors = new StackPanel();
+        var osdControls = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Tag = "KeepOnRight"
+        };
+        _osdSettings.Margin = new Thickness(0, 0, 12, 0);
+        osdControls.Children.Add(_osdSettings);
+        osdControls.Children.Add(_osdEnabled);
+        sensors.Children.Add(SettingRow(
+            L("启用 OSD", "Enable OSD"),
+            L(
+                "在置顶浮层中显示选定的硬件传感器读数。",
+                "Show selected hardware sensor readings in a topmost overlay."),
+            osdControls));
+
+        var recordingControls = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Tag = "KeepOnRight"
+        };
+        _sensorRecordingSettings.Margin = new Thickness(0, 0, 12, 0);
+        _sensorRecordingShow.Margin = new Thickness(0, 0, 12, 0);
+        recordingControls.Children.Add(_sensorRecordingSettings);
+        recordingControls.Children.Add(_sensorRecordingShow);
+        recordingControls.Children.Add(_sensorRecordingEnabled);
+        sensors.Children.Add(SettingRow(
+            L("记录传感器信息", "Record sensor data"),
+            L(
+                "实时写入独立记录文件，并可查看数值随时间变化的曲线。",
+                "Write live samples to a separate file and view value-over-time charts."),
+            recordingControls));
+        root.Children.Add(Card(
+            L("传感器", "Sensors"),
+            sensors,
+            L("管理屏幕显示与历史传感器记录。",
+                "Manage the on-screen display and sensor history."),
+            "\uE9D9"));
+
+        var integration = new StackPanel();
+        integration.Children.Add(SettingRow(
+            L("与其它软件联动", "Integrate with other software"),
+            L(
+                "通过仅限本机的 HTTP JSON 接口共享数据，并可选择是否允许调整部分设置。",
+                "Use a loopback-only HTTP JSON API to share data and optionally control selected settings."),
+            BuildDataSharingEditor()));
+        root.Children.Add(Card(
+            L("软件联动", "Software integration"),
+            integration,
+            L("向本机其它程序提供传感器和控制接口。",
+                "Provide sensor and control APIs to other local applications."),
+            "\uE968"));
+        _status.Margin = new Thickness(4, 0, 4, 12);
+        root.Children.Add(_status);
         return root;
     }
 
@@ -485,6 +625,36 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 }
             }
         };
+        _hardwareAcceleration.SelectionChanged += (_, _) =>
+        {
+            if (_syncing ||
+                _hardwareAcceleration.SelectedItem is not ComboBoxItem
+                {
+                    Tag: HardwareAccelerationMode mode
+                })
+            {
+                return;
+            }
+            if (!Runtime.TrySetHardwareAccelerationMode(mode, out var error))
+            {
+                _viewModel.Status = L(
+                    "硬件加速设置保存失败：",
+                    "Hardware acceleration settings could not be saved: ") +
+                    error;
+                SyncControls();
+                return;
+            }
+            var message = mode == HardwareAccelerationMode.HighPerformance
+                ? L(
+                    "硬件加速设置已保存，重启后生效。高性能模式会占用独显，并可能阻止混合模式卸载独显。",
+                    "Hardware acceleration settings were saved and will apply after restart. High-performance mode keeps the discrete GPU in use and can prevent hybrid mode from disconnecting it.")
+                : L(
+                    "硬件加速设置已保存，重启后生效。",
+                    "Hardware acceleration settings were saved and will apply after restart.");
+            _viewModel.Status = message;
+            Runtime.SetStatus(message);
+            SyncControls();
+        };
         _overviewMode.SelectionChanged += (_, _) =>
         {
             if (!_syncing &&
@@ -499,6 +669,14 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                         "Could not save the overview mode: ") + error;
                 SyncControls();
             }
+        };
+        _backgroundImageSettings.Click += (_, _) =>
+        {
+            var window = new BackgroundImageSettingsWindow(Runtime)
+            {
+                Owner = Window.GetWindow(this)
+            };
+            window.ShowDialog();
         };
         _startupMode.SelectionChanged += (_, _) =>
         {
@@ -644,8 +822,58 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _useAmdZenStatesCpuPower.Click += (_, _) =>
             ChangeBetaCpuPower(intel: false,
                 _useAmdZenStatesCpuPower.IsChecked == true);
-        _shareDataWithOtherSoftware.Click += (_, _) =>
+        _osdEnabled.Click += (_, _) =>
+        {
+            if (_syncing) return;
+            var enabled = _osdEnabled.IsChecked == true;
+            var succeeded = Runtime.TrySetOsdEnabled(enabled, out var error);
+            Runtime.SetStatus(succeeded
+                ? enabled
+                    ? L("OSD 已启用。", "OSD is enabled.")
+                    : L("OSD 已关闭。", "OSD is disabled.")
+                : L("OSD 设置失败：", "OSD setting failed: ") + error);
+            SyncControls();
+        };
+        _osdSettings.Click += (_, _) =>
+        {
+            var window = new OsdSettingsWindow(Runtime)
+            {
+                Owner = Window.GetWindow(this)
+            };
+            window.ShowDialog();
+        };
+        _sensorRecordingEnabled.Click += (_, _) =>
+        {
+            if (_syncing) return;
+            var enabled = _sensorRecordingEnabled.IsChecked == true;
+            var succeeded = Runtime.TrySetSensorRecordingEnabled(
+                enabled,
+                out var error);
+            Runtime.SetStatus(succeeded
+                ? enabled
+                    ? L("传感器记录已开始。", "Sensor recording started.")
+                    : L("传感器记录已停止。", "Sensor recording stopped.")
+                : L("传感器记录设置失败：", "Sensor recording failed: ") + error);
+            SyncControls();
+        };
+        _sensorRecordingSettings.Click += (_, _) =>
+        {
+            new SensorRecordingSettingsWindow(Runtime)
+            {
+                Owner = Window.GetWindow(this)
+            }.ShowDialog();
+        };
+        _sensorRecordingShow.Click += (_, _) =>
+        {
+            new SensorRecordingViewerWindow(Runtime)
+            {
+                Owner = Window.GetWindow(this)
+            }.ShowDialog();
+        };
+        _softwareIntegrationMode.SelectionChanged += (_, _) =>
             SaveDataSharingSettings();
+        _softwareIntegrationHelp.Click += (_, _) =>
+            ShowSoftwareIntegrationHelp();
         _dataSharingPort.LostKeyboardFocus += (_, _) =>
             SaveDataSharingSettings();
         _dataSharingPort.KeyDown += (_, args) =>
@@ -720,10 +948,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
 
     private UIElement BuildDataSharingEditor()
     {
-        _dataSharingPort.Margin = new Thickness(8, 0, 14, 0);
-        _shareDataWithOtherSoftware.Margin = new Thickness(0);
-        _shareDataWithOtherSoftware.VerticalAlignment =
-            VerticalAlignment.Center;
+        _dataSharingPort.Margin = new Thickness(8, 0, 12, 0);
+        _softwareIntegrationMode.Margin = new Thickness(0, 0, 12, 0);
+        _softwareIntegrationHelp.Margin = new Thickness(0);
         var panel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -738,7 +965,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             VerticalAlignment = VerticalAlignment.Center
         });
         panel.Children.Add(_dataSharingPort);
-        panel.Children.Add(_shareDataWithOtherSoftware);
+        panel.Children.Add(_softwareIntegrationMode);
+        panel.Children.Add(_softwareIntegrationHelp);
         return panel;
     }
 
@@ -759,16 +987,52 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             return;
         }
 
-        var enabled = _shareDataWithOtherSoftware.IsChecked == true;
-        var succeeded = Runtime.TrySetDataSharing(enabled, port, out var error);
+        var mode = Selected<SoftwareIntegrationMode>(_softwareIntegrationMode);
+        var succeeded = Runtime.TrySetSoftwareIntegration(
+            mode,
+            port,
+            out var error);
         Runtime.SetStatus(succeeded
-            ? enabled
+            ? mode != SoftwareIntegrationMode.Disabled
                 ? L(
-                    $"数据共享已启用：http://127.0.0.1:{port}/",
-                    $"Data sharing is available at http://127.0.0.1:{port}/")
-                : L("数据共享已关闭。", "Data sharing is disabled.")
-            : L("数据共享设置失败：", "Data-sharing setting failed: ") + error);
+                    $"软件联动已启用：http://127.0.0.1:{port}/",
+                    $"Software integration is available at http://127.0.0.1:{port}/")
+                : L("软件联动已关闭。", "Software integration is disabled.")
+            : L("软件联动设置失败：", "Software integration failed: ") + error);
         SyncControls();
+    }
+
+    private void ShowSoftwareIntegrationHelp()
+    {
+        var port = Runtime.Settings.DataSharingPort;
+        var baseUrl = $"http://127.0.0.1:{port}";
+        var text = L(
+            $"读取数据：\nGET {baseUrl}/\n\n" +
+            "允许控制时使用 JSON 请求：\n" +
+            $"POST {baseUrl}/performance-mode\n" +
+            "{\"value\":\"Performance\"}\n" +
+            "可选：PowerSaving、Intelligent、Performance、Geek\n\n" +
+            $"POST {baseUrl}/fan-strategy\n" +
+            "{\"value\":\"FixedRpm\"}\n" +
+            "可选：FirmwareAutomatic、FixedRpm、FanCurve、AdvancedCurve\n\n" +
+            $"POST {baseUrl}/fan-full-speed\n" +
+            "{\"value\":true}",
+            $"Read data:\nGET {baseUrl}/\n\n" +
+            "When control is allowed, send JSON requests:\n" +
+            $"POST {baseUrl}/performance-mode\n" +
+            "{\"value\":\"Performance\"}\n" +
+            "Values: PowerSaving, Intelligent, Performance, Geek\n\n" +
+            $"POST {baseUrl}/fan-strategy\n" +
+            "{\"value\":\"FixedRpm\"}\n" +
+            "Values: FirmwareAutomatic, FixedRpm, FanCurve, AdvancedCurve\n\n" +
+            $"POST {baseUrl}/fan-full-speed\n" +
+            "{\"value\":true}");
+        MessageBox.Show(
+            Window.GetWindow(this),
+            text,
+            L("本机 HTTP 联动调用方法", "Local HTTP integration API"),
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private UIElement BuildUpdateActions()
@@ -835,6 +1099,15 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         Select(_refresh, settings.IntervalSeconds);
         Select(_language, settings.Language);
         Select(_theme, settings.Theme);
+        Select(
+            _hardwareAcceleration,
+            settings.HardwareAccelerationMode);
+        if (_hardwareAcceleration.SelectedItem is null)
+        {
+            Select(
+                _hardwareAcceleration,
+                HardwareAccelerationMode.Automatic);
+        }
         Select(_overviewMode, settings.OverviewPageMode);
         Select(_startupMode, Runtime.CurrentStartupMode);
         _startToTray.IsChecked = settings.StartToTray;
@@ -857,10 +1130,20 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _useIntelMmioCpuPower.IsEnabled = true;
         _useAmdZenStatesCpuPower.IsChecked = settings.UseAmdZenStatesCpuPower;
         _useAmdZenStatesCpuPower.IsEnabled = true;
-        _shareDataWithOtherSoftware.IsChecked =
-            settings.ShareDataWithOtherSoftware;
-        _shareDataWithOtherSoftware.IsEnabled =
+        _osdEnabled.IsChecked = settings.OsdEnabled;
+        _osdEnabled.IsEnabled =
+            Runtime.Report?.IsAvailable(FeatureIds.Osd) != false;
+        _osdSettings.IsEnabled = _osdEnabled.IsEnabled;
+        _sensorRecordingEnabled.IsChecked = settings.SensorRecordingEnabled;
+        _sensorRecordingSettings.IsEnabled = true;
+        _sensorRecordingShow.IsEnabled =
+            settings.SensorRecordingEnabled ||
+            !string.IsNullOrWhiteSpace(settings.LastSensorRecordingPath);
+        Select(_softwareIntegrationMode, settings.SoftwareIntegrationMode);
+        _softwareIntegrationMode.IsEnabled =
             Runtime.Report?.IsAvailable(FeatureIds.DataSharing) != false;
+        _softwareIntegrationHelp.IsEnabled =
+            _softwareIntegrationMode.IsEnabled;
         _dataSharingPort.Text = settings.DataSharingPort.ToString(
             CultureInfo.InvariantCulture);
         if (_disableOnSleepRow is not null)
@@ -919,9 +1202,16 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             : OverviewLayoutDefaults.DetailedCardDefinitions;
         foreach (var definition in definitions)
         {
+            var hasHybridCores = Runtime.Snapshot.Temperatures?
+                                     .CpuPerformanceCoreAverageClockMhz.HasValue == true &&
+                                 Runtime.Snapshot.Temperatures?
+                                     .CpuEfficiencyCoreAverageClockMhz.HasValue == true;
             var displayedItems = definition.Value
                 .Where(item => DeviceModelDetector.HasSecondFan() ||
                                item is not ("fan2-speed" or "fan2-target"))
+                .Where(item => hasHybridCores ||
+                               item is not ("performance-core-average-frequency" or
+                                   "efficiency-core-average-frequency"))
                 .Where(item => definition.Key != OverviewCardIds.Power ||
                     (Runtime.NvApiGpuPowerEnabled
                         ? item is not ("gpu-boost" or "gpu-tgp" or
@@ -1108,6 +1398,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         {
             (OverviewCardIds.Cpu, "utilization") => L("利用率", "Utilization"),
             (OverviewCardIds.Cpu, "average-frequency") => L("平均频率", "Average frequency"),
+            (OverviewCardIds.Cpu, "performance-core-average-frequency") => L("性能核平均频率", "Performance-core average frequency"),
+            (OverviewCardIds.Cpu, "efficiency-core-average-frequency") => L("能效核平均频率", "Efficiency-core average frequency"),
             (OverviewCardIds.Cpu, "maximum-frequency") => L("最高频率", "Maximum frequency"),
             (OverviewCardIds.Cpu, "temperature") => L("温度", "Temperature"),
             (OverviewCardIds.Cpu, "power") => L("功耗", "Power"),
@@ -1121,10 +1413,11 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             (OverviewCardIds.Gpu, "power") => L("功耗", "Power"),
             (OverviewCardIds.Battery, "status") => L("当前状态", "Status"),
             (OverviewCardIds.Battery, "charge") => L("电量", "Charge"),
+            (OverviewCardIds.Battery, "capacity") => L("电池容量", "Capacity"),
             (OverviewCardIds.Battery, "health") => L("健康度", "Health"),
             (OverviewCardIds.Battery, "power") => L("功率", "Power"),
             (OverviewCardIds.MemoryStorage, "physical-memory") => L("物理内存", "Physical memory"),
-            (OverviewCardIds.MemoryStorage, "virtual-memory") => L("虚拟内存", "Virtual memory"),
+            (OverviewCardIds.MemoryStorage, "virtual-memory") => L("已提交", "Committed"),
             (OverviewCardIds.MemoryStorage, "slot1-temperature") => L("内存插槽1温度", "Memory slot 1 temperature"),
             (OverviewCardIds.MemoryStorage, "slot2-temperature") => L("内存插槽2温度", "Memory slot 2 temperature"),
             (OverviewCardIds.MemoryStorage, "disk-temperatures") => L("所有硬盘温度", "All disk temperatures"),
@@ -1349,7 +1642,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.Automation => "Automation and Fn-key mappings",
             FeatureIds.KeyboardMacros => "Keyboard macros",
             FeatureIds.UpdateCheck => "Software update check",
-            FeatureIds.DataSharing => "Local data sharing",
+            FeatureIds.Osd => "On-screen display",
+            FeatureIds.DataSharing => "Software integration",
             _ => fallback
         };
     }
@@ -1372,6 +1666,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 FeatureIds.NvApiGpuPower => L("未能读取全部四项 NVPCF 功耗参数。", "All four NVPCF power values could not be read."),
                 FeatureIds.IntelMmioCpuPower => L("无法读取 Intel MMIO 功耗墙。", "Intel MMIO power limits could not be read."),
                 FeatureIds.AmdZenStatesCpuPower => L("无法通过 ZenStates-Core Helper 读取 CPU 功耗墙。", "CPU power limits could not be read through the ZenStates-Core helper."),
+                FeatureIds.Osd => L("当前运行环境不支持置顶透明窗口。", "Topmost transparent windows are unsupported in this environment."),
                 FeatureIds.DataSharing => L("当前运行环境不支持本机 HTTP 监听器。", "The local HTTP listener is unsupported in this environment."),
                 FeatureIds.WarrantyInformation => L("需要有效的序列号和网络连接。", "A valid serial number and network connection are required."),
                 FeatureIds.FanControl => L("当前设备上无法使用风扇监控与控制。", "Fan monitoring and control are unavailable on this device."),

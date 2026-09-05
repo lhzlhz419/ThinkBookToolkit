@@ -34,6 +34,8 @@ public sealed record TemperatureSnapshot(
     public string CpuName { get; init; } = string.Empty;
     public double? CpuLoadPercent { get; init; }
     public double? CpuAverageClockMhz { get; init; }
+    public double? CpuPerformanceCoreAverageClockMhz { get; init; }
+    public double? CpuEfficiencyCoreAverageClockMhz { get; init; }
     public double? CpuMaximumClockMhz { get; init; }
     public string GpuName { get; init; } = string.Empty;
     public double? GpuLoadPercent { get; init; }
@@ -300,6 +302,25 @@ public sealed class AppSettings
     public string ConfigurationVersion { get; set; } = CurveProfileStore.CurrentConfigurationVersion;
     public string Language { get; set; } = "zh-CN";
     public string Theme { get; set; } = "light";
+    public string BackgroundImagePath { get; set; } = "";
+    public double BackgroundImageScalePercent { get; set; } = 100;
+    public double BackgroundImageOpacityPercent { get; set; } = 30;
+    public int BackgroundImageBlurRadius { get; set; }
+    public BackgroundImageSizeMode BackgroundImageSizeMode { get; set; } =
+        BackgroundImageSizeMode.Fixed;
+    public bool BackgroundImageInverted { get; set; }
+    public bool BackgroundBaseColorEnabled { get; set; }
+    public string BackgroundBaseColor { get; set; } = "FFFFFF";
+    public int BackgroundMediaSpeedPercent { get; set; } = 100;
+    public HardwareAccelerationMode HardwareAccelerationMode { get; set; } =
+        HardwareAccelerationMode.Disabled;
+    public bool OsdEnabled { get; set; }
+    public ToolkitOsdSettings Osd { get; set; } = new();
+    public bool HybridCoreDisplayDefaultsInitialized { get; set; }
+    public bool BatteryCapacityDisplayDefaultsInitialized { get; set; } = true;
+    public bool SensorRecordingEnabled { get; set; }
+    public SensorRecordingSettings SensorRecording { get; set; } = new();
+    public string LastSensorRecordingPath { get; set; } = string.Empty;
     public bool UseCustomLenovoDllDirectory { get; set; }
     public string CustomLenovoDllDirectory { get; set; } = "";
     public double IntervalSeconds { get; set; } = 2.0;
@@ -348,6 +369,7 @@ public sealed class AppSettings
     public bool UseIntelMmioCpuPower { get; set; }
     public bool UseAmdZenStatesCpuPower { get; set; }
     public bool ShareDataWithOtherSoftware { get; set; }
+    public SoftwareIntegrationMode SoftwareIntegrationMode { get; set; }
     public int DataSharingPort { get; set; } = 2975;
     public OverviewPageMode OverviewPageMode { get; set; } =
         OverviewPageMode.Detailed;
@@ -363,6 +385,7 @@ public sealed class AppSettings
     public Dictionary<string, PowerModeLockSettings> NvApiPowerSettingsLocksByMode
         { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public GpuOverclockSettings GpuOverclock { get; set; } = new();
+    public bool AutoEnableGpuOverclockOnStartup { get; set; }
     public List<AutomationDefinition> Automations { get; set; } = [];
     public bool AutomationEnabled { get; set; }
     public List<KeyboardMacroDefinition> Macros { get; set; } = [];
@@ -388,6 +411,194 @@ public sealed class AppSettings
     public string LastGpuModeFailure { get; set; } = "";
     public int PcManagerNormalDefaultTemperature { get; set; } = 6600;
     public int PcManagerEyeCareDefaultTemperature { get; set; } = 3500;
+}
+
+public enum BackgroundImageSizeMode
+{
+    Fixed,
+    MatchLength,
+    MatchWidth,
+    Stretch
+}
+
+public enum HardwareAccelerationMode
+{
+    Disabled,
+    Automatic,
+    PowerSaving,
+    HighPerformance
+}
+
+public enum SoftwareIntegrationMode
+{
+    Disabled,
+    ShareDataOnly,
+    ShareDataAndControl
+}
+
+public enum OsdOrientation
+{
+    Horizontal,
+    Vertical
+}
+
+public enum OsdSensor
+{
+    CpuUtilization = 0,
+    CpuAverageFrequency = 1,
+    CpuMaximumFrequency = 2,
+    CpuTemperature = 3,
+    CpuPower = 4,
+    GpuUtilization = 5,
+    GpuVramUtilization = 6,
+    GpuCoreFrequency = 7,
+    GpuVramFrequency = 8,
+    GpuCoreTemperature = 9,
+    GpuHotSpotTemperature = 10,
+    GpuVramTemperature = 11,
+    GpuPower = 12,
+    MemoryUtilization = 13,
+
+    // Values 14-16 were aggregate rows in v1.0.2 and earlier. Keep them
+    // reserved so numeric JSON settings can be migrated without being
+    // interpreted as a different sensor.
+    MemoryTemperature = 14,
+    StorageTemperatures = 15,
+    FanSpeeds = 16,
+
+    MemoryCommitted = 17,
+    MemorySlot1Temperature = 18,
+    MemorySlot2Temperature = 19,
+    Storage1Temperature = 20,
+    Storage2Temperature = 21,
+    Storage3Temperature = 22,
+    Storage4Temperature = 23,
+    Storage5Temperature = 24,
+    Storage6Temperature = 25,
+    Storage7Temperature = 26,
+    Storage8Temperature = 27,
+    Fan1Speed = 28,
+    Fan2Speed = 29,
+    Fps = 30,
+    OnePercentLowFps = 31,
+    FrameLatency = 32,
+    BatteryOutputPower = 33,
+    CpuPerformanceCoreAverageFrequency = 34,
+    CpuEfficiencyCoreAverageFrequency = 35,
+    BatteryCapacity = 36
+}
+
+public enum OsdMultipleTemperatureMode
+{
+    Average,
+    Maximum,
+    All
+}
+
+public enum OsdLowFpsThresholdMode
+{
+    PercentageOfFps,
+    DifferenceFromFps
+}
+
+public enum OsdMemoryDisplayMode
+{
+    Values,
+    Percentage,
+    All
+}
+
+public sealed class ToolkitOsdSettings
+{
+    public OsdOrientation Orientation { get; set; } = OsdOrientation.Vertical;
+    public double RefreshIntervalSeconds { get; set; } = 1;
+    public bool FixedPosition { get; set; }
+    public int OpacityPercent { get; set; } = 50;
+    public int FontSize { get; set; } = 13;
+    public int SnapThreshold { get; set; } = 20;
+    public OsdMultipleTemperatureMode MultipleTemperatureMode { get; set; } =
+        OsdMultipleTemperatureMode.All;
+    public OsdMemoryDisplayMode MemoryDisplayMode { get; set; } =
+        OsdMemoryDisplayMode.All;
+    public string BackgroundColor { get; set; } = "0E131D";
+    public string CategoryColor { get; set; } = "7C9CFF";
+    public string LabelColor { get; set; } = "B6C2D8";
+    public string ValueColor { get; set; } = "FFFFFF";
+    public string WarningColor { get; set; } = "FFFF00";
+    public string CriticalColor { get; set; } = "FF0000";
+    public int FpsWarningThreshold { get; set; } = 45;
+    public int FpsCriticalThreshold { get; set; } = 30;
+    public OsdLowFpsThresholdMode LowFpsThresholdMode { get; set; } =
+        OsdLowFpsThresholdMode.PercentageOfFps;
+    public int LowFpsWarningPercentage { get; set; } = 75;
+    public int LowFpsCriticalPercentage { get; set; } = 50;
+    public int LowFpsWarningDelta { get; set; } = 15;
+    public int LowFpsCriticalDelta { get; set; } = 30;
+    public int CpuTemperatureWarning { get; set; } = 80;
+    public int CpuTemperatureCritical { get; set; } = 95;
+    public int GpuHotSpotTemperatureWarning { get; set; } = 80;
+    public int GpuHotSpotTemperatureCritical { get; set; } = 95;
+    public int GpuTemperatureWarning { get; set; } = 75;
+    public int GpuTemperatureCritical { get; set; } = 85;
+    public int VramTemperatureWarning { get; set; } = 75;
+    public int VramTemperatureCritical { get; set; } = 85;
+    public int MemoryTemperatureWarning { get; set; } = 65;
+    public int MemoryTemperatureCritical { get; set; } = 75;
+    public int StorageTemperatureWarning { get; set; } = 60;
+    public int StorageTemperatureCritical { get; set; } = 90;
+    public int UsageWarningThreshold { get; set; } = 70;
+    public int UsageCriticalThreshold { get; set; } = 90;
+    public int BatteryOutputPowerWarning { get; set; } = -1;
+    public int BatteryOutputPowerCritical { get; set; } = -30;
+    public List<OsdSensor> Sensors { get; set; } =
+    [
+        OsdSensor.CpuUtilization,
+        OsdSensor.CpuAverageFrequency,
+        OsdSensor.CpuMaximumFrequency,
+        OsdSensor.CpuTemperature,
+        OsdSensor.CpuPower,
+        OsdSensor.GpuUtilization,
+        OsdSensor.GpuCoreFrequency,
+        OsdSensor.GpuCoreTemperature,
+        OsdSensor.GpuHotSpotTemperature,
+        OsdSensor.GpuPower,
+        OsdSensor.GpuVramUtilization,
+        OsdSensor.GpuVramFrequency,
+        OsdSensor.GpuVramTemperature,
+        OsdSensor.MemoryUtilization,
+        OsdSensor.MemoryCommitted,
+        OsdSensor.MemorySlot1Temperature,
+        OsdSensor.MemorySlot2Temperature,
+        OsdSensor.Storage1Temperature,
+        OsdSensor.Storage2Temperature,
+        OsdSensor.Storage3Temperature,
+        OsdSensor.Storage4Temperature,
+        OsdSensor.Storage5Temperature,
+        OsdSensor.Storage6Temperature,
+        OsdSensor.Storage7Temperature,
+        OsdSensor.Storage8Temperature,
+        OsdSensor.Fan1Speed,
+        OsdSensor.Fan2Speed,
+        OsdSensor.Fps,
+        OsdSensor.OnePercentLowFps,
+        OsdSensor.FrameLatency,
+        OsdSensor.BatteryOutputPower,
+        OsdSensor.BatteryCapacity
+    ];
+    public double? HorizontalX { get; set; }
+    public double? HorizontalY { get; set; }
+    public double? VerticalX { get; set; }
+    public double? VerticalY { get; set; }
+}
+
+public sealed class SensorRecordingSettings
+{
+    public double IntervalSeconds { get; set; } = 1;
+    public int MaximumPlotPoints { get; set; } = 300;
+    public List<OsdSensor> Sensors { get; set; } =
+        new ToolkitOsdSettings().Sensors
+            .Where(sensor => sensor != OsdSensor.BatteryOutputPower)
+            .ToList();
 }
 
 internal enum StartupLaunchMode

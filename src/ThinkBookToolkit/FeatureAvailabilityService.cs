@@ -92,6 +92,7 @@ internal static class FeatureIds
     public const string Automation = "automation.editor";
     public const string KeyboardMacros = "automation.keyboard-macros";
     public const string UpdateCheck = "settings.update-check";
+    public const string Osd = "settings.osd";
     public const string DataSharing = "settings.data-sharing";
 }
 
@@ -688,9 +689,19 @@ internal static class FeatureAvailabilityService
 
         AddState(
             result,
+            FeatureIds.Osd,
+            "设置",
+            "OSD",
+            OperatingSystem.IsWindows(),
+            OperatingSystem.IsWindows()
+                ? "置顶透明 OSD 窗口可用"
+                : "OSD 仅支持 Windows");
+
+        AddState(
+            result,
             FeatureIds.DataSharing,
             "设置",
-            "向其他软件共享数据",
+            "与其它软件联动",
             System.Net.HttpListener.IsSupported,
             System.Net.HttpListener.IsSupported
                 ? "本机回环 HTTP JSON 服务可用"

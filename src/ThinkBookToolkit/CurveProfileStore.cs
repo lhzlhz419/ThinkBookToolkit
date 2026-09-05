@@ -60,6 +60,10 @@ public static class CurveProfileStore
         Path.GetDirectoryName(SettingsPath)!,
         "pending_installer_settings.json");
 
+    public static string SensorRecordingDirectory => Path.Combine(
+        Path.GetDirectoryName(SettingsPath)!,
+        "sensor-recordings");
+
     public static string DefaultProfilePath =>
         Path.Combine(AppContext.BaseDirectory, "default_fan_curve_profiles.json");
 
@@ -130,6 +134,97 @@ public static class CurveProfileStore
             defaults.Theme = loaded.Theme is "dark" or "light" or "system"
                 ? loaded.Theme
                 : defaults.Theme;
+            defaults.BackgroundImagePath =
+                loaded.BackgroundImagePath?.Trim() ?? string.Empty;
+            defaults.BackgroundImageScalePercent =
+                loaded.BackgroundImageScalePercent is >= 10 and <= 500
+                    ? loaded.BackgroundImageScalePercent
+                    : 100;
+            defaults.BackgroundImageOpacityPercent =
+                loaded.BackgroundImageOpacityPercent is >= 0 and <= 100
+                    ? loaded.BackgroundImageOpacityPercent
+                    : 30;
+            defaults.BackgroundImageBlurRadius = Math.Clamp(
+                loaded.BackgroundImageBlurRadius,
+                0,
+                40);
+            defaults.BackgroundImageSizeMode = Enum.IsDefined(
+                    loaded.BackgroundImageSizeMode)
+                ? loaded.BackgroundImageSizeMode
+                : BackgroundImageSizeMode.Fixed;
+            defaults.BackgroundImageInverted = loaded.BackgroundImageInverted;
+            defaults.BackgroundBaseColorEnabled =
+                loaded.BackgroundBaseColorEnabled;
+            defaults.BackgroundBaseColor = NormalizeBackgroundColor(
+                loaded.BackgroundBaseColor);
+            defaults.BackgroundMediaSpeedPercent =
+                loaded.BackgroundMediaSpeedPercent is >= 10 and <= 500
+                    ? loaded.BackgroundMediaSpeedPercent
+                    : 100;
+            defaults.HardwareAccelerationMode = Enum.IsDefined(
+                    loaded.HardwareAccelerationMode)
+                ? loaded.HardwareAccelerationMode
+                : HardwareAccelerationMode.Disabled;
+            defaults.OsdEnabled = loaded.OsdEnabled;
+            defaults.Osd = NormalizeOsdSettings(loaded.Osd);
+            defaults.HybridCoreDisplayDefaultsInitialized =
+                loaded.HybridCoreDisplayDefaultsInitialized;
+            defaults.BatteryCapacityDisplayDefaultsInitialized =
+                loaded.BatteryCapacityDisplayDefaultsInitialized;
+            defaults.SensorRecordingEnabled = loaded.SensorRecordingEnabled;
+            defaults.SensorRecording = settingsJson.Contains(
+                    $"\"{nameof(AppSettings.SensorRecording)}\"",
+                    StringComparison.OrdinalIgnoreCase)
+                ? NormalizeSensorRecordingSettings(loaded.SensorRecording)
+                : new SensorRecordingSettings
+                {
+                    Sensors = defaults.Osd.Sensors
+                        .Where(sensor => sensor !=
+                            OsdSensor.BatteryOutputPower)
+                        .ToList()
+                };
+            defaults.LastSensorRecordingPath =
+                loaded.LastSensorRecordingPath?.Trim() ?? string.Empty;
+            if (!settingsJson.Contains(
+                    nameof(AppSettings.BatteryCapacityDisplayDefaultsInitialized),
+                    StringComparison.OrdinalIgnoreCase) ||
+                !loaded.BatteryCapacityDisplayDefaultsInitialized)
+            {
+                if (!defaults.Osd.Sensors.Contains(OsdSensor.BatteryCapacity))
+                    defaults.Osd.Sensors.Add(OsdSensor.BatteryCapacity);
+                defaults.SensorRecording.Sensors.Remove(
+                    OsdSensor.BatteryOutputPower);
+                if (!defaults.SensorRecording.Sensors.Contains(
+                        OsdSensor.BatteryCapacity))
+                    defaults.SensorRecording.Sensors.Add(
+                        OsdSensor.BatteryCapacity);
+                defaults.BatteryCapacityDisplayDefaultsInitialized = true;
+            }
+            if (!settingsJson.Contains(
+                    nameof(ToolkitOsdSettings.FpsWarningThreshold),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                defaults.Osd.Sensors.AddRange(
+                [
+                    OsdSensor.Fps,
+                    OsdSensor.OnePercentLowFps,
+                    OsdSensor.FrameLatency,
+                    OsdSensor.BatteryOutputPower
+                ]);
+                defaults.Osd.Sensors = defaults.Osd.Sensors
+                    .Distinct()
+                    .ToList();
+                if (!settingsJson.Contains(
+                        $"\"{nameof(AppSettings.SensorRecording)}\"",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    defaults.SensorRecording.Sensors =
+                        defaults.Osd.Sensors
+                            .Where(sensor => sensor !=
+                                OsdSensor.BatteryOutputPower)
+                            .ToList();
+                }
+            }
             defaults.UseCustomLenovoDllDirectory =
                 loaded.UseCustomLenovoDllDirectory;
             defaults.CustomLenovoDllDirectory =
@@ -234,8 +329,17 @@ public static class CurveProfileStore
             defaults.UseNvApiGpuPower = loaded.UseNvApiGpuPower;
             defaults.UseIntelMmioCpuPower = loaded.UseIntelMmioCpuPower;
             defaults.UseAmdZenStatesCpuPower = loaded.UseAmdZenStatesCpuPower;
+            defaults.SoftwareIntegrationMode = settingsJson.Contains(
+                    nameof(AppSettings.SoftwareIntegrationMode),
+                    StringComparison.OrdinalIgnoreCase) &&
+                Enum.IsDefined(loaded.SoftwareIntegrationMode)
+                    ? loaded.SoftwareIntegrationMode
+                    : loaded.ShareDataWithOtherSoftware
+                        ? SoftwareIntegrationMode.ShareDataOnly
+                        : SoftwareIntegrationMode.Disabled;
             defaults.ShareDataWithOtherSoftware =
-                loaded.ShareDataWithOtherSoftware;
+                defaults.SoftwareIntegrationMode !=
+                SoftwareIntegrationMode.Disabled;
             defaults.DataSharingPort = IsValidDataSharingPort(
                     loaded.DataSharingPort)
                 ? loaded.DataSharingPort
@@ -296,6 +400,8 @@ public static class CurveProfileStore
             }
             defaults.GpuOverclock = GpuOverclockPolicy.Normalize(
                 loaded.GpuOverclock);
+            defaults.AutoEnableGpuOverclockOnStartup =
+                loaded.AutoEnableGpuOverclockOnStartup;
             defaults.Automations = AutomationSettingsDefaults.Normalize(
                 loaded.Automations);
             defaults.AutomationEnabled = loaded.AutomationEnabled;
@@ -778,6 +884,255 @@ public static class CurveProfileStore
                    configuration.ConfigurationVersion)
             ? configuration.Profiles
             : null;
+    }
+
+    internal static string NormalizeBackgroundColor(string? value)
+    {
+        var normalized = value?.Trim().ToUpperInvariant() ?? string.Empty;
+        if (normalized.StartsWith("0X", StringComparison.Ordinal))
+            normalized = normalized[2..];
+        return normalized.Length == 6 && normalized.All(Uri.IsHexDigit)
+            ? normalized
+            : "FFFFFF";
+    }
+
+    internal static ToolkitOsdSettings NormalizeOsdSettings(
+        ToolkitOsdSettings? value)
+    {
+        value ??= new ToolkitOsdSettings();
+        var allowedIntervals = new[] { .5d, 1d, 2d, 3d, 5d };
+        var sensors = (value.Sensors ?? [])
+            .Where(Enum.IsDefined)
+            .Distinct()
+            .ToList();
+
+        // Expand the aggregate rows used by the original OSD into the new
+        // per-device rows. Numeric enum values are persisted in JSON, so the
+        // legacy members must be migrated explicitly rather than reused.
+        if (sensors.Remove(OsdSensor.MemoryTemperature))
+        {
+            sensors.Add(OsdSensor.MemoryCommitted);
+            sensors.Add(OsdSensor.MemorySlot1Temperature);
+            sensors.Add(OsdSensor.MemorySlot2Temperature);
+        }
+        if (sensors.Remove(OsdSensor.StorageTemperatures))
+        {
+            sensors.AddRange(
+            [
+                OsdSensor.Storage1Temperature,
+                OsdSensor.Storage2Temperature,
+                OsdSensor.Storage3Temperature,
+                OsdSensor.Storage4Temperature,
+                OsdSensor.Storage5Temperature,
+                OsdSensor.Storage6Temperature,
+                OsdSensor.Storage7Temperature,
+                OsdSensor.Storage8Temperature
+            ]);
+        }
+        if (sensors.Remove(OsdSensor.FanSpeeds))
+        {
+            sensors.Add(OsdSensor.Fan1Speed);
+            sensors.Add(OsdSensor.Fan2Speed);
+        }
+        var fps = NormalizeDescendingThresholds(
+            value.FpsWarningThreshold,
+            value.FpsCriticalThreshold,
+            45,
+            30,
+            0,
+            1000);
+        var lowFpsPercentage = NormalizeDescendingThresholds(
+            value.LowFpsWarningPercentage,
+            value.LowFpsCriticalPercentage,
+            75,
+            50,
+            0,
+            100);
+        var lowFpsDelta = NormalizeAscendingThresholds(
+            value.LowFpsWarningDelta,
+            value.LowFpsCriticalDelta,
+            15,
+            30,
+            0,
+            1000);
+        var cpuTemperature = NormalizeAscendingThresholds(
+            value.CpuTemperatureWarning,
+            value.CpuTemperatureCritical,
+            80,
+            95,
+            0,
+            120);
+        var gpuHotSpotTemperature = NormalizeAscendingThresholds(
+            value.GpuHotSpotTemperatureWarning,
+            value.GpuHotSpotTemperatureCritical,
+            80,
+            95,
+            0,
+            120);
+        var gpuTemperature = NormalizeAscendingThresholds(
+            value.GpuTemperatureWarning,
+            value.GpuTemperatureCritical,
+            75,
+            85,
+            0,
+            120);
+        var vramTemperature = NormalizeAscendingThresholds(
+            value.VramTemperatureWarning,
+            value.VramTemperatureCritical,
+            75,
+            85,
+            0,
+            120);
+        var memoryTemperature = NormalizeAscendingThresholds(
+            value.MemoryTemperatureWarning,
+            value.MemoryTemperatureCritical,
+            65,
+            75,
+            0,
+            120);
+        var storageTemperature = NormalizeAscendingThresholds(
+            value.StorageTemperatureWarning,
+            value.StorageTemperatureCritical,
+            60,
+            90,
+            0,
+            120);
+        var usage = NormalizeAscendingThresholds(
+            value.UsageWarningThreshold,
+            value.UsageCriticalThreshold,
+            70,
+            90,
+            0,
+            100);
+        var batteryOutput = NormalizeDescendingThresholds(
+            -Math.Clamp(-value.BatteryOutputPowerWarning, 1, 500),
+            -Math.Clamp(-value.BatteryOutputPowerCritical, 1, 500),
+            -1,
+            -30,
+            -500,
+            -1);
+        return new ToolkitOsdSettings
+        {
+            Orientation = Enum.IsDefined(value.Orientation)
+                ? value.Orientation
+                : OsdOrientation.Vertical,
+            RefreshIntervalSeconds = allowedIntervals.Contains(
+                    value.RefreshIntervalSeconds)
+                ? value.RefreshIntervalSeconds
+                : 1,
+            FixedPosition = value.FixedPosition,
+            OpacityPercent = Math.Clamp(value.OpacityPercent, 0, 100),
+            FontSize = Math.Clamp(value.FontSize, 8, 24),
+            SnapThreshold = Math.Clamp(value.SnapThreshold, 0, 100),
+            MultipleTemperatureMode = Enum.IsDefined(
+                    value.MultipleTemperatureMode)
+                ? value.MultipleTemperatureMode
+                : OsdMultipleTemperatureMode.All,
+            MemoryDisplayMode = Enum.IsDefined(value.MemoryDisplayMode)
+                ? value.MemoryDisplayMode
+                : OsdMemoryDisplayMode.All,
+            BackgroundColor = NormalizeOsdColor(value.BackgroundColor, "0E131D"),
+            CategoryColor = NormalizeOsdColor(value.CategoryColor, "7C9CFF"),
+            LabelColor = NormalizeOsdColor(value.LabelColor, "B6C2D8"),
+            ValueColor = NormalizeOsdColor(value.ValueColor, "FFFFFF"),
+            WarningColor = NormalizeOsdColor(value.WarningColor, "FFFF00"),
+            CriticalColor = NormalizeOsdColor(value.CriticalColor, "FF0000"),
+            FpsWarningThreshold = fps.Warning,
+            FpsCriticalThreshold = fps.Critical,
+            LowFpsThresholdMode = Enum.IsDefined(value.LowFpsThresholdMode)
+                ? value.LowFpsThresholdMode
+                : OsdLowFpsThresholdMode.PercentageOfFps,
+            LowFpsWarningPercentage = lowFpsPercentage.Warning,
+            LowFpsCriticalPercentage = lowFpsPercentage.Critical,
+            LowFpsWarningDelta = lowFpsDelta.Warning,
+            LowFpsCriticalDelta = lowFpsDelta.Critical,
+            CpuTemperatureWarning = cpuTemperature.Warning,
+            CpuTemperatureCritical = cpuTemperature.Critical,
+            GpuHotSpotTemperatureWarning = gpuHotSpotTemperature.Warning,
+            GpuHotSpotTemperatureCritical = gpuHotSpotTemperature.Critical,
+            GpuTemperatureWarning = gpuTemperature.Warning,
+            GpuTemperatureCritical = gpuTemperature.Critical,
+            VramTemperatureWarning = vramTemperature.Warning,
+            VramTemperatureCritical = vramTemperature.Critical,
+            MemoryTemperatureWarning = memoryTemperature.Warning,
+            MemoryTemperatureCritical = memoryTemperature.Critical,
+            StorageTemperatureWarning = storageTemperature.Warning,
+            StorageTemperatureCritical = storageTemperature.Critical,
+            UsageWarningThreshold = usage.Warning,
+            UsageCriticalThreshold = usage.Critical,
+            BatteryOutputPowerWarning = batteryOutput.Warning,
+            BatteryOutputPowerCritical = batteryOutput.Critical,
+            Sensors = sensors.Distinct().ToList(),
+            HorizontalX = value.HorizontalX,
+            HorizontalY = value.HorizontalY,
+            VerticalX = value.VerticalX,
+            VerticalY = value.VerticalY
+        };
+    }
+
+    internal static SensorRecordingSettings NormalizeSensorRecordingSettings(
+        SensorRecordingSettings? value)
+    {
+        value ??= new SensorRecordingSettings();
+        var interval = new[] { .5d, 1d, 2d, 3d, 5d }
+            .Contains(value.IntervalSeconds)
+            ? value.IntervalSeconds
+            : 1;
+        var sensors = NormalizeOsdSettings(new ToolkitOsdSettings
+        {
+            Sensors = value.Sensors ?? []
+        }).Sensors;
+        return new SensorRecordingSettings
+        {
+            IntervalSeconds = interval,
+            MaximumPlotPoints = Math.Clamp(
+                value.MaximumPlotPoints,
+                100,
+                10_000),
+            Sensors = sensors
+        };
+    }
+
+    private static (int Warning, int Critical) NormalizeAscendingThresholds(
+        int warning,
+        int critical,
+        int fallbackWarning,
+        int fallbackCritical,
+        int minimum,
+        int maximum)
+    {
+        warning = Math.Clamp(warning, minimum, maximum);
+        critical = Math.Clamp(critical, minimum, maximum);
+        return warning < critical
+            ? (warning, critical)
+            : (fallbackWarning, fallbackCritical);
+    }
+
+    private static string NormalizeOsdColor(string? value, string fallback)
+    {
+        var normalized = value?.Trim().ToUpperInvariant() ?? string.Empty;
+        if (normalized.StartsWith("#", StringComparison.Ordinal))
+            normalized = normalized[1..];
+        if (normalized.StartsWith("0X", StringComparison.Ordinal))
+            normalized = normalized[2..];
+        return normalized.Length == 6 && normalized.All(Uri.IsHexDigit)
+            ? normalized
+            : fallback;
+    }
+
+    private static (int Warning, int Critical) NormalizeDescendingThresholds(
+        int warning,
+        int critical,
+        int fallbackWarning,
+        int fallbackCritical,
+        int minimum,
+        int maximum)
+    {
+        warning = Math.Clamp(warning, minimum, maximum);
+        critical = Math.Clamp(critical, minimum, maximum);
+        return warning > critical
+            ? (warning, critical)
+            : (fallbackWarning, fallbackCritical);
     }
 
     private sealed class FanProfileConfigurationFile

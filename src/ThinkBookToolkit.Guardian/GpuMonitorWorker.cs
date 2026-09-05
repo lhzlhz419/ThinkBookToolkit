@@ -342,10 +342,14 @@ internal static class GpuMonitorWorker
         var privateValues = gpu.Type == HardwareType.GpuNvidia
             ? privateTelemetry?.Read(gpu.Name) ?? NvidiaPrivateSnapshot.Empty
             : NvidiaPrivateSnapshot.Empty;
-        var memoryLoad = PickValue(
+        // LHM's NVIDIA "GPU Memory Controller" load is controller activity,
+        // not allocated VRAM utilization. Prefer used/total dedicated-memory
+        // data and retain the load sensor only as a last-resort fallback for
+        // adapters that do not expose allocation counters.
+        var memoryLoad = CalculateMemoryLoad(gpu.Sensors) ?? PickValue(
             gpu.Sensors,
             SensorType.Load,
-            ["gpu memory", "memory"]) ?? CalculateMemoryLoad(gpu.Sensors);
+            ["gpu memory", "memory"]);
 
         return new GpuMonitorSnapshot(
             gpu.Name,
@@ -460,10 +464,14 @@ internal static class GpuMonitorWorker
         var total = sensors.FirstOrDefault(sensor =>
             sensor.Type is SensorType.Data or SensorType.SmallData &&
             ContainsAny(sensor, ["memory total", "dedicated memory total"]));
-        if (used is null || total is null || total.Value <= 0)
-            return null;
-        return Math.Clamp(used.Value * 100 / total.Value, 0, 100);
+        return CalculateDedicatedMemoryLoad(used?.Value, total?.Value);
     }
+
+    internal static double? CalculateDedicatedMemoryLoad(
+        double? used,
+        double? total) => used.HasValue && total is > 0
+        ? Math.Clamp(used.Value * 100 / total.Value, 0, 100)
+        : null;
 
     private static int PatternIndex(SensorReading sensor, string[] patterns)
     {

@@ -187,6 +187,32 @@ internal sealed class AutomationRunner
                         DisplaySettingsController.SetColorManagementMode(
                             colorMode))
                     : InvalidValue(step);
+            case AutomationStepKind.OsdEnabled:
+                return await ApplyBooleanAsync(step, value =>
+                    Task.FromResult(_runtime.TrySetOsdEnabled(
+                        value,
+                        out var error)
+                            ? null
+                            : error));
+            case AutomationStepKind.OsdLockPosition:
+                return await ApplyBooleanAsync(step, value =>
+                {
+                    var settings = CurveProfileStore.NormalizeOsdSettings(
+                        _runtime.Settings.Osd);
+                    settings.FixedPosition = value;
+                    return Task.FromResult(_runtime.TrySetOsdSettings(
+                        settings,
+                        out var error)
+                            ? null
+                            : error);
+                });
+            case AutomationStepKind.SensorRecordingEnabled:
+                return await ApplyBooleanAsync(step, value =>
+                    Task.FromResult(_runtime.TrySetSensorRecordingEnabled(
+                        value,
+                        out var error)
+                            ? null
+                            : error));
             case AutomationStepKind.DolbyEnabled:
                 return await ApplyBooleanAsync(step, SetDolbyEnabledAsync);
             case AutomationStepKind.DolbyProfile:
@@ -375,6 +401,12 @@ internal sealed class AutomationRunner
             case AutomationStepKind.SpeakerNoiseCancellation:
                 return (await Task.Run(SoundSettingsController.ReadState))
                     .SpeakerNoise.Enabled;
+            case AutomationStepKind.OsdEnabled:
+                return _runtime.Settings.OsdEnabled;
+            case AutomationStepKind.OsdLockPosition:
+                return _runtime.Settings.Osd.FixedPosition;
+            case AutomationStepKind.SensorRecordingEnabled:
+                return _runtime.Settings.SensorRecordingEnabled;
             case AutomationStepKind.KeyboardBacklightAutoOff:
                 return (await Task.Run(KeyboardBacklightController.ReadState))
                     .AutoOffEnabled;

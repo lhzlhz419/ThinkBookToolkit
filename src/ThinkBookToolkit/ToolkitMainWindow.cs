@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
@@ -28,6 +30,9 @@ internal sealed class ToolkitMainWindow : Window
     private TextBlock _pageGlyph = new();
     private TextBlock _toastText = new();
     private Border _toast = new();
+    private AnimatedBackgroundImage? _backgroundImage;
+    private Border? _backgroundBaseLayer;
+    private Border? _backgroundDimOverlay;
     private readonly DispatcherTimer _toastTimer = new()
     {
         Interval = TimeSpan.FromSeconds(3)
@@ -41,9 +46,13 @@ internal sealed class ToolkitMainWindow : Window
     private string _selectedPage = "overview";
     private bool _sidebarCollapsed;
     private bool _initialized;
+    private bool _backgroundLoadingEnabled;
     private bool _preparingExit;
     private bool _forceClose;
     private bool _disposed;
+    private bool _mediaCleanupPending;
+    private bool _mediaCleanupRestoreRequested;
+    private bool _windowHardwareRenderingSuspended;
     private bool _controlStateRefreshRunning;
     private bool _controlStateRefreshPending;
 
@@ -100,10 +109,12 @@ internal sealed class ToolkitMainWindow : Window
         _runtime.SnapshotChanged += OnSnapshotChanged;
         _runtime.AvailabilityChanged += OnAvailabilityChanged;
         _runtime.AppearanceChanged += OnAppearanceChanged;
+        _runtime.BackgroundImageChanged += OnBackgroundImageChanged;
         _runtime.OverviewLayoutChanged += OnOverviewLayoutChanged;
         _runtime.ControlStateChanged += OnControlStateChanged;
         _runtime.StatusChanged += OnStatusChanged;
         Loaded += OnLoaded;
+        IsVisibleChanged += OnVisibilityChanged;
         StateChanged += OnStateChanged;
         Closing += OnClosing;
         Closed += OnClosed;
@@ -120,12 +131,18 @@ internal sealed class ToolkitMainWindow : Window
     internal void UpdateResponsiveForTesting(double width) =>
         UpdateResponsiveLayout(width);
 
-    private ToolkitPalette Palette => ToolkitPalette.For(_runtime.IsDark);
+    private ToolkitPalette Palette => ToolkitPalette.For(
+        _runtime.IsDark,
+        _runtime.HasCustomBackground);
     private string L(string chinese, string english) => _runtime.L(chinese, english);
 
     private void ApplyAppearance()
     {
         ModernTheme.Apply(Application.Current, _runtime.IsDark);
+        ModernTheme.ApplyWindowSurfaceStyles(
+            this,
+            _runtime.IsDark,
+            _runtime.HasCustomBackground);
         FontFamily = UiTypography.FontFamilyFor(_runtime.Settings.Language);
         FontSize = 14;
         Background = Brush(Palette.Canvas);
@@ -134,18 +151,61 @@ internal sealed class ToolkitMainWindow : Window
 
     private UIElement BuildLayout()
     {
+        _backgroundImage?.Dispose();
+        _backgroundImage = null;
         _navigation.Clear();
         _indicators.Clear();
         _navigationLabels.Clear();
 
-        var root = new Grid { Background = CanvasBrush() };
+        var root = new Grid
+        {
+            Background = CanvasBrush(),
+            ClipToBounds = true
+        };
         _navigationColumn = new ColumnDefinition { Width = new GridLength(238) };
         root.ColumnDefinitions.Add(_navigationColumn);
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        root.SizeChanged += (_, _) => UpdateResponsiveLayout(root.ActualWidth);
+        root.SizeChanged += (_, _) =>
+        {
+            UpdateResponsiveLayout(root.ActualWidth);
+            _backgroundImage?.SetViewport(root.RenderSize);
+        };
+
+        _backgroundBaseLayer = new Border
+        {
+            IsHitTestVisible = false
+        };
+        Grid.SetColumnSpan(_backgroundBaseLayer, 2);
+        Panel.SetZIndex(_backgroundBaseLayer, 0);
+        root.Children.Add(_backgroundBaseLayer);
+        if (!string.IsNullOrWhiteSpace(
+                _runtime.Settings.BackgroundImagePath))
+        {
+            _backgroundImage = new AnimatedBackgroundImage();
+            _backgroundImage.PlaybackFailed += (_, error) =>
+                ToolkitLog.Warning(
+                    "The configured background video could not be played: " +
+                    error);
+            Grid.SetColumnSpan(_backgroundImage, 2);
+            Panel.SetZIndex(_backgroundImage, 1);
+            root.Children.Add(_backgroundImage);
+        }
+        _backgroundDimOverlay = new Border
+        {
+            Background = Brush(Palette.Canvas),
+            IsHitTestVisible = false
+        };
+        Grid.SetColumnSpan(_backgroundDimOverlay, 2);
+        Panel.SetZIndex(_backgroundDimOverlay, 2);
+        root.Children.Add(_backgroundDimOverlay);
+        // Base color and dimming are inexpensive and must be initialized even
+        // before the window is shown. ApplyBackgroundImage itself avoids
+        // decoding image/video content while the window is hidden.
+        ApplyBackgroundImage();
 
         _navigationSurface = BuildNavigation();
         Grid.SetColumn(_navigationSurface, 0);
+        Panel.SetZIndex(_navigationSurface, 3);
         root.Children.Add(_navigationSurface);
 
         _mainArea = new Grid { Margin = new Thickness(6, 18, 22, 16) };
@@ -170,6 +230,7 @@ internal sealed class ToolkitMainWindow : Window
         _mainArea.Children.Add(_mainScroll);
 
         Grid.SetColumn(_mainArea, 1);
+        Panel.SetZIndex(_mainArea, 3);
         root.Children.Add(_mainArea);
         var toast = BuildToast();
         Grid.SetColumn(toast, 1);
@@ -239,6 +300,8 @@ internal sealed class ToolkitMainWindow : Window
         AddNavigationIf(navigationItems, "display", "\uE7F4", L("显示", "Display"));
         AddNavigationIf(navigationItems, "sound", "\uE767", L("声音", "Sound"));
         AddNavigationIf(navigationItems, "input", "\uE765", L("输入设备", "Input devices"));
+        AddNavigation(navigationItems, "sensors-integration", "\uE9D9",
+            L("传感器与联动", "Sensors and integration"));
         AddNavigation(navigationItems, "automation", "\uE771", L("自动化", "Automation"));
         AddNavigationIf(navigationItems, "device", "\uE772", L("设备信息", "Device information"));
         AddNavigationIf(navigationItems, "driver-update", "\uE896", L("驱动更新", "Driver updates"));
@@ -361,7 +424,20 @@ internal sealed class ToolkitMainWindow : Window
             Child = _pageGlyph
         });
         _pageGlyph.HorizontalAlignment = HorizontalAlignment.Center;
-        var titles = new StackPanel { Margin = new Thickness(13, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        var titles = new StackPanel
+        {
+            Margin = new Thickness(13, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Effect = !_runtime.HasCustomBackground
+                ? null
+                : new DropShadowEffect
+                {
+                    BlurRadius = 7,
+                    ShadowDepth = 0,
+                    Opacity = .9,
+                    Color = _runtime.IsDark ? Colors.Black : Colors.White
+                }
+        };
         _pageTitle = new TextBlock
         {
             FontSize = 28,
@@ -432,6 +508,13 @@ internal sealed class ToolkitMainWindow : Window
             return;
         if (_selectedPage == page && _pageHost.Content is not null)
             return;
+        var previousPage = _selectedPage;
+        if (!string.Equals(previousPage, page, StringComparison.Ordinal) &&
+            _pages.Remove(previousPage, out var previous))
+        {
+            _pageHost.Content = null;
+            previous.Dispose();
+        }
         _selectedPage = page;
         UpdateNavigationSelection();
         RenderPage();
@@ -479,19 +562,25 @@ internal sealed class ToolkitMainWindow : Window
 
         var duration = new Duration(PageTransitionDuration);
         var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
-        _pageHost.Opacity = 0;
-        transform.Y = 10;
-        _pageHost.BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(0, 1, duration)
-            {
-                EasingFunction = easing,
-                FillBehavior = FillBehavior.Stop
-            },
-            HandoffBehavior.SnapshotAndReplace);
+        var hasBackground = _runtime.HasCustomBackground;
+        var startY = hasBackground ? 4d : 10d;
+        _pageHost.Opacity = 1;
+        transform.Y = startY;
+        if (!hasBackground)
+        {
+            _pageHost.Opacity = 0;
+            _pageHost.BeginAnimation(
+                OpacityProperty,
+                new DoubleAnimation(0, 1, duration)
+                {
+                    EasingFunction = easing,
+                    FillBehavior = FillBehavior.Stop
+                },
+                HandoffBehavior.SnapshotAndReplace);
+        }
         transform.BeginAnimation(
             TranslateTransform.YProperty,
-            new DoubleAnimation(10, 0, duration)
+            new DoubleAnimation(startY, 0, duration)
             {
                 EasingFunction = easing,
                 FillBehavior = FillBehavior.Stop
@@ -510,6 +599,9 @@ internal sealed class ToolkitMainWindow : Window
         "sound" => new ToolkitSoundPage(_runtime),
         "input" => new ToolkitInputPage(_runtime),
         "automation" => new ToolkitAutomationPage(_runtime),
+        "sensors-integration" => new ToolkitSettingsPage(
+            _runtime,
+            sensorIntegrationOnly: true),
         "device" => new ToolkitDevicePage(_runtime),
         "driver-update" => new ToolkitDriverUpdatePage(_runtime),
         "advanced" => new ToolkitAdvancedPage(_runtime),
@@ -528,6 +620,10 @@ internal sealed class ToolkitMainWindow : Window
         "sound" => (L("声音", "Sound"), L("Dolby 音效与智能降噪", "Dolby audio and intelligent noise cancellation"), "\uE767"),
         "input" => (L("输入设备", "Input devices"), L("键盘、功能键与触摸板", "Keyboard, function keys, and touchpad"), "\uE765"),
         "automation" => (L("自动化", "Automation"), L("有序设备控制、应用操作与 Fn 快捷键", "Ordered device controls, application actions, and Fn keys"), "\uE771"),
+        "sensors-integration" => (
+            L("传感器与联动", "Sensors and integration"),
+            L("OSD、传感器记录与本机软件联动", "OSD, sensor recording, and local software integration"),
+            "\uE9D9"),
         "device" => (L("设备信息", "Device information"), L("硬件、固件与保修状态", "Hardware, firmware, and warranty"), "\uE772"),
         "driver-update" => (L("驱动更新", "Driver updates"), L("Lenovo 驱动、固件与 BIOS 更新", "Lenovo driver, firmware, and BIOS updates"), "\uE896"),
         "advanced" => (L("高级工具", "Advanced tools"), L("固件启动、IO 控制与维护工具", "Firmware startup, I/O controls, and maintenance tools"), "\uE90F"),
@@ -598,7 +694,11 @@ internal sealed class ToolkitMainWindow : Window
         if (_initialized) return;
         _initialized = true;
         if (!_enableHardwareDetection)
+        {
+            _backgroundLoadingEnabled = true;
+            ApplyBackgroundImage();
             return;
+        }
         try
         {
             if (!ShowApplicationDisclaimer())
@@ -610,12 +710,19 @@ internal sealed class ToolkitMainWindow : Window
                 () => { },
                 DispatcherPriority.ContextIdle);
             await _runtime.InitializeAsync();
+            _backgroundLoadingEnabled = true;
             ShowFanBackendStartupNotice();
+            MediaMemoryCleanup.CollectAndTrim(
+                "startup initialization completed");
             if (_startToTrayRequested && _runtime.Settings.StartWithWindows && _runtime.Settings.StartToTray)
                 _runtime.HideToTray();
+            else
+                ApplyBackgroundImage();
         }
         catch (Exception ex)
         {
+            _backgroundLoadingEnabled = true;
+            ApplyBackgroundImage();
             ShowToast(L("初始化失败：", "Initialization failed: ") + ex.Message, isError: true);
         }
     }
@@ -693,6 +800,114 @@ internal sealed class ToolkitMainWindow : Window
         }
         ApplyAppearance();
         RebuildShell(disposePages: true);
+    }
+
+    private void OnBackgroundImageChanged(object? sender, EventArgs args)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(
+                new Action(() => OnBackgroundImageChanged(sender, args)));
+            return;
+        }
+        var releasedLargeMedia = _backgroundImage?.SupportsPlaybackSpeed == true ||
+                                 _backgroundImage?.BlurRadius > 0;
+        if (releasedLargeMedia)
+            SuspendWindowHardwareRendering();
+        ApplyAppearance();
+        RebuildShell(disposePages: true);
+        if (releasedLargeMedia)
+            ScheduleMediaMemoryCleanup(restoreHardwareRendering: IsVisible);
+    }
+
+    private void ApplyBackgroundImage()
+    {
+        if (_backgroundBaseLayer is not null)
+        {
+            _backgroundBaseLayer.Background = Brush(
+                "#" + CurveProfileStore.NormalizeBackgroundColor(
+                    _runtime.Settings.BackgroundBaseColor));
+            _backgroundBaseLayer.Opacity =
+                _runtime.Settings.BackgroundBaseColorEnabled ? 1 : 0;
+        }
+        if (_backgroundDimOverlay is not null)
+        {
+            _backgroundDimOverlay.Opacity =
+                string.IsNullOrWhiteSpace(
+                    _runtime.Settings.BackgroundImagePath) &&
+                !_runtime.Settings.BackgroundBaseColorEnabled
+                    ? 0
+                    : Math.Clamp(
+                        _runtime.Settings.BackgroundImageOpacityPercent / 100d,
+                        0,
+                        1);
+        }
+        if (_backgroundImage is null)
+            return;
+        if (!IsVisible || !_backgroundLoadingEnabled)
+        {
+            ReleaseBackgroundMedia();
+            return;
+        }
+        _backgroundImage.SetScale(
+            _runtime.Settings.BackgroundImageScalePercent);
+        _backgroundImage.SetSizeMode(
+            _runtime.Settings.BackgroundImageSizeMode);
+        _backgroundImage.SetPlaybackSpeedPercent(
+            _runtime.Settings.BackgroundMediaSpeedPercent);
+        _backgroundImage.SetInverted(
+            _runtime.Settings.BackgroundImageInverted);
+        _backgroundImage.Opacity = 1;
+        var blur = Math.Clamp(
+            _runtime.Settings.BackgroundImageBlurRadius,
+            0,
+            40);
+        try
+        {
+            var configuredPath = Path.GetFullPath(
+                _runtime.Settings.BackgroundImagePath);
+            if (!string.Equals(
+                    _backgroundImage.LoadedPath,
+                    configuredPath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _backgroundImage.LoadFile(configuredPath);
+            }
+            _backgroundImage.SetPlaybackActive(true);
+            ApplyBackgroundRendering(blur);
+        }
+        catch (Exception ex)
+        {
+            _backgroundImage.Clear();
+            if (_backgroundDimOverlay is not null)
+            {
+                _backgroundDimOverlay.Opacity =
+                    _runtime.Settings.BackgroundBaseColorEnabled
+                        ? Math.Clamp(
+                            _runtime.Settings
+                                .BackgroundImageOpacityPercent / 100d,
+                            0,
+                            1)
+                        : 0;
+            }
+            ToolkitLog.Warning(
+                "The configured background image could not be loaded: " +
+                ex.Message);
+        }
+    }
+
+    private void ApplyBackgroundRendering(double blur)
+    {
+        if (_backgroundImage is null)
+            return;
+        _backgroundImage.SetBlurRadius(blur);
+        _backgroundImage.Effect = null;
+        _backgroundImage.CacheMode = null;
+        RenderOptions.SetBitmapScalingMode(
+            _backgroundImage,
+            blur > 0
+                ? BitmapScalingMode.LowQuality
+                : BitmapScalingMode.HighQuality);
     }
 
     private void OnOverviewLayoutChanged(object? sender, EventArgs args)
@@ -773,6 +988,12 @@ internal sealed class ToolkitMainWindow : Window
     private void RebuildShell(bool disposePages)
     {
         if (disposePages) DisposePages();
+        // Detach the old visual tree before disposing media. Otherwise WPF's
+        // compositor can keep the old Image/Effect resources alive until a
+        // later render pass even though the managed player has been cleared.
+        Content = null;
+        _backgroundImage?.Dispose();
+        _backgroundImage = null;
         Content = BuildLayout();
         UpdateResponsiveLayout(ActualWidth);
         ModernTheme.RefreshWindow(this, _runtime.IsDark);
@@ -801,8 +1022,110 @@ internal sealed class ToolkitMainWindow : Window
 
     private void OnStateChanged(object? sender, EventArgs args)
     {
+        if (WindowState == WindowState.Minimized)
+            ReleaseBackgroundMedia();
+        else if (IsVisible)
+        {
+            RestoreWindowHardwareRendering();
+            ApplyBackgroundImage();
+        }
         if (WindowState == WindowState.Minimized && _runtime.Settings.MinimizeToTray)
             _runtime.HideToTray();
+    }
+
+    private void OnVisibilityChanged(
+        object sender,
+        DependencyPropertyChangedEventArgs args)
+    {
+        if (IsVisible && WindowState != WindowState.Minimized)
+        {
+            RestoreWindowHardwareRendering();
+            ApplyBackgroundImage();
+            _backgroundImage?.SetPlaybackActive(true);
+        }
+        else
+        {
+            ReleaseBackgroundMedia();
+        }
+    }
+
+    private void ReleaseBackgroundMedia()
+    {
+        if (_backgroundImage is null)
+            return;
+        var hadResources = !string.IsNullOrWhiteSpace(
+                               _backgroundImage.LoadedPath) ||
+                           _backgroundImage.Effect is not null ||
+                           _backgroundImage.CacheMode is not null;
+        _backgroundImage.SetPlaybackActive(false);
+        _backgroundImage.Clear();
+        _backgroundImage.Effect = null;
+        _backgroundImage.CacheMode = null;
+        if (hadResources)
+        {
+            SuspendWindowHardwareRendering();
+            ScheduleMediaMemoryCleanup();
+            ToolkitLog.Info(
+                "Background media resources released while the main window is hidden.");
+        }
+    }
+
+    private void ScheduleMediaMemoryCleanup(
+        bool restoreHardwareRendering = false)
+    {
+        _mediaCleanupRestoreRequested |= restoreHardwareRendering;
+        if (_mediaCleanupPending || Dispatcher.HasShutdownStarted)
+            return;
+        _mediaCleanupPending = true;
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            new Action(() =>
+            {
+                _mediaCleanupPending = false;
+                var shouldRestore = _mediaCleanupRestoreRequested;
+                _mediaCleanupRestoreRequested = false;
+                try
+                {
+                    MediaMemoryCleanup.CollectAndTrim(
+                        "main background released");
+                }
+                catch (Exception ex)
+                {
+                    ToolkitLog.Warning(
+                        "Released background memory could not be compacted: " +
+                        ex.Message);
+                }
+                finally
+                {
+                    if (shouldRestore && IsVisible &&
+                        WindowState != WindowState.Minimized)
+                    {
+                        RestoreWindowHardwareRendering();
+                    }
+                }
+            }));
+    }
+
+    private void SuspendWindowHardwareRendering()
+    {
+        if (_windowHardwareRenderingSuspended ||
+            PresentationSource.FromVisual(this) is not HwndSource source)
+            return;
+        source.CompositionTarget.RenderMode = RenderMode.SoftwareOnly;
+        _windowHardwareRenderingSuspended = true;
+    }
+
+    private void RestoreWindowHardwareRendering()
+    {
+        if (!_windowHardwareRenderingSuspended)
+            return;
+        if (_runtime.Settings.HardwareAccelerationMode !=
+                HardwareAccelerationMode.Disabled &&
+            PresentationSource.FromVisual(this) is HwndSource source)
+        {
+            source.CompositionTarget.RenderMode = RenderMode.Default;
+        }
+        _windowHardwareRenderingSuspended = false;
     }
 
     private async void OnClosing(object? sender, CancelEventArgs args)
@@ -861,10 +1184,13 @@ internal sealed class ToolkitMainWindow : Window
         _runtime.SnapshotChanged -= OnSnapshotChanged;
         _runtime.AvailabilityChanged -= OnAvailabilityChanged;
         _runtime.AppearanceChanged -= OnAppearanceChanged;
+        _runtime.BackgroundImageChanged -= OnBackgroundImageChanged;
         _runtime.OverviewLayoutChanged -= OnOverviewLayoutChanged;
         _runtime.ControlStateChanged -= OnControlStateChanged;
         _runtime.StatusChanged -= OnStatusChanged;
+        IsVisibleChanged -= OnVisibilityChanged;
         _toastTimer.Stop();
+        _backgroundImage?.Dispose();
         if (_ownsRuntime) _runtime.Dispose();
     }
 

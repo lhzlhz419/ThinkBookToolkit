@@ -61,6 +61,7 @@ public sealed class MainWindow : Window
     private readonly AppSettings _settings;
     private readonly ItsModeDetector _itsModeDetector = new();
     private readonly GameProcessDetector _gameProcessDetector;
+    private readonly bool _ownsGameProcessDetector;
     private static readonly ItsMode[] SwitchableItsModes =
         [ItsMode.Intelligent, ItsMode.PowerSaving, ItsMode.Performance, ItsMode.Geek];
 
@@ -123,8 +124,8 @@ public sealed class MainWindow : Window
     private readonly CheckBox _closeToTrayCheck = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
     private readonly CheckBox _disableControlOnSleepCheck = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
 
-    private readonly CurveEditor _cpuChart;
-    private readonly CurveEditor _gpuChart;
+    private readonly CurveEditor? _cpuChart;
+    private readonly CurveEditor? _gpuChart;
     private readonly TextBlock _profileLabel = Label("");
     private readonly TextBlock _nameLabel = Label("");
     private readonly TextBlock _intervalLabel = Label("");
@@ -249,7 +250,8 @@ public sealed class MainWindow : Window
     public MainWindow(
         bool startToTrayRequested = false,
         bool embeddedMode = false,
-        AppSettings? sharedSettings = null)
+        AppSettings? sharedSettings = null,
+        GameProcessDetector? sharedGameProcessDetector = null)
     {
         _embeddedMode = embeddedMode;
         Title = "ThinkBook Toolkit - Performance & Cooling";
@@ -267,7 +269,9 @@ public sealed class MainWindow : Window
         _gpuModeCombo.IsEnabled = false;
         _gpuModeCombo.VerticalAlignment = VerticalAlignment.Center;
         _settings = sharedSettings ?? CurveProfileStore.LoadSettings();
-        _gameProcessDetector = new GameProcessDetector(_settings);
+        _gameProcessDetector = sharedGameProcessDetector ??
+                               new GameProcessDetector(_settings);
+        _ownsGameProcessDetector = sharedGameProcessDetector is null;
         if (!_settings.FanRpmLimitsCustomized)
             _settings.FanRpmLimits =
                 CurveProfileStore.DefaultFanRpmLimitsForCurrentDevice();
@@ -280,20 +284,23 @@ public sealed class MainWindow : Window
         _cpuFan2Curve = [.. _profiles[0].CpuFan2Curve];
         _gpuFan1Curve = [.. _profiles[0].GpuFan1Curve];
         _gpuFan2Curve = [.. _profiles[0].GpuFan2Curve];
-        _cpuChart = new CurveEditor("CPU fan curve", CurveProfileStore.CpuTemps, _cpuFan1Curve, _cpuFan2Curve);
-        _gpuChart = new CurveEditor("GPU fan curve", CurveProfileStore.GpuTemps, _gpuFan1Curve, _gpuFan2Curve);
-        _cpuChart.ValuesChanged += (fan1Values, fan2Values) =>
+        if (!_embeddedMode)
         {
-            _cpuFan1Curve = fan1Values;
-            _cpuFan2Curve = fan2Values;
-        };
-        _gpuChart.ValuesChanged += (fan1Values, fan2Values) =>
-        {
-            _gpuFan1Curve = fan1Values;
-            _gpuFan2Curve = fan2Values;
-        };
+            _cpuChart = new CurveEditor("CPU fan curve", CurveProfileStore.CpuTemps, _cpuFan1Curve, _cpuFan2Curve);
+            _gpuChart = new CurveEditor("GPU fan curve", CurveProfileStore.GpuTemps, _gpuFan1Curve, _gpuFan2Curve);
+            _cpuChart.ValuesChanged += (fan1Values, fan2Values) =>
+            {
+                _cpuFan1Curve = fan1Values;
+                _cpuFan2Curve = fan2Values;
+            };
+            _gpuChart.ValuesChanged += (fan1Values, fan2Values) =>
+            {
+                _gpuFan1Curve = fan1Values;
+                _gpuFan2Curve = fan2Values;
+            };
 
-        Content = BuildLayout();
+            Content = BuildLayout();
+        }
         ApplyConfiguredFanRange();
         ApplyDetectedFeatureVisibility();
         ApplyEmbeddedVisibility();
@@ -535,6 +542,34 @@ public sealed class MainWindow : Window
     }
 
     internal Task RuntimeRefreshAsync() => SampleAsync(force: true);
+
+    internal async Task<PerformanceRuntimeSnapshot> RuntimeReadOsdSnapshotAsync()
+    {
+        if (!_temperatureSampling)
+        {
+            _temperatureSampling = true;
+            try
+            {
+                _latestTemperatureSnapshot = await Task.Run(ReadTemperatures);
+            }
+            catch (Exception ex)
+            {
+                ToolkitLog.Warning(
+                    "OSD-only hardware refresh failed: " + ex.Message);
+            }
+            finally
+            {
+                _temperatureSampling = false;
+                if (_forcedSamplePending)
+                {
+                    _forcedSamplePending = false;
+                    _ = SampleAsync(force: true);
+                }
+            }
+        }
+        await RefreshFanSnapshotAsync();
+        return RuntimeSnapshot();
+    }
 
     internal void RuntimeReloadGameDetection() =>
         _gameProcessDetector.ReloadKnownGames();
@@ -1445,8 +1480,8 @@ public sealed class MainWindow : Window
                 }
                 UpdateTemperatureUi(temps);
                 _targetText.Text = T("FullSpeed");
-                _cpuChart.SetCurrentTemp(temps.CpuTempC);
-                _gpuChart.SetCurrentTemp(temps.GpuTempC);
+                _cpuChart?.SetCurrentTemp(temps.CpuTempC);
+                _gpuChart?.SetCurrentTemp(temps.GpuTempC);
                 _statusText.Text = T("FullSpeedEnabled");
                 UpdateTrayText();
                 return;
@@ -1459,8 +1494,8 @@ public sealed class MainWindow : Window
 
                 UpdateTemperatureUi(temps);
                 _targetText.Text = FormatTarget(_lastTarget);
-                _cpuChart.SetCurrentTemp(temps.CpuTempC);
-                _gpuChart.SetCurrentTemp(temps.GpuTempC);
+                _cpuChart?.SetCurrentTemp(temps.CpuTempC);
+                _gpuChart?.SetCurrentTemp(temps.GpuTempC);
                 _statusText.Text = $"{(_running ? T("Running") : T("Monitoring"))} | {T("Strategy")}: {T("FixedRpm")} | {T("Game")}: {FormatGameState()}";
                 UpdateTrayText();
                 return;
@@ -1470,8 +1505,8 @@ public sealed class MainWindow : Window
             {
                 UpdateTemperatureUi(temps);
                 _targetText.Text = FormatTarget(_lastTarget);
-                _cpuChart.SetCurrentTemp(temps.CpuTempC);
-                _gpuChart.SetCurrentTemp(temps.GpuTempC);
+                _cpuChart?.SetCurrentTemp(temps.CpuTempC);
+                _gpuChart?.SetCurrentTemp(temps.GpuTempC);
                 UpdateTrayText();
                 return;
             }
@@ -1531,8 +1566,8 @@ public sealed class MainWindow : Window
 
             UpdateTemperatureUi(temps);
             _targetText.Text = FormatTarget(target);
-            _cpuChart.SetCurrentTemp(temps.CpuTempC);
-            _gpuChart.SetCurrentTemp(temps.GpuTempC);
+            _cpuChart?.SetCurrentTemp(temps.CpuTempC);
+            _gpuChart?.SetCurrentTemp(temps.GpuTempC);
             _statusText.Text = $"{(_running ? T("Running") : T("Monitoring"))} | {T("HeatSoak")}: {(_heatSoaked ? T("On") : T("Off"))} | CPU: {temps.CpuSensor} | GPU: {temps.GpuSensor} | VRAM: {temps.VramSensor}";
             UpdateTrayText();
         }
@@ -1564,13 +1599,14 @@ public sealed class MainWindow : Window
         }
     }
 
-    private async Task RefreshFanSnapshotAsync()
+    private async Task RefreshFanSnapshotAsync(bool force = false)
     {
         if (_fanSnapshotSampling)
             return;
 
         var now = DateTimeOffset.Now;
-        if (_lastFanSnapshotTime is DateTimeOffset lastSnapshotTime &&
+        if (!force &&
+            _lastFanSnapshotTime is DateTimeOffset lastSnapshotTime &&
             now - lastSnapshotTime < EffectiveFanReadMinimumInterval)
         {
             return;
@@ -2009,6 +2045,25 @@ public sealed class MainWindow : Window
                     delayStartup),
                 Encoding.Unicode);
             RunSchtasks(false, "/Create", "/TN", StartupTaskName, "/XML", xmlPath, "/F");
+            var registeredXml = RunSchtasks(
+                false,
+                "/Query",
+                "/TN",
+                StartupTaskName,
+                "/XML",
+                "ONE");
+            if (!registeredXml.Contains(
+                    "ShellExec_RunDLL",
+                    StringComparison.OrdinalIgnoreCase) ||
+                !registeredXml.Contains(
+                    executablePath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "The startup task was created, but its launch action was not preserved.");
+            }
+            ToolkitLog.Info(
+                "Startup task created and verified for " + executablePath + ".");
         }
         finally
         {
@@ -2033,9 +2088,16 @@ public sealed class MainWindow : Window
 
         var escapedSid = SecurityElement.Escape(sid);
         var escapedPath = SecurityElement.Escape(executablePath);
+        var executableDirectory = Path.GetDirectoryName(executablePath) ??
+                                  AppContext.BaseDirectory;
+        var escapedDirectory = SecurityElement.Escape(executableDirectory);
+        var rundll32Path = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "rundll32.exe");
+        var escapedRundll32Path = SecurityElement.Escape(rundll32Path);
         var arguments = startToTray
-            ? "      <Arguments>--startup --startup-tray</Arguments>\r\n"
-            : "      <Arguments>--startup</Arguments>\r\n";
+            ? $"      <Arguments>shell32.dll,ShellExec_RunDLL &quot;{escapedPath}&quot; --startup --startup-tray</Arguments>\r\n"
+            : $"      <Arguments>shell32.dll,ShellExec_RunDLL &quot;{escapedPath}&quot; --startup</Arguments>\r\n";
         var delay = delayStartup
             ? $"      <Delay>PT{StartupDelaySeconds}S</Delay>\r\n"
             : string.Empty;
@@ -2080,14 +2142,15 @@ public sealed class MainWindow : Window
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{escapedPath}</Command>
-{arguments}    </Exec>
+      <Command>{escapedRundll32Path}</Command>
+{arguments}      <WorkingDirectory>{escapedDirectory}</WorkingDirectory>
+    </Exec>
   </Actions>
 </Task>
 """;
     }
 
-    private static void RunSchtasks(bool ignoreFailure, params string[] arguments)
+    private static string RunSchtasks(bool ignoreFailure, params string[] arguments)
     {
         var startInfo = new ProcessStartInfo("schtasks.exe")
         {
@@ -2106,6 +2169,7 @@ public sealed class MainWindow : Window
 
         if (!ignoreFailure && process.ExitCode != 0)
             throw new InvalidOperationException($"schtasks.exe failed with exit code {process.ExitCode}. {output} {error}".Trim());
+        return output;
     }
 
     private void UpdateFanRange(IReadOnlyDictionary<string, FanLimit> limits)
@@ -2184,18 +2248,18 @@ public sealed class MainWindow : Window
             _gpuFan2Curve,
             limits.Fan2MinimumRpm,
             limits.Fan2MaximumRpm);
-        _cpuChart.SetRpmRanges(
+        _cpuChart?.SetRpmRanges(
             limits.Fan1MinimumRpm,
             limits.Fan1MaximumRpm,
             limits.Fan2MinimumRpm,
             limits.Fan2MaximumRpm);
-        _gpuChart.SetRpmRanges(
+        _gpuChart?.SetRpmRanges(
             limits.Fan1MinimumRpm,
             limits.Fan1MaximumRpm,
             limits.Fan2MinimumRpm,
             limits.Fan2MaximumRpm);
-        _cpuChart.SetValues(_cpuFan1Curve, _cpuFan2Curve);
-        _gpuChart.SetValues(_gpuFan1Curve, _gpuFan2Curve);
+        _cpuChart?.SetValues(_cpuFan1Curve, _cpuFan2Curve);
+        _gpuChart?.SetValues(_gpuFan1Curve, _gpuFan2Curve);
         _settings.FixedRpm = CurveProfileStore.NormalizeFixedRpmSettings(
             _settings.FixedRpm,
             limits);
@@ -2264,8 +2328,8 @@ public sealed class MainWindow : Window
         _gpuFan2Curve = _fanRangeDetected
             ? CurveProfileStore.ClampCurve(profile.GpuFan2Curve, limits.Fan2MinimumRpm, limits.Fan2MaximumRpm)
             : [.. profile.GpuFan2Curve];
-        _cpuChart.SetValues(_cpuFan1Curve, _cpuFan2Curve);
-        _gpuChart.SetValues(_gpuFan1Curve, _gpuFan2Curve);
+        _cpuChart?.SetValues(_cpuFan1Curve, _cpuFan2Curve);
+        _gpuChart?.SetValues(_gpuFan1Curve, _gpuFan2Curve);
         _loadingProfile = false;
         UpdateTrayMenu();
     }
@@ -2544,6 +2608,8 @@ public sealed class MainWindow : Window
             catch { }
         }
         _temperatureReader?.Dispose();
+        if (_ownsGameProcessDetector)
+            _gameProcessDetector.Dispose();
         DisplaySettingsController.Shutdown();
         SoundSettingsController.Shutdown();
         if (_trayIcon is not null)
@@ -4428,10 +4494,10 @@ public sealed class MainWindow : Window
 
     private void ApplyCurveEditSettings()
     {
-        _cpuChart.SetEditFan(_settings.EditFan);
-        _gpuChart.SetEditFan(_settings.EditFan);
-        _cpuChart.SetSyncFanSpeeds(_settings.SyncFanSpeeds);
-        _gpuChart.SetSyncFanSpeeds(_settings.SyncFanSpeeds);
+        _cpuChart?.SetEditFan(_settings.EditFan);
+        _gpuChart?.SetEditFan(_settings.EditFan);
+        _cpuChart?.SetSyncFanSpeeds(_settings.SyncFanSpeeds);
+        _gpuChart?.SetSyncFanSpeeds(_settings.SyncFanSpeeds);
     }
 
     private void SyncTimerIntervals()
@@ -5175,6 +5241,7 @@ public sealed class MainWindow : Window
 
     private void ApplyLanguage()
     {
+        if (_embeddedMode) return;
         Title = T("AppTitle");
         var fontFamilyName = UiTypography.FontFamilyNameFor(_settings.Language);
         FontFamily = new FontFamily(fontFamilyName);
@@ -5241,10 +5308,10 @@ public sealed class MainWindow : Window
             _fixedRpmNote.Text = T("FixedRpmNote");
         foreach (var (mode, label) in _fixedModeLabels)
             label.Text = T(ModeKey(mode));
-        _cpuChart.SetLabels(T("CpuCurve"), T("TemperatureAxis"));
-        _gpuChart.SetLabels(T("GpuCurve"), T("TemperatureAxis"));
-        _cpuChart.SetFontFamily(fontFamilyName);
-        _gpuChart.SetFontFamily(fontFamilyName);
+        _cpuChart?.SetLabels(T("CpuCurve"), T("TemperatureAxis"));
+        _gpuChart?.SetLabels(T("GpuCurve"), T("TemperatureAxis"));
+        _cpuChart?.SetFontFamily(fontFamilyName);
+        _gpuChart?.SetFontFamily(fontFamilyName);
         if (!_running && (_statusText.Text is "Idle" or "\u7a7a\u95f2"))
             _statusText.Text = T("Idle");
 
@@ -5269,6 +5336,7 @@ public sealed class MainWindow : Window
 
     private void ApplyTheme()
     {
+        if (_embeddedMode) return;
         // In embedded mode this window is only a hidden fan/hardware runtime.
         // The visible Toolkit shell owns application-wide UI resources; a
         // background runtime must never replace them.
@@ -5311,8 +5379,8 @@ public sealed class MainWindow : Window
             value.Foreground = text;
         _deviceModelButton.Foreground = muted;
 
-        _cpuChart.SetTheme(IsDark);
-        _gpuChart.SetTheme(IsDark);
+        _cpuChart?.SetTheme(IsDark);
+        _gpuChart?.SetTheme(IsDark);
 
         if (_embeddedMode && _root is not null)
             ModernTheme.ApplyEmbeddedWorkspace(_root, IsDark);

@@ -1165,8 +1165,6 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         var profile = PowerSettingsController.CurrentProfile;
         var nvPcf = Runtime.NvApiGpuPowerEnabled;
         var betaCpu = Runtime.BetaCpuPowerKind;
-        PowerSettingRule Rule(PowerSetting setting) => profile.Rules[setting];
-        PowerSettingRule rule;
         if (betaCpu.HasValue)
         {
             var names = betaCpu.Value switch
@@ -1196,20 +1194,47 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         else if (profile.Writable &&
             Runtime.Report?.IsAvailable(FeatureIds.PowerSettings) == true)
         {
-            rule = Rule(PowerSetting.CpuPl1);
-            AddPowerEditor(_powerEditorPanel, "CpuPl1", PowerSetting.CpuPl1, "CPU PL1", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-            rule = Rule(PowerSetting.CpuPl2);
-            AddPowerEditor(_powerEditorPanel, "CpuPl2", PowerSetting.CpuPl2, "CPU PL2", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-            rule = Rule(PowerSetting.CpuTemperatureLimit);
-            AddPowerEditor(_powerEditorPanel, "CpuTemperature", PowerSetting.CpuTemperatureLimit, L("CPU 温度上限", "CPU temperature limit"), rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-            foreach (var value in PowerSettingsController.TurboTimeLimits)
-                AddChoice(_turboTime, $"{value}", value);
-            var turboRow = SettingRow(
-                "CPU Turbo Time Limit",
-                L("选择固件支持的持续时间。", "Choose a firmware-supported duration."),
-                PowerLockControl(PowerSetting.CpuTurboTimeLimit, _turboTime));
-            _powerEditorRows[PowerSetting.CpuTurboTimeLimit] = turboRow;
-            _powerEditorPanel.Children.Add(turboRow);
+            if (profile.Rules.TryGetValue(
+                    PowerSetting.CpuPl1,
+                    out var cpuPl1Rule))
+                AddPowerEditor(_powerEditorPanel, "CpuPl1",
+                    PowerSetting.CpuPl1, "CPU PL1",
+                    cpuPl1Rule.SliderMinimum,
+                    cpuPl1Rule.SliderMaximum, cpuPl1Rule.ManualMinimum);
+            if (profile.Rules.TryGetValue(
+                    PowerSetting.CpuPl2,
+                    out var cpuPl2Rule))
+                AddPowerEditor(_powerEditorPanel, "CpuPl2",
+                    PowerSetting.CpuPl2, "CPU PL2",
+                    cpuPl2Rule.SliderMinimum,
+                    cpuPl2Rule.SliderMaximum, cpuPl2Rule.ManualMinimum);
+            if (profile.Rules.TryGetValue(
+                    PowerSetting.CpuTemperatureLimit,
+                    out var cpuTemperatureRule))
+            {
+                AddPowerEditor(_powerEditorPanel, "CpuTemperature",
+                    PowerSetting.CpuTemperatureLimit,
+                    L("CPU 温度上限", "CPU temperature limit"),
+                    cpuTemperatureRule.SliderMinimum,
+                    cpuTemperatureRule.SliderMaximum,
+                    cpuTemperatureRule.ManualMinimum);
+            }
+            if (PowerSettingsController.IsWmiWritableSetting(
+                    profile,
+                    PowerSetting.CpuTurboTimeLimit))
+            {
+                foreach (var value in PowerSettingsController.TurboTimeLimits)
+                    AddChoice(_turboTime, $"{value}", value);
+                var turboRow = SettingRow(
+                    "CPU Turbo Time Limit",
+                    L("选择固件支持的持续时间。",
+                        "Choose a firmware-supported duration."),
+                    PowerLockControl(
+                        PowerSetting.CpuTurboTimeLimit,
+                        _turboTime));
+                _powerEditorRows[PowerSetting.CpuTurboTimeLimit] = turboRow;
+                _powerEditorPanel.Children.Add(turboRow);
+            }
             if (!nvPcf && profile.Rules.TryGetValue(
                     PowerSetting.GpuTemperatureLimit,
                     out var gpuTemperatureRule))
@@ -1265,12 +1290,31 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         }
         else if (profile.Writable)
         {
-            rule = Rule(PowerSetting.GpuPowerBoost);
-            AddPowerEditor(_powerEditorPanel, "GpuBoost", PowerSetting.GpuPowerBoost, "GPU Power Boost", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-            rule = Rule(PowerSetting.GpuConfigurableTgp);
-            AddPowerEditor(_powerEditorPanel, "GpuTgp", PowerSetting.GpuConfigurableTgp, "GPU TGP", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
-            rule = Rule(PowerSetting.GpuToCpuDynamicBoost);
-            AddPowerEditor(_powerEditorPanel, "GpuToCpu", PowerSetting.GpuToCpuDynamicBoost, "GPU to CPU Dynamic Boost", rule.SliderMinimum, rule.SliderMaximum, rule.ManualMinimum);
+            if (profile.Rules.TryGetValue(
+                    PowerSetting.GpuPowerBoost,
+                    out var gpuBoostRule))
+                AddPowerEditor(_powerEditorPanel, "GpuBoost",
+                    PowerSetting.GpuPowerBoost, "GPU Power Boost",
+                    gpuBoostRule.SliderMinimum, gpuBoostRule.SliderMaximum,
+                    gpuBoostRule.ManualMinimum);
+            if (profile.Rules.TryGetValue(
+                    PowerSetting.GpuConfigurableTgp,
+                    out var gpuTgpRule))
+            {
+                AddPowerEditor(_powerEditorPanel, "GpuTgp",
+                    PowerSetting.GpuConfigurableTgp, "GPU TGP",
+                    gpuTgpRule.SliderMinimum, gpuTgpRule.SliderMaximum,
+                    gpuTgpRule.ManualMinimum);
+            }
+            if (profile.Rules.TryGetValue(
+                    PowerSetting.GpuToCpuDynamicBoost,
+                    out var gpuToCpuRule))
+            {
+                AddPowerEditor(_powerEditorPanel, "GpuToCpu",
+                    PowerSetting.GpuToCpuDynamicBoost,
+                    "GPU to CPU Dynamic Boost", gpuToCpuRule.SliderMinimum,
+                    gpuToCpuRule.SliderMaximum, gpuToCpuRule.ManualMinimum);
+            }
             if (profile.Rules.TryGetValue(
                     PowerSetting.Atpp,
                     out var atppRule))

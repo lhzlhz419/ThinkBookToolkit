@@ -28,7 +28,8 @@ internal sealed class FanWatchdogService : ServiceBase
 
     protected override void OnStart(string[] args)
     {
-        _ = Task.Run(() => RunAsync(args, _stop.Token));
+        var token = _stop.Token;
+        _ = Task.Run(() => RunAsync(args, token));
     }
 
     protected override void OnStop() => _stop.Cancel();

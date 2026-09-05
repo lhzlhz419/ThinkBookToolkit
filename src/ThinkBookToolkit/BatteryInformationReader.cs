@@ -23,6 +23,14 @@ internal sealed record BatteryInformationSnapshot(
 
 internal static class BatteryInformationReader
 {
+    private static readonly object ReadLock = new();
+    private static BatteryInformationSnapshot? _recentSnapshot;
+    private static DateTime _recentReadAt;
+    private static BatteryInformation? _staticInformation;
+    private static uint _staticTag;
+    private static DateTime _staticReadAt;
+    private static DateTime _lenovoReadAt;
+    private static (double? Temperature, DateTime? ManufactureDate, DateTime? FirstUseDate) _lenovoInformation;
     private const uint IoctlEnergyBatteryInformation = 0x83102138;
     private static readonly object RateLock = new();
     private static int _minimumRate = int.MaxValue;
@@ -44,9 +52,32 @@ internal static class BatteryInformationReader
 
     public static BatteryInformationSnapshot Read()
     {
+        lock (ReadLock)
+        {
+            var now = DateTime.UtcNow;
+            if (_recentSnapshot is not null &&
+                now - _recentReadAt < TimeSpan.FromMilliseconds(500))
+                return _recentSnapshot;
+            var result = ReadCore(now);
+            _recentSnapshot = result;
+            _recentReadAt = DateTime.UtcNow;
+            return result;
+        }
+    }
+
+    private static BatteryInformationSnapshot ReadCore(DateTime now)
+    {
         using var battery = new BatteryDevice();
         var tag = battery.QueryTag();
-        var information = battery.QueryInformation(tag);
+        if (_staticInformation is null || tag != _staticTag ||
+            now - _staticReadAt >= TimeSpan.FromMinutes(1))
+        {
+            _staticInformation = battery.QueryInformation(tag);
+            _staticTag = tag;
+            _staticReadAt = now;
+            _lenovoReadAt = DateTime.MinValue;
+        }
+        var information = _staticInformation.Value;
         var status = battery.QueryStatus(tag);
         var powerStatus = Native.GetSystemPowerStatus(out var systemPowerStatus)
             ? systemPowerStatus
@@ -63,8 +94,12 @@ internal static class BatteryInformationReader
             maximumRate = _maximumRate;
         }
 
-        var (temperature, manufactureDate, firstUseDate) =
-            ReadLenovoBatteryInformation();
+        if (now - _lenovoReadAt >= TimeSpan.FromSeconds(10))
+        {
+            _lenovoInformation = ReadLenovoBatteryInformation();
+            _lenovoReadAt = now;
+        }
+        var (temperature, manufactureDate, firstUseDate) = _lenovoInformation;
         var isAcConnected = powerStatus.ACLineStatus == 1;
         var onBatterySince = isAcConnected ? null : GetOnBatterySince();
         var designCapacity = information.DesignedCapacity;
@@ -160,6 +195,7 @@ internal static class BatteryInformationReader
                 ["Event/EventData/Data[@Name='AcOnline']"]);
             while (reader.ReadEvent() is EventLogRecord record)
             {
+                using var disposableRecord = record;
                 var values = record.GetPropertyValues(selector);
                 if (values.Count == 0 || values[0] is not bool isAcOnline)
                     continue;

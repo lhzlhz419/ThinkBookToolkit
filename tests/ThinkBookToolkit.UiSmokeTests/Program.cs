@@ -44,6 +44,19 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        using (var lifetimeRuntime = new ToolkitRuntimeService(new AppSettings()))
+        {
+            var page = new ToolkitDevicePage(lifetimeRuntime);
+            page.Dispose();
+            page.Dispose();
+            var load = (System.Threading.Tasks.Task)typeof(ToolkitDevicePage)
+                .GetMethod("LoadAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(page, null)!;
+            load.GetAwaiter().GetResult();
+            page.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+            Assert(load.IsCompletedSuccessfully,
+                "A late Loaded event accesses a disposed device-page cancellation source.");
+        }
         PowerSettingsController.SetProfileForTesting(
             PowerSettingsController.ResolveProfile(
                 DeviceModelDetector.ThinkBook16pG6Iax));
@@ -61,6 +74,8 @@ internal static class Program
         VerifyNvPcfPowerControl();
         VerifyBetaCpuPowerUi();
         VerifyDataSharingContracts();
+        VerifySensorRecordingContracts();
+        VerifyOsdContracts();
         VerifyOverviewLayoutSettings();
         VerifyAdaptiveUniformPanelCollapsedItems();
         VerifySystemShutdownPreparation();
@@ -72,6 +87,8 @@ internal static class Program
         VerifyApplicationUpdateService();
         VerifyApplicationDisclaimer();
         VerifyThemeReapplication();
+        VerifyBackgroundImageSupport();
+        VerifyHardwareAccelerationSettings();
         VerifyWarrantyAndSingleFanModels();
         VerifyAutomationContracts();
         VerifyFeatureAvailabilityDiagnostics();
@@ -95,8 +112,26 @@ internal static class Program
         using var runtime = new ToolkitRuntimeService(settings);
         ModernTheme.Apply(Application.Current, runtime.IsDark);
         var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false);
-        Assert(window.Title == "ThinkBook Toolkit v1.0.2",
+        Assert(window.Title == "ThinkBook Toolkit v1.0.3",
             "The native title bar does not show the current application version.");
+        var backgroundLayer = typeof(ToolkitMainWindow)
+            .GetField(
+                "_backgroundImage",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(window) as AnimatedBackgroundImage;
+        var backgroundBase = GetPrivateField<Border>(
+            window,
+            "_backgroundBaseLayer");
+        var backgroundDim = GetPrivateField<Border>(
+            window,
+            "_backgroundDimOverlay");
+        var mainArea = GetPrivateField<Grid>(window, "_mainArea");
+        Assert(Panel.GetZIndex(backgroundBase) == 0 &&
+               backgroundLayer is null &&
+               Panel.GetZIndex(backgroundDim) == 2 &&
+               Panel.GetZIndex(mainArea) == 3 &&
+               !Descendants(window).OfType<MediaElement>().Any(),
+            "An unconfigured background still creates media resources or the visual layers are in the wrong order.");
         runtime.SetReportForTesting(CreateReport(_ => true));
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
@@ -192,7 +227,7 @@ internal static class Program
         using (var versionSettingsPage = new ToolkitSettingsPage(runtime))
         {
             Assert(ContainsText(versionSettingsPage, "当前版本") &&
-                   ContainsText(versionSettingsPage, "v1.0.2") &&
+                   ContainsText(versionSettingsPage, "v1.0.3") &&
                    ContainsButtonText(versionSettingsPage, "检查更新") &&
                    ContainsText(versionSettingsPage, "软件更新检查") &&
                    ContainsText(versionSettingsPage, "自定义游戏检测路径"),
@@ -243,6 +278,7 @@ internal static class Program
             ["display"] = typeof(ToolkitDisplayPage),
             ["sound"] = typeof(ToolkitSoundPage),
             ["input"] = typeof(ToolkitInputPage),
+            ["sensors-integration"] = typeof(ToolkitSettingsPage),
             ["automation"] = typeof(ToolkitAutomationPage),
             ["device"] = typeof(ToolkitDevicePage),
             ["driver-update"] = typeof(ToolkitDriverUpdatePage),
@@ -272,6 +308,10 @@ internal static class Program
             Assert(page.DesiredSize.Width <= 621,
                 $"Page {expected.Key} forces narrow-window overflow ({page.DesiredSize.Width:0.0}px). ");
         }
+        Assert(GetPrivateField<Dictionary<string, ToolkitPageBase>>(
+                   window,
+                   "_pages").Count == 1,
+            "Visited pages remain cached and cause long-running memory growth.");
 
         window.NavigateForTesting("driver-update");
         Assert(ContainsText(window.CurrentPage!, "Lenovo 驱动更新") &&
@@ -304,6 +344,7 @@ internal static class Program
             window,
             "_navigation");
         Assert(navigationButtons.ContainsKey("driver-update") &&
+               navigationButtons.ContainsKey("sensors-integration") &&
                navigationButtons.ContainsKey("settings") &&
                navigationButtons.Values.All(button => button.MinHeight <= 42),
             "The new driver-update navigation item is missing or sidebar item spacing was not reduced.");
@@ -314,6 +355,25 @@ internal static class Program
                ContainsText(window.CurrentPage!, "持续写入风扇值") &&
                ContainsText(window.CurrentPage!, "强制刷新读数"),
             "New overview, fan-write, or reader-refresh settings are missing.");
+        Assert(!Descendants(window.CurrentPage!).Contains(
+                   GetPrivateField<CheckBox>(
+                       window.CurrentPage!,
+                       "_osdEnabled")) &&
+               !Descendants(window.CurrentPage!).Contains(
+                   GetPrivateField<CheckBox>(
+                       window.CurrentPage!,
+                       "_sensorRecordingEnabled")) &&
+               !Descendants(window.CurrentPage!).Contains(
+                   GetPrivateField<ComboBox>(
+                       window.CurrentPage!,
+                       "_softwareIntegrationMode")),
+            "Sensor and integration controls remain on the Settings page.");
+        window.NavigateForTesting("sensors-integration");
+        Assert(ContainsText(window.CurrentPage!, "启用 OSD") &&
+               ContainsText(window.CurrentPage!, "记录传感器信息") &&
+               ContainsText(window.CurrentPage!, "与其它软件联动"),
+            "The Sensors and integration page is missing its controls.");
+        window.NavigateForTesting("settings");
         Assert(ContainsText(window.CurrentPage!, "独立显卡状态与占用应用") &&
                ContainsText(window.CurrentPage!, "独立显卡超频") &&
                ContainsText(window.CurrentPage!, "笔记本屏幕刷新率切换") &&
@@ -441,7 +501,8 @@ internal static class Program
                    !ContainsText(compactOverview, "功耗限制"),
                 "Compact overview does not contain the requested six cards.");
             var compactViewModel = (HardwareMonitorViewModel)compactOverview.DataContext;
-            Assert(compactViewModel.CompactBattery == "80% · 101.23% · 0.0 W" &&
+            Assert(compactViewModel.CompactBattery ==
+                       "80% · 69.10 Wh · 101.23% · 0.0 W" &&
                    !compactViewModel.CompactBattery.Contains("健康", StringComparison.Ordinal) &&
                    compactViewModel.CompactMemory == "52.5% · 47.0 °C" &&
                    compactViewModel.CompactWarranty.Contains("在保", StringComparison.Ordinal) &&
@@ -465,7 +526,8 @@ internal static class Program
                        .Any(block => block.Text == "温度") &&
                    !ContainsText(cpuCard, "温度与功耗") &&
                    Descendants(batteryCard).OfType<TextBlock>()
-                       .Any(block => block.Text == "电量") &&
+                       .Any(block => block.Text.Contains("电量") &&
+                                     block.Text.Contains("容量")) &&
                    !ContainsText(batteryCard, "健康度") &&
                    !ContainsText(batteryCard, "功率"),
                 "Compact overview detail labels do not follow item visibility settings.");
@@ -830,6 +892,8 @@ internal static class Program
             PendingGpuMode = GpuWorkingMode.HybridAuto.ToString(),
             PendingGpuModeSource = GpuWorkingMode.Discrete.ToString()
         });
+        window.NavigateForTesting("performance");
+        performance = window.CurrentPage!;
         Assert(ContainsText(performance, "等待重启") &&
                ContainsButtonText(performance, "立即重启") &&
                ContainsText(
@@ -1198,7 +1262,7 @@ internal static class Program
             "Settings copy still describes appearance changes in terms of restarting.");
         foreach (var text in new[]
                  {
-                     "界面语言", "主题", "状态刷新间隔", "开机自启", "启动到托盘",
+                     "界面语言", "主题", "背景图像", "状态刷新间隔", "开机自启", "启动到托盘",
                      "最小化到托盘", "关闭时最小化", "睡眠时关闭风扇控制",
                      "风扇读写最小间隔"
                  })
@@ -1387,7 +1451,8 @@ internal static class Program
                Descendants(startupWindow).OfType<Button>()
                     .Where(button => button.Tag is string)
                     .Select(button => button.Tag?.ToString())
-                    .All(id => id is "overview" or "automation" or "settings"),
+                    .All(id => id is "overview" or "sensors-integration" or
+                        "automation" or "settings"),
             "Startup does not render Overview first or creates hardware pages before detection.");
         startupWindow.Close();
 
@@ -2014,6 +2079,10 @@ internal static class Program
 
     private static void VerifyGpuMonitorIsolationAndWatchdogProtocol()
     {
+        Assert(GpuMonitorWorker.CalculateDedicatedMemoryLoad(2, 8) == 25 &&
+               GpuMonitorWorker.CalculateDedicatedMemoryLoad(12, 8) == 100 &&
+               GpuMonitorWorker.CalculateDedicatedMemoryLoad(2, 0) is null,
+            "Dedicated VRAM used/total values are not converted to utilization correctly.");
         var unreliable = new GpuDevicePresenceSnapshot(1, [], false);
         var reliable = new GpuDevicePresenceSnapshot(
             2,
@@ -2092,6 +2161,39 @@ internal static class Program
 
     private static void VerifyGpuOverclockSettings()
     {
+        var savedOverclock = new GpuOverclockSettings
+        {
+            Enabled = true,
+            CoreFrequencyOffsetMhz = 123
+        };
+        using (var disabledAtStartup = new ToolkitRuntimeService(
+                   new AppSettings
+                   {
+                       GpuOverclock = savedOverclock,
+                       AutoEnableGpuOverclockOnStartup = false
+                   }))
+        {
+            Assert(!disabledAtStartup.Settings.GpuOverclock.Enabled &&
+                   disabledAtStartup.Settings.GpuOverclock
+                       .CoreFrequencyOffsetMhz == 123,
+                "Disabling automatic overclock startup removes saved values or leaves the switch enabled.");
+        }
+        using (var enabledAtStartup = new ToolkitRuntimeService(
+                   new AppSettings
+                   {
+                       GpuOverclock = new GpuOverclockSettings
+                       {
+                           Enabled = false,
+                           CoreFrequencyOffsetMhz = 123
+                       },
+                       AutoEnableGpuOverclockOnStartup = true
+                   }))
+        {
+            Assert(enabledAtStartup.Settings.GpuOverclock.Enabled &&
+                   enabledAtStartup.Settings.GpuOverclock
+                       .CoreFrequencyOffsetMhz == 123,
+                "Automatic overclock startup does not enable the switch while retaining saved values.");
+        }
         var valid = new GpuOverclockSettings
         {
             Enabled = true,
@@ -2250,9 +2352,13 @@ internal static class Program
                collectedSettings?.MinimumMemoryFrequencyMhz == 6000 &&
                collectedSettings.MaximumMemoryFrequencyMhz == 12000 &&
                !collectedSettings.MemoryFrequencyLimitEnabled &&
-               Descendants(overclockWindow).OfType<CheckBox>().Count() == 4 &&
+               Descendants(overclockWindow).OfType<CheckBox>().Count() == 5 &&
                Descendants(overclockWindow).OfType<CheckBox>()
                    .Count(toggle => toggle.IsChecked == true) == 3 &&
+               GetPrivateField<CheckBox>(
+                   overclockWindow,
+                   "_autoEnableOnStartup").IsChecked == false &&
+               ContainsText(overclockWindow, "再次打开软件时自动打开超频") &&
                ContainsText(overclockWindow, "不要与其它超频软件一起使用") &&
                ContainsText(overclockWindow, "限制核心频率") &&
                ContainsText(overclockWindow, "限制显存频率") &&
@@ -2721,6 +2827,17 @@ internal static class Program
                GpuModeController.IsBiosAssistantSuccess(0x80000002u) &&
                !GpuModeController.IsBiosAssistantSuccess(0x00000002u),
             "BIOS Assistant GPU changes do not validate the ReturnData success bit.");
+        Assert(
+            GpuModeController.ShouldAwaitLiveConfirmation(
+                GpuControlProtocol.LegacyThreeMode,
+                GpuWorkingMode.IntegratedOnly) &&
+            !GpuModeController.ShouldAwaitLiveConfirmation(
+                GpuControlProtocol.LegacyThreeMode,
+                GpuWorkingMode.HybridAuto) &&
+            !GpuModeController.ShouldAwaitLiveConfirmation(
+                GpuControlProtocol.AdvancedBios,
+                GpuWorkingMode.IntegratedOnly),
+            "Deferred PnP confirmation must be limited to legacy iGPU-only transitions.");
 
         var stagedResult = new GpuModeApplyResult(
             true,
@@ -2979,7 +3096,7 @@ internal static class Program
         FeatureIds.Automation => "自动化与 Fn 快捷键映射",
         FeatureIds.KeyboardMacros => "键盘宏",
         FeatureIds.UpdateCheck => "软件更新检查",
-        FeatureIds.DataSharing => "向其他软件共享数据",
+        FeatureIds.DataSharing => "与其它软件联动",
         _ => id
     };
 
@@ -3047,7 +3164,7 @@ internal static class Program
 
     private static void VerifyApplicationUpdateService()
     {
-        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.2",
+        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.3",
             "The application version is not the expected release version.");
         var release = ApplicationUpdateService.ParseReleaseJson(
             "{\"tag_name\":\"v1.1.0\",\"html_url\":" +
@@ -3071,6 +3188,7 @@ internal static class Program
                        "散热",
                        "电源",
                        "显示",
+                       "传感器",
                        "声音",
                        "输入",
                        "应用",
@@ -3078,13 +3196,28 @@ internal static class Program
                        "宏"
                    ]) &&
                (int)AutomationStepKind.Delay == 30 &&
-               (int)AutomationStepKind.RunMacro == 31,
+               (int)AutomationStepKind.RunMacro == 31 &&
+               (int)AutomationStepKind.OsdEnabled == 32 &&
+               (int)AutomationStepKind.OsdLockPosition == 33 &&
+               (int)AutomationStepKind.SensorRecordingEnabled == 34,
             "The automation step catalog is incomplete or not grouped in the required second-level order.");
         using var catalogRuntime = new ToolkitRuntimeService(new AppSettings());
         Assert(!catalogRuntime.Settings.AutomationEnabled &&
                !catalogRuntime.Settings.MacroEnabled &&
                AutomationStepCatalog.Options(
                        AutomationStepKind.GpuOverclockEnabled,
+                       catalogRuntime)
+                   .Any(option => option.Value == "toggle") &&
+               AutomationStepCatalog.Options(
+                       AutomationStepKind.OsdEnabled,
+                       catalogRuntime)
+                   .Any(option => option.Value == "toggle") &&
+               AutomationStepCatalog.Options(
+                       AutomationStepKind.OsdLockPosition,
+                       catalogRuntime)
+                   .Any(option => option.Value == "toggle") &&
+               AutomationStepCatalog.Options(
+                       AutomationStepKind.SensorRecordingEnabled,
                        catalogRuntime)
                    .Any(option => option.Value == "toggle") &&
                AutomationStepCatalog.Metadata(
@@ -3274,14 +3407,32 @@ internal static class Program
                    null,
                    false).Count == 0,
             "Power and shared game-state transitions do not resolve to automation triggers correctly.");
-        Assert(typeof(GameProcessDetector).GetInterfaces()
-                   .Contains(typeof(IDisposable)) &&
-               typeof(GameProcessDetector).GetField(
-                   "_effectiveGameMode",
+        var independentGameSettings = new AppSettings
+        {
+            AutomationEnabled = true,
+            AutoDetectGames = false,
+            Automations =
+            [
+                new AutomationDefinition
+                {
+                    Name = "Independent game trigger",
+                    Triggers = [AutomationTriggerKind.GameStarted]
+                }
+            ]
+        };
+        var monitorsGameEventsWhileEnabled =
+            ToolkitRuntimeService.ShouldMonitorAutomationGameEvents(
+                independentGameSettings);
+        independentGameSettings.AutomationEnabled = false;
+        Assert(monitorsGameEventsWhileEnabled &&
+               !ToolkitRuntimeService.ShouldMonitorAutomationGameEvents(
+                   independentGameSettings) &&
+               typeof(ToolkitRuntimeService).GetField(
+                   "_gameProcessDetector",
                    BindingFlags.Instance | BindingFlags.NonPublic) is not null &&
-               typeof(PerformanceRuntimeSnapshot).GetProperty(
-                   "GamesRunning") is not null,
-            "Game automation does not share the enhanced fixed-RPM game detector state.");
+               typeof(GameProcessDetector).GetInterfaces()
+                   .Contains(typeof(IDisposable)),
+            "Automation game monitoring still depends on the fixed-RPM AutoDetectGames setting or fan runtime state.");
         using var page = new ToolkitAutomationPage(runtime);
         var categorySelector = GetPrivateField<ComboBox>(
             page,
@@ -3299,6 +3450,7 @@ internal static class Program
                    "散热",
                    "电源",
                    "显示",
+                   "传感器",
                    "声音",
                    "输入",
                    "应用",
@@ -3614,6 +3766,16 @@ internal static class Program
             Assert(included && !excluded,
                 "Custom game exclusions do not override inclusions.");
         }
+        if (!string.IsNullOrWhiteSpace(Environment.ProcessPath))
+        {
+            using var detector = new GameProcessDetector(new AppSettings
+            {
+                IncludedGamePaths = [Environment.ProcessPath]
+            });
+            var candidate = detector.FindRunningGameProcessForFps();
+            Assert(candidate is not null,
+                "A running application explicitly marked as a game is not available to fallback FPS monitoring.");
+        }
         using var runtime = new ToolkitRuntimeService(new AppSettings());
         var gameWindow = new GameDetectionSettingsWindow(runtime);
         try
@@ -3631,6 +3793,429 @@ internal static class Program
         }
     }
 
+    private static void VerifyBackgroundImageSupport()
+    {
+        var defaults = new AppSettings();
+        Assert(defaults.BackgroundImageScalePercent == 100 &&
+               defaults.BackgroundImageOpacityPercent == 30 &&
+               defaults.BackgroundImageBlurRadius == 0 &&
+               defaults.BackgroundImageSizeMode ==
+                   BackgroundImageSizeMode.Fixed &&
+               !defaults.BackgroundImageInverted &&
+               !defaults.BackgroundBaseColorEnabled &&
+               defaults.BackgroundBaseColor == "FFFFFF" &&
+               defaults.BackgroundMediaSpeedPercent == 100 &&
+               string.IsNullOrEmpty(defaults.BackgroundImagePath),
+            "Background image settings do not have safe defaults.");
+        Assert(CurveProfileStore.NormalizeBackgroundColor("0x12abEF") ==
+                   "12ABEF" &&
+               CurveProfileStore.NormalizeBackgroundColor("invalid") ==
+                   "FFFFFF" &&
+               ToolkitOverviewPage.HeroBackgroundAlpha(true) < byte.MaxValue &&
+               ToolkitOverviewPage.HeroBackgroundAlpha(false) == byte.MaxValue,
+            "Background base-color normalization or translucent overview hero behavior is incorrect.");
+        Assert(
+            AnimatedBackgroundImage.IsSupportedPath("wallpaper.bmp") &&
+            AnimatedBackgroundImage.IsSupportedPath("wallpaper.JPG") &&
+            AnimatedBackgroundImage.IsSupportedPath("wallpaper.jpeg") &&
+            AnimatedBackgroundImage.IsSupportedPath("wallpaper.png") &&
+            AnimatedBackgroundImage.IsSupportedPath("wallpaper.gif") &&
+            AnimatedBackgroundImage.IsSupportedPath("wallpaper.mp4") &&
+            AnimatedBackgroundImage.IsSupportedPath("wallpaper.wmv") &&
+            AnimatedBackgroundImage.IsVideoPath("wallpaper.avi") &&
+            !AnimatedBackgroundImage.IsVideoPath("wallpaper.gif") &&
+            !AnimatedBackgroundImage.IsSupportedPath("wallpaper.svg"),
+            "Background image extension filtering is incorrect.");
+
+        var composed = AnimatedBackgroundImage.DecodeGif([
+            SyntheticGifFrame(0xFFFF0000, left: 0, disposal: 1, delay: 10),
+            SyntheticGifFrame(0xFF00FF00, left: 1, disposal: 2, delay: 20),
+            SyntheticGifFrame(0xFF0000FF, left: 2, disposal: 3, delay: 30),
+            SyntheticGifFrame(0xFFFFFFFF, left: 1, disposal: 1, delay: 40)
+        ]);
+        Assert(composed.Frames.Count == 4 &&
+               Pixel(composed.Frames[0], 0) == 0xFFFF0000 &&
+               (Pixel(composed.Frames[0], 1) & 0xFF000000) == 0 &&
+               Pixel(composed.Frames[1], 0) == 0xFFFF0000 &&
+               Pixel(composed.Frames[1], 1) == 0xFF00FF00 &&
+               (Pixel(composed.Frames[2], 1) & 0xFF000000) == 0 &&
+               Pixel(composed.Frames[2], 2) == 0xFF0000FF &&
+               Pixel(composed.Frames[3], 1) == 0xFFFFFFFF &&
+               (Pixel(composed.Frames[3], 2) & 0xFF000000) == 0 &&
+               composed.Delays.Select(delay => delay.TotalMilliseconds)
+                   .SequenceEqual([100d, 200d, 300d, 400d]),
+            "GIF logical-screen composition, frame offsets, disposal methods, or embedded delays are incorrect.");
+
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            "ThinkBookToolkit-background-" + Guid.NewGuid().ToString("N") +
+            ".gif");
+        try
+        {
+            var encoder = new GifBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(SolidBitmap(2, 3, 0xFF112233)));
+            encoder.Frames.Add(BitmapFrame.Create(SolidBitmap(2, 3, 0xFF445566)));
+            using (var stream = File.Create(path))
+                encoder.Save(stream);
+
+            using var image = new AnimatedBackgroundImage();
+            image.SetScale(200);
+            image.SetPlaybackSpeedPercent(200);
+            image.LoadFile(path);
+            image.SetInverted(true);
+            Assert(image.Source is not null &&
+                   image.FrameCountForTesting == 2 &&
+                   image.CachedComposedFrameCountForTesting == 1 &&
+                   image.PlaybackSpeedPercentForTesting == 200 &&
+                   Math.Abs(
+                       image.CurrentIntervalForTesting.TotalMilliseconds -
+                       50) < .01 &&
+                   image.InvertedForTesting &&
+                   Math.Abs(image.Width - 4) < .01 &&
+                   Math.Abs(image.Height - 6) < .01,
+                "Animated GIF loading or background image scaling is incorrect.");
+            image.SetViewport(new Size(100, 80));
+            image.SetSizeMode(BackgroundImageSizeMode.MatchLength);
+            Assert(Math.Abs(image.Width - 160d / 3d) < .01 &&
+                   Math.Abs(image.Height - 80) < .01,
+                "Length-matched background sizing is incorrect.");
+            image.SetSizeMode(BackgroundImageSizeMode.MatchWidth);
+            Assert(Math.Abs(image.Width - 100) < .01 &&
+                   Math.Abs(image.Height - 150) < .01,
+                "Width-matched background sizing is incorrect.");
+            image.SetSizeMode(BackgroundImageSizeMode.Stretch);
+            Assert(Math.Abs(image.Width - 100) < .01 &&
+                   Math.Abs(image.Height - 80) < .01 &&
+                   image.Stretch == Stretch.Fill,
+                "Forced background stretching is incorrect.");
+            var invertedPixels = new byte[2 * 3 * 4];
+            var invertedSource = image.Source as BitmapSource ??
+                throw new InvalidOperationException(
+                    "The inverted background source is unavailable.");
+            invertedSource.CopyPixels(
+                invertedPixels,
+                2 * 4,
+                0);
+            Assert(invertedPixels[0] == 0xCC &&
+                   invertedPixels[1] == 0xDD &&
+                   invertedPixels[2] == 0xEE &&
+                   invertedPixels[3] == 0xFF,
+                "Background image inversion does not invert RGB while retaining alpha.");
+            image.Clear();
+            Assert(image.Source is null && image.FrameCountForTesting == 0,
+                "Clearing the background image leaves decoded frames active.");
+            using var staticPreview = new AnimatedBackgroundImage();
+            staticPreview.LoadFile(path, enableAnimatedPlayback: false);
+            Assert(staticPreview.Source is not null &&
+                   staticPreview.FrameCountForTesting == 1,
+                "The settings preview starts a second animated GIF decoder.");
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+
+        var packedGifPath = Path.Combine(
+            Path.GetTempPath(),
+            "ThinkBookToolkit-packed-gif-" + Guid.NewGuid().ToString("N") +
+            ".gif");
+        try
+        {
+            const int width = 128;
+            const int height = 128;
+            const int frameCount = 40;
+            var encoder = new GifBitmapEncoder();
+            for (var index = 0; index < frameCount; index++)
+            {
+                var color = 0xFF000000u |
+                            (uint)((index * 29 & 0xFF) << 16) |
+                            (uint)((index * 47 & 0xFF) << 8) |
+                            (uint)(index * 71 & 0xFF);
+                encoder.Frames.Add(BitmapFrame.Create(
+                    SolidBitmap(width, height, color)));
+            }
+            using (var stream = File.Create(packedGifPath))
+                encoder.Save(stream);
+            using var image = new AnimatedBackgroundImage();
+            image.LoadFile(packedGifPath);
+            image.SetBlurRadius(20);
+            for (var index = 1; index < frameCount; index++)
+                image.AdvanceGifFrameForTesting();
+            var fullyExpandedBytes = (long)width * height * 4 * frameCount;
+            var expectedLastColor = 0xFF000000u |
+                                    (uint)(((frameCount - 1) * 29 & 0xFF) << 16) |
+                                    (uint)(((frameCount - 1) * 47 & 0xFF) << 8) |
+                                    (uint)((frameCount - 1) * 71 & 0xFF);
+            Assert(image.FrameCountForTesting == frameCount &&
+                   Pixel((BitmapSource)image.Source!, 0) == expectedLastColor &&
+                   image.UsesSourceFrameBlurForTesting &&
+                   image.EstimatedManagedGifBytesForTesting <
+                       fullyExpandedBytes / 2,
+                "GIF playback still retains a fully decoded bitmap for every frame.");
+        }
+        finally
+        {
+            try { File.Delete(packedGifPath); } catch { }
+        }
+
+        using var runtime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark"
+        });
+        var settingsWindow = new BackgroundImageSettingsWindow(runtime);
+        try
+        {
+            Assert(ContainsText(settingsWindow, "透明度") &&
+                   ContainsText(settingsWindow, "模糊") &&
+                   ContainsText(settingsWindow, "固定大小") &&
+                   ContainsText(settingsWindow, "长度匹配") &&
+                   ContainsText(settingsWindow, "宽度匹配") &&
+                   ContainsText(settingsWindow, "强制拉伸") &&
+                   ContainsText(settingsWindow, "反色") &&
+                   ContainsText(settingsWindow, "基础背景颜色") &&
+                   ContainsText(settingsWindow, "0x") &&
+                   !GetPrivateField<TextBox>(
+                       settingsWindow,
+                       "_scaleValue").IsReadOnly &&
+                   !GetPrivateField<TextBox>(
+                       settingsWindow,
+                       "_opacityValue").IsReadOnly &&
+                   !GetPrivateField<Slider>(
+                       settingsWindow,
+                       "_gifSpeed").IsEnabled &&
+                   !GetPrivateField<TextBox>(
+                       settingsWindow,
+                       "_gifSpeedValue").IsEnabled,
+                "Background numeric editors, inversion, or non-GIF FPS state is incorrect.");
+            var invertedToggle = GetPrivateField<CheckBox>(
+                settingsWindow,
+                "_inverted");
+            var baseColorToggle = GetPrivateField<CheckBox>(
+                settingsWindow,
+                "_baseColorEnabled");
+            var invertRow = LogicalTreeHelper.GetParent(
+                LogicalTreeHelper.GetParent(invertedToggle));
+            var baseColorRow = LogicalTreeHelper.GetParent(
+                LogicalTreeHelper.GetParent(baseColorToggle));
+            Assert(ReferenceEquals(invertRow, baseColorRow) &&
+                   baseColorToggle.IsChecked != true &&
+                   !GetPrivateField<TextBox>(
+                       settingsWindow,
+                       "_baseColorValue").IsEnabled &&
+                   GetPrivateField<TextBox>(
+                       settingsWindow,
+                       "_baseColorValue").MaxLength == 6,
+                "Invert and base-color settings are not on one row or the base color is not safely disabled by default.");
+            var sizeMode = GetPrivateField<ComboBox>(
+                settingsWindow,
+                "_sizeMode");
+            sizeMode.SelectedItem = sizeMode.Items
+                .OfType<ComboBoxItem>()
+                .First(item => item.Tag is
+                    BackgroundImageSizeMode.MatchWidth);
+            Assert(!GetPrivateField<Slider>(
+                       settingsWindow,
+                       "_scale").IsEnabled &&
+                   !GetPrivateField<TextBox>(
+                       settingsWindow,
+                       "_scaleValue").IsEnabled,
+                "Scale controls remain enabled outside fixed-size mode.");
+        }
+        finally
+        {
+            settingsWindow.Close();
+        }
+
+        var translucent = ToolkitPalette.For(
+            isDark: true,
+            hasBackgroundImage: true);
+        Assert(((SolidColorBrush)new BrushConverter().ConvertFromString(
+                   translucent.Surface)!).Color.A <= 0x59 &&
+               ((SolidColorBrush)new BrushConverter().ConvertFromString(
+                   translucent.SurfaceRaised)!).Color.A <= 0x80,
+            "Nested background-enabled surfaces remain too opaque to reveal the image.");
+        var translucentLight = ToolkitPalette.For(
+            isDark: false,
+            hasBackgroundImage: true);
+        Assert(((SolidColorBrush)new BrushConverter().ConvertFromString(
+                   translucentLight.Surface)!).Color.A <= 0x40 &&
+               ((SolidColorBrush)new BrushConverter().ConvertFromString(
+                   translucentLight.SurfaceRaised)!).Color.A <= 0x66 &&
+               ((SolidColorBrush)new BrushConverter().ConvertFromString(
+                   translucentLight.Sidebar)!).Color.A <= 0x99,
+            "Light-theme background surfaces still wash out the image.");
+
+        using var backgroundRuntime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "light",
+            BackgroundBaseColorEnabled = true,
+            BackgroundBaseColor = "123456"
+        });
+        var backgroundWindow = new ToolkitMainWindow(
+            backgroundRuntime,
+            enableHardwareDetection: false);
+        try
+        {
+            var baseLayer = GetPrivateField<Border>(
+                backgroundWindow,
+                "_backgroundBaseLayer");
+            var hero = Descendants(backgroundWindow.CurrentPage!)
+                .OfType<Border>()
+                .First(border => border.Background is LinearGradientBrush);
+            Assert(baseLayer.Opacity == 1 &&
+                   baseLayer.Background is SolidColorBrush
+                   {
+                       Color: { R: 0x12, G: 0x34, B: 0x56 }
+                   } &&
+                   hero.Background is LinearGradientBrush gradient &&
+                   gradient.GradientStops.All(stop => stop.Color.A == 0xB3) &&
+                   StyleBackgroundAlpha(
+                       (Style)backgroundWindow.Resources[typeof(Button)]) < 255 &&
+                   StyleBackgroundAlpha(
+                       (Style)backgroundWindow.Resources[typeof(TextBox)]) < 255 &&
+                   StyleBackgroundAlpha(
+                       (Style)backgroundWindow.Resources[typeof(ComboBox)]) < 255,
+                "The base color, translucent overview hero, or wallpaper-aware control surfaces are not applied to the real window.");
+        }
+        finally
+        {
+            backgroundWindow.Close();
+        }
+    }
+
+    private static byte StyleBackgroundAlpha(Style style) =>
+        style.Setters
+            .OfType<Setter>()
+            .Where(setter => setter.Property == Control.BackgroundProperty)
+            .Select(setter => setter.Value)
+            .OfType<SolidColorBrush>()
+            .Select(brush => brush.Color.A)
+            .First();
+
+    private static BitmapSource SolidBitmap(
+        int width,
+        int height,
+        uint color)
+    {
+        var pixels = Enumerable.Repeat(color, width * height).ToArray();
+        return BitmapSource.Create(
+            width,
+            height,
+            96,
+            96,
+            PixelFormats.Bgra32,
+            null,
+            pixels,
+            width * 4);
+    }
+
+    private static BitmapFrame SyntheticGifFrame(
+        uint color,
+        int left,
+        int disposal,
+        int delay)
+    {
+        var metadata = new BitmapMetadata("gif");
+        metadata.SetQuery("/logscrdesc/Width", (ushort)3);
+        metadata.SetQuery("/logscrdesc/Height", (ushort)1);
+        metadata.SetQuery("/logscrdesc/BackgroundColorIndex", (byte)0);
+        metadata.SetQuery("/imgdesc/Left", (ushort)left);
+        metadata.SetQuery("/imgdesc/Top", (ushort)0);
+        metadata.SetQuery("/imgdesc/Width", (ushort)1);
+        metadata.SetQuery("/imgdesc/Height", (ushort)1);
+        metadata.SetQuery("/grctlext/Disposal", (byte)disposal);
+        metadata.SetQuery("/grctlext/Delay", (ushort)delay);
+        metadata.SetQuery("/grctlext/TransparencyFlag", true);
+        metadata.SetQuery("/grctlext/TransparentColorIndex", (byte)0);
+        return BitmapFrame.Create(
+            SolidBitmap(1, 1, color),
+            null,
+            metadata,
+            null);
+    }
+
+    private static uint Pixel(BitmapSource source, int x)
+    {
+        var pixels = new byte[source.PixelWidth * source.PixelHeight * 4];
+        source.CopyPixels(pixels, source.PixelWidth * 4, 0);
+        var index = x * 4;
+        return (uint)(pixels[index + 3] << 24 |
+                      pixels[index + 2] << 16 |
+                      pixels[index + 1] << 8 |
+                      pixels[index]);
+    }
+
+    private static void VerifyHardwareAccelerationSettings()
+    {
+        var both = HardwareAccelerationManager.Classify([
+            "Intel(R) Graphics",
+            "NVIDIA GeForce RTX 5060 Laptop GPU"
+        ]);
+        var integratedOnly = HardwareAccelerationManager.Classify([
+            "AMD Radeon(TM) Graphics"
+        ]);
+        var discreteOnly = HardwareAccelerationManager.Classify([
+            "AMD Radeon RX 7600M XT"
+        ]);
+        Assert(both.HasIntegratedGpu && both.HasDiscreteGpu &&
+               integratedOnly.HasIntegratedGpu &&
+               !integratedOnly.HasDiscreteGpu &&
+               !discreteOnly.HasIntegratedGpu &&
+               discreteOnly.HasDiscreteGpu,
+            "Hardware acceleration adapter classification is incorrect.");
+        Assert(HardwareAccelerationManager.GpuPreferenceValue(
+                   HardwareAccelerationMode.Disabled) is null &&
+               HardwareAccelerationManager.GpuPreferenceValue(
+                   HardwareAccelerationMode.Automatic) is null &&
+               HardwareAccelerationManager.GpuPreferenceValue(
+                   HardwareAccelerationMode.PowerSaving) ==
+                   "GpuPreference=1;" &&
+               HardwareAccelerationManager.GpuPreferenceValue(
+                   HardwareAccelerationMode.HighPerformance) ==
+                   "GpuPreference=2;" &&
+               new AppSettings().HardwareAccelerationMode ==
+                   HardwareAccelerationMode.Disabled,
+            "Hardware acceleration defaults or Windows GPU preference values are incorrect.");
+
+        using var runtime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark"
+        });
+        using var page = new ToolkitSettingsPage(runtime);
+        var availability = GetPrivateField<HardwareAccelerationAvailability>(
+            page,
+            "_hardwareAccelerationAvailability");
+        var labels = Labels(GetPrivateField<ComboBox>(
+            page,
+            "_hardwareAcceleration"));
+        Assert(labels.Contains("关闭") &&
+               labels.Contains("自动（Windows 决定）") &&
+               labels.Contains("省电（核心显卡）") ==
+                   availability.HasIntegratedGpu &&
+               labels.Contains("高性能（独立显卡）") ==
+                   availability.HasDiscreteGpu &&
+               ContainsText(page, "更改后需要重启") &&
+               ContainsText(page, "会阻止独显卸载"),
+            "Hardware acceleration choices or restart/hybrid warning are incorrect.");
+
+        var global = Descendants(page)
+            .OfType<AdaptiveUniformPanel>()
+            .First(panel => panel.Children
+                .Cast<DependencyObject>()
+                .Any(child => ContainsText(child, "状态刷新间隔")));
+        Assert(global.Children.Count >= 2 &&
+               ContainsText(
+                   global.Children[global.Children.Count - 2],
+                   "背景图像") &&
+               ContainsText(
+                   global.Children[global.Children.Count - 1],
+                   "硬件加速"),
+            "Background image and hardware acceleration are not the final two global settings.");
+    }
+
     private static void VerifyWarrantyAndSingleFanModels()
     {
         const string warrantyJson = """
@@ -3639,7 +4224,12 @@ internal static class Program
           "message": "success",
           "data": {
             "baseinfo": [
-              { "ServiceProductName": "No start", "EndDate": "2035-01-01" }
+              {
+                "ServiceProductName": "摘要专用服务",
+                "PartStartDate": "2025-11-22 00:00:00",
+                "EndDate": "2031-03-05",
+                "DateDifference": 1654
+              }
             ],
             "detailinfo": {
               "warranty": [
@@ -3656,7 +4246,7 @@ internal static class Program
                   "ServiceProductName": "一诺闪修服务",
                   "ServiceProductNumber": "FLASH",
                   "StartDate": "2025-11-22",
-                  "EndDate": "2031-03-05",
+                  "EndDate": "2035-01-01",
                   "PartStartDate": "2025-11-22 00:00:00",
                   "PartEndDate": "2031-03-05 00:00:00"
                 },
@@ -3675,10 +4265,12 @@ internal static class Program
                warranty.EndDate == new DateOnly(2031, 3, 5) &&
                warranty.Entitlements.Count == 2 &&
                warranty.Entitlements.All(item =>
+                   item.Name != "摘要专用服务") &&
+               warranty.Entitlements.All(item =>
                    item.StartDate < item.EndDate) &&
                warranty.Entitlements.All(item =>
                    item.Name != "空日期服务"),
-            "Lenovo China warranty parsing does not select the longest valid coverage or filter empty dates.");
+            "Lenovo China warranty parsing does not keep base summary dates separate from detail entries.");
         var snapshot = WarrantySnapshot.FromDates(
             warranty.StartDate,
             warranty.EndDate,
@@ -3692,10 +4284,12 @@ internal static class Program
             var details = new WarrantyDetailsWindow(runtime, snapshot);
             try
             {
-                Assert(ContainsText(details, "2031-03-05") &&
+                Assert(ContainsText(details, "2035-01-01") &&
                        ContainsText(details, "一诺闪修服务") &&
+                       !ContainsText(details, "摘要专用服务") &&
+                       !ContainsText(details, "最长有效期截至") &&
                        !ContainsText(details, "空日期服务"),
-                    "The warranty details window omits valid services or shows entries with empty dates.");
+                    "The warranty details window is not restricted to valid detailinfo entries.");
             }
             finally
             {
@@ -4118,6 +4712,76 @@ internal static class Program
                gen6Plus.Rules[PowerSetting.GpuConfigurableTgp] == new PowerSettingRule(60, 65),
             "ThinkBook 14 G6+ IMH power profile is incorrect.");
 
+        var extraReadableState = new PowerSettingsState(
+            50, 75, 96, 56, 10, 60, 87, 0, 45)
+        {
+            AvailableSettings = PowerSettingAvailability.LegacyAll
+        };
+        PowerSettingsController.SetProfileForTesting(gen6Plus);
+        try
+        {
+            using var runtime = new ToolkitRuntimeService(new AppSettings
+            {
+                Language = "zh-CN",
+                Theme = "dark"
+            });
+            runtime.SetReportForTesting(new FeatureAvailabilityReport([
+                new FeatureAvailability(
+                    FeatureIds.PowerSettings,
+                    "性能",
+                    "功耗设置",
+                    true,
+                    "test")
+            ]));
+            runtime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty with
+            {
+                ItsMode = ItsMode.Intelligent,
+                PowerSettings = extraReadableState
+            });
+            using var page = new ToolkitPerformancePage(runtime);
+            page.GetType().GetMethod(
+                    "ApplyPowerState",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(page, [extraReadableState, true]);
+            var locks = GetPrivateField<Dictionary<PowerSetting, CheckBox>>(
+                page,
+                "_powerLockToggles");
+            var readoutRows =
+                GetPrivateField<Dictionary<PowerSetting, FrameworkElement>>(
+                    page,
+                    "_powerReadoutRows");
+            Assert(locks.Keys.ToHashSet().SetEquals([
+                       PowerSetting.CpuPl1,
+                       PowerSetting.CpuPl2,
+                       PowerSetting.CpuTemperatureLimit,
+                       PowerSetting.GpuPowerBoost,
+                       PowerSetting.GpuConfigurableTgp,
+                       PowerSetting.GpuToCpuDynamicBoost
+                   ]) &&
+                   readoutRows[PowerSetting.CpuTurboTimeLimit].Visibility ==
+                   Visibility.Visible &&
+                   readoutRows[PowerSetting.GpuTemperatureLimit].Visibility ==
+                   Visibility.Visible &&
+                   readoutRows[PowerSetting.Atpp].Visibility ==
+                   Visibility.Visible &&
+                   !runtime.CanWritePowerSetting(
+                       PowerSetting.CpuTurboTimeLimit) &&
+                   !runtime.CanWritePowerSetting(
+                       PowerSetting.GpuTemperatureLimit) &&
+                   !runtime.CanWritePowerSetting(PowerSetting.Atpp) &&
+                   runtime.CanWritePowerSetting(PowerSetting.CpuPl1) &&
+                   runtime.CanWritePowerSetting(
+                       PowerSetting.GpuConfigurableTgp) &&
+                   PowerSettingsController.IsValidState(
+                       extraReadableState,
+                       gen6Plus),
+                "Extra readable WMI values either hide the writable editor subset or become incorrectly writable/lockable.");
+        }
+        finally
+        {
+            PowerSettingsController.SetProfileForTesting(g6);
+        }
+
         var readOnly = PowerSettingsController.ResolveProfile("Unknown model");
         Assert(!readOnly.Writable && readOnly.CpuTemperatureOffset == 0 &&
                readOnly.GpuTgpOffset == 0,
@@ -4150,6 +4814,37 @@ internal static class Program
                legacy.GpuToCpuDynamicBoost &&
                roundTrip.GpuPowerBoost == legacy.GpuPowerBoost,
             "NVPCF GPU power values do not convert back to Lenovo values.");
+        var g6Convertible = NvPcfPowerPolicy.ConvertibleSettingsFromWmi(
+            g6,
+            legacy);
+        Assert((g6Convertible & NvPcfPowerPolicy.NvPcfMask) ==
+                   NvPcfPowerPolicy.NvPcfMask &&
+               (g6Convertible & PowerSettingsController.Flag(
+                   PowerSetting.NvApiGpuTemperatureLimit)) != 0,
+            "Writable G6 WMI values are not eligible for Beta-toggle conversion.");
+
+        var readOnlyProfile = PowerSettingsController.ResolveProfile(
+            "Unknown model");
+        Assert(NvPcfPowerPolicy.ConvertibleSettingsFromWmi(
+                   readOnlyProfile,
+                   legacy) == PowerSettingAvailability.None,
+            "Read-only WMI power values are incorrectly converted and written when toggling Beta control.");
+
+        var gen6Plus = PowerSettingsController.ResolveProfile(
+            DeviceModelDetector.ThinkBook14G6PlusImh);
+        var partialConvertible =
+            NvPcfPowerPolicy.ConvertibleSettingsFromWmi(gen6Plus, legacy);
+        Assert((partialConvertible & PowerSettingsController.Flag(
+                   PowerSetting.NvPcfAcTargetTppLimit)) == 0 &&
+               (partialConvertible & PowerSettingsController.Flag(
+                   PowerSetting.NvPcfAcDefaultGpuLimit)) != 0 &&
+               (partialConvertible & PowerSettingsController.Flag(
+                   PowerSetting.NvPcfAcMinGpuLimit)) != 0 &&
+               (partialConvertible & PowerSettingsController.Flag(
+                   PowerSetting.NvPcfAcMaxGpuLimit)) != 0 &&
+               (partialConvertible & PowerSettingsController.Flag(
+                   PowerSetting.NvApiGpuTemperatureLimit)) == 0,
+            "Beta-toggle conversion does not exclude individual values that WMI cannot adjust.");
         var migratedLegacyLocks =
             CurveProfileStore.MigrateLegacyPowerModeLocksFromNvApi(
                 new Dictionary<string, PowerModeLockSettings>
@@ -4441,6 +5136,12 @@ internal static class Program
         Assert(PowerSettingsController.IsValidState(
                 runtime.Snapshot.PowerSettings),
             "A read-back Beta CPU state cannot be used as a lock target.");
+        var readOnlyProfile = PowerSettingsController.ResolveProfile(
+            "Unknown model");
+        Assert(PowerSettingsController.IsValidState(
+                   runtime.Snapshot.PowerSettings,
+                   readOnlyProfile),
+            "A valid Intel MMIO Beta state cannot be locked when Lenovo WMI is read-only.");
 
         AmdZenStatesPowerController.SetCachedKindForTesting(
             BetaCpuPowerKind.AmdPbo);
@@ -4473,6 +5174,10 @@ internal static class Program
                         PowerSetting.CpuTemperatureLimit),
                 BetaCpuPowerKind = BetaCpuPowerKind.AmdPbo
             };
+            Assert(PowerSettingsController.IsValidState(
+                       amdPower,
+                       readOnlyProfile),
+                "A valid AMD ZenStates Beta state cannot be locked when Lenovo WMI is read-only.");
             amdRuntime.SetSnapshotForTesting(
                 ToolkitRuntimeSnapshot.Empty with
                 {
@@ -4514,6 +5219,41 @@ internal static class Program
         {
             AmdZenStatesPowerController.SetCachedKindForTesting(null);
         }
+
+        PowerSettingsController.SetProfileForTesting(readOnlyProfile);
+        AmdZenStatesPowerController.SetCachedKindForTesting(
+            BetaCpuPowerKind.AmdPbo);
+        try
+        {
+            using var betaOnlyRuntime = new ToolkitRuntimeService(
+                new AppSettings
+                {
+                    UseAmdZenStatesCpuPower = true
+                });
+            betaOnlyRuntime.SetReportForTesting(
+                new FeatureAvailabilityReport([
+                    new FeatureAvailability(
+                        FeatureIds.AmdZenStatesCpuPower,
+                        "性能",
+                        "ZenStates",
+                        true,
+                        "test")
+                ]));
+            Assert(betaOnlyRuntime.CanWritePowerSetting(
+                       PowerSetting.CpuPl1) &&
+                   betaOnlyRuntime.CanWritePowerSetting(
+                       PowerSetting.CpuTemperatureLimit) &&
+                   !betaOnlyRuntime.CanWritePowerSetting(
+                       PowerSetting.GpuPowerBoost),
+                "AMD Beta-only control does not expose exactly its writable CPU values on a WMI read-only machine.");
+        }
+        finally
+        {
+            AmdZenStatesPowerController.SetCachedKindForTesting(null);
+            PowerSettingsController.SetProfileForTesting(
+                PowerSettingsController.ResolveProfile(
+                    DeviceModelDetector.ThinkBook16pG6Iax));
+        }
     }
 
     private static void VerifyDataSharingContracts()
@@ -4521,6 +5261,7 @@ internal static class Program
         Assert(new AppSettings() is
                {
                    ShareDataWithOtherSoftware: false,
+                   SoftwareIntegrationMode: SoftwareIntegrationMode.Disabled,
                    DataSharingPort: 2975
                } &&
                CurveProfileStore.IsValidDataSharingPort(1) &&
@@ -4571,22 +5312,553 @@ internal static class Program
             new FeatureAvailability(
                 FeatureIds.DataSharing,
                 "设置",
-                "向其他软件共享数据",
+                "与其它软件联动",
                 true,
                 "test")
         ]));
-        using var page = new ToolkitSettingsPage(runtime);
-        Assert(ContainsText(page, "向其他软件共享数据") &&
+        using var page = new ToolkitSettingsPage(
+            runtime,
+            sensorIntegrationOnly: true);
+        using var settingsPage = new ToolkitSettingsPage(runtime);
+        Assert(ContainsText(page, "与其它软件联动") &&
                GetPrivateField<TextBox>(page, "_dataSharingPort").Text ==
                "2975" &&
-               GetPrivateField<CheckBox>(
+               GetPrivateField<ComboBox>(
                    page,
-                   "_shareDataWithOtherSoftware").IsChecked == false &&
-               GetPrivateField<CheckBox>(page, "_takeOverFnKeys") is
+                   "_softwareIntegrationMode").SelectedItem is
+                   ComboBoxItem { Tag: SoftwareIntegrationMode.Disabled } &&
+               GetPrivateField<CheckBox>(settingsPage, "_takeOverFnKeys") is
                {
                    VerticalAlignment: VerticalAlignment.Center
                } fnSwitch && fnSwitch.Margin == new Thickness(0),
             "Data-sharing settings or the Fn takeover switch alignment are incorrect.");
+    }
+
+    private static void VerifySensorRecordingContracts()
+    {
+        Assert(TemperatureReader.TryParseCpuCoreIndex(
+                   "CPU Core #7",
+                   "/intelcpu/0/clock/7",
+                   out var namedCore) && namedCore == 6 &&
+               TemperatureReader.TryParseCpuCoreIndex(
+                   "Core clock",
+                   "/intelcpu/0/clock/4",
+                   out var identifierCore) && identifierCore == 3,
+            "Hybrid CPU core clock sensors cannot be mapped to Windows core indexes.");
+        var defaults = new AppSettings();
+        Assert(!defaults.SensorRecordingEnabled &&
+               defaults.SensorRecording.IntervalSeconds == 1 &&
+               defaults.SensorRecording.MaximumPlotPoints == 300 &&
+               defaults.SensorRecording.Sensors.Contains(
+                   OsdSensor.BatteryCapacity) &&
+               !defaults.SensorRecording.Sensors.Contains(
+                   OsdSensor.BatteryOutputPower) &&
+               defaults.Osd.Sensors.Contains(OsdSensor.BatteryOutputPower),
+            "Sensor-recording defaults do not match the OSD sensor defaults.");
+        var normalized = CurveProfileStore.NormalizeSensorRecordingSettings(
+            new SensorRecordingSettings
+            {
+                IntervalSeconds = 7,
+                MaximumPlotPoints = 20,
+                Sensors = [OsdSensor.CpuPower, OsdSensor.CpuPower]
+            });
+        Assert(normalized.IntervalSeconds == 1 &&
+               normalized.MaximumPlotPoints == 100 &&
+               normalized.Sensors.SequenceEqual([OsdSensor.CpuPower]),
+            "Sensor-recording settings are not normalized safely.");
+        var snapshot = ToolkitRuntimeSnapshot.Empty with
+        {
+            Temperatures = new TemperatureSnapshot(
+                60, 50, 55, 32, 20, "CPU", "GPU", "VRAM")
+            {
+                CpuLoadPercent = 40.126,
+                CpuPerformanceCoreAverageClockMhz = 4200,
+                CpuEfficiencyCoreAverageClockMhz = 2800,
+                GpuMemoryLoadPercent = 25,
+                MemorySlotTemperaturesC = [42, 43],
+                StorageDevices =
+                [
+                    new StorageTemperatureSnapshot("SSD", [35, 41])
+                ]
+            },
+            Battery = new BatteryInformationSnapshot(
+                30, -12, -20, 20, 50, 60, 65, 90,
+                DateTime.Now, 1, null, null, false)
+        };
+        var sample = SensorRecordingService.BuildSample(
+            snapshot,
+            new FpsTelemetrySnapshot(120, 85, 8.3, DateTimeOffset.UtcNow),
+            [
+                OsdSensor.Fps,
+                OsdSensor.CpuUtilization,
+                OsdSensor.CpuPerformanceCoreAverageFrequency,
+                OsdSensor.GpuVramUtilization,
+                OsdSensor.GpuVramTemperature,
+                OsdSensor.Storage1Temperature,
+                OsdSensor.BatteryOutputPower,
+                OsdSensor.BatteryCapacity
+            ]);
+        Assert(sample.Values["fps"] == 120 &&
+               sample.Values["cpuUtilization"] == 40.13 &&
+               sample.Values["cpuPerformanceCoreAverageMhz"] == 4200 &&
+               sample.Values["vramUtilization"] == 25 &&
+               sample.Values["vramTemperatureC"] == 55 &&
+               sample.Values["disk1TemperatureC"] == 41 &&
+               sample.Values["batteryPowerW"] == -12 &&
+               sample.Values["batteryCapacityWh"] == 50,
+            "Sensor recording does not serialize the selected readings or maximum temperatures.");
+        var metricKeys = SensorRecordingFormat.OrderKeys(sample.Values.Keys);
+        var compactHeader = SensorRecordingFormat.Header(metricKeys);
+        var compactBatch = SensorRecordingFormat.Batch([sample], metricKeys);
+        Assert(!compactHeader.Contains("cpu", StringComparison.OrdinalIgnoreCase) &&
+               !compactBatch.Contains("cpu", StringComparison.OrdinalIgnoreCase) &&
+               compactBatch.Contains("40.13", StringComparison.Ordinal),
+            "The sensor recording format still writes field descriptions or more than two decimal places.");
+        var compactPath = Path.Combine(
+            Path.GetTempPath(),
+            "ThinkBookToolkit-sensors-" + Guid.NewGuid().ToString("N") +
+            ".jsonl");
+        try
+        {
+            File.WriteAllLines(compactPath, [compactHeader, compactBatch]);
+            var restored = SensorRecordingViewerWindow.ReadSamples(compactPath);
+            Assert(restored.Count == 1 &&
+                   restored[0].Values["cpuUtilization"] == 40.13 &&
+                   restored[0].Values["batteryCapacityWh"] == 50,
+                "The compact sensor recording cannot be read without changing the display range.");
+            using var viewerRuntime = new ToolkitRuntimeService(new AppSettings());
+            var viewer = new SensorRecordingViewerWindow(viewerRuntime);
+            try
+            {
+                typeof(SensorRecordingViewerWindow).GetMethod(
+                        "LoadPath",
+                        BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(viewer, [compactPath]);
+                var selectedRange = GetPrivateField<ComboBox>(viewer, "_range")
+                    .SelectedItem as ComboBoxItem;
+                var charts = GetPrivateField<StackPanel>(viewer, "_charts");
+                Assert(selectedRange?.Tag is TimeSpan range &&
+                       range == TimeSpan.FromMinutes(5) &&
+                       charts.Children.Count > 1,
+                    "A previously recorded file is not drawn immediately with the five-minute default range.");
+            }
+            finally
+            {
+                viewer.Close();
+            }
+            var archivePath = SensorRecordingArchive
+                .CompressAndDeleteSource(compactPath);
+            try
+            {
+                var archived = SensorRecordingViewerWindow.ReadSamples(
+                    archivePath);
+                Assert(File.Exists(archivePath) &&
+                       !File.Exists(compactPath) &&
+                       archived.Count == 1 &&
+                       archived[0].Values["batteryCapacityWh"] == 50,
+                    "Completed sensor recordings are not compressed, the source is not deleted, or compressed history cannot be read.");
+            }
+            finally
+            {
+                try { File.Delete(archivePath); } catch { }
+            }
+        }
+        finally
+        {
+            try { File.Delete(compactPath); } catch { }
+        }
+        var samples = Enumerable.Range(0, 1000)
+            .Select(index => new SensorRecordingSample(
+                DateTimeOffset.UnixEpoch.AddSeconds(index),
+                new Dictionary<string, double?> { ["fps"] = index }))
+            .ToArray();
+        var downsampled = SensorRecordingViewerWindow.Downsample(samples, 100);
+        var irregular = new[] { 0, 1, 2, 3, 80, 99 }
+            .Select(second => new SensorRecordingSample(
+                DateTimeOffset.UnixEpoch.AddSeconds(second),
+                new Dictionary<string, double?> { ["fps"] = second }))
+            .ToArray();
+        var untouched = SensorRecordingViewerWindow.AverageResample(irregular, 6);
+        Assert(untouched.SequenceEqual(irregular),
+            "Records within the point limit must retain every original timestamp and value.");
+        var continuous = SensorRecordingViewerWindow.AverageResample(irregular, 5);
+        Assert(continuous.All(sample => sample.Values["fps"].HasValue) &&
+               continuous[2].Values["fps"] == 49.5,
+            "Empty time buckets introduce gaps into continuous source data.");
+        var missing = irregular.ToArray();
+        missing[3] = missing[3] with
+        {
+            Values = new Dictionary<string, double?> { ["fps"] = null }
+        };
+        Assert(SensorRecordingViewerWindow.AverageResample(missing, 5)[2]
+                   .Values["fps"] is null,
+            "Interpolation must not bridge an explicitly missing sensor reading.");
+        Assert(downsampled.Count == 100 &&
+               downsampled[0].Timestamp == samples[0].Timestamp &&
+               downsampled[^1].Timestamp == samples[^1].Timestamp &&
+               downsampled.Zip(downsampled.Skip(1), (left, right) =>
+                       (right.Timestamp - left.Timestamp).TotalMilliseconds)
+                   .Max() -
+               downsampled.Zip(downsampled.Skip(1), (left, right) =>
+                       (right.Timestamp - left.Timestamp).TotalMilliseconds)
+                   .Min() < 1 &&
+               downsampled[0].Values["fps"] == 2.5,
+            "Sensor-recording chart sampling is not uniformly spaced or averaged.");
+        var usageAxis = SensorHistoryChart.ResolveAxisBounds([20, 80], 0, 100);
+        var regularAxis = SensorHistoryChart.ResolveAxisBounds([20, 80], 0, null);
+        var batteryAxis = SensorHistoryChart.ResolveAxisBounds([-30, -1], null, null);
+        var hidden = new HashSet<string>(StringComparer.Ordinal);
+        var chart = new SensorHistoryChart(
+            "Test",
+            [new SeriesDefinition("fps", "FPS")],
+            samples,
+            dark: true,
+            isChinese: true,
+            minimumBound: 0,
+            maximumBound: null,
+            hiddenSeries: hidden);
+        chart.ToggleSeriesForTesting("fps");
+        Assert(usageAxis == (0, 100) &&
+               regularAxis.Minimum == 0 && regularAxis.Maximum > 80 &&
+               batteryAxis.Minimum < -30 && batteryAxis.Maximum > -1 &&
+               !chart.IsSeriesVisibleForTesting("fps") &&
+               hidden.Contains("fps"),
+            "Sensor charts do not enforce the required axes or persist legend visibility state.");
+    }
+
+    private static void VerifyOsdContracts()
+    {
+        var defaults = new AppSettings();
+        Assert(ToolkitRuntimeService.BatteryRefreshInterval ==
+                   TimeSpan.FromSeconds(2) &&
+               !defaults.OsdEnabled &&
+               defaults.Osd.Orientation == OsdOrientation.Vertical &&
+               defaults.Osd.RefreshIntervalSeconds == 1 &&
+               !defaults.Osd.FixedPosition &&
+               defaults.Osd.OpacityPercent == 50 &&
+               defaults.Osd.SnapThreshold == 20 &&
+               defaults.Osd.MultipleTemperatureMode ==
+                   OsdMultipleTemperatureMode.All &&
+               defaults.Osd.MemoryDisplayMode == OsdMemoryDisplayMode.All &&
+               defaults.Osd.FontSize == 13 &&
+               defaults.Osd.Sensors.Contains(OsdSensor.MemoryCommitted) &&
+               defaults.Osd.Sensors.Contains(OsdSensor.Fan1Speed) &&
+               defaults.Osd.Sensors.Contains(OsdSensor.Fps) &&
+               defaults.Osd.Sensors.Contains(OsdSensor.BatteryOutputPower) &&
+               defaults.Osd.Sensors.Contains(OsdSensor.BatteryCapacity) &&
+               defaults.Osd.BackgroundColor == "0E131D" &&
+               defaults.Osd.CategoryColor == "7C9CFF" &&
+               defaults.Osd.WarningColor == "FFFF00" &&
+               defaults.Osd.CriticalColor == "FF0000" &&
+               defaults.Osd.FpsWarningThreshold == 45 &&
+               defaults.Osd.FpsCriticalThreshold == 30 &&
+               defaults.Osd.LowFpsWarningPercentage == 75 &&
+               defaults.Osd.LowFpsCriticalPercentage == 50 &&
+               defaults.Osd.BatteryOutputPowerWarning == -1 &&
+               defaults.Osd.BatteryOutputPowerCritical == -30 &&
+               !defaults.Osd.Sensors.Contains(OsdSensor.FanSpeeds),
+            "OSD defaults are incorrect.");
+        var normalized = CurveProfileStore.NormalizeOsdSettings(
+            new ToolkitOsdSettings
+            {
+                RefreshIntervalSeconds = 7,
+                OpacityPercent = 150,
+                FpsWarningThreshold = 20,
+                FpsCriticalThreshold = 40,
+                BatteryOutputPowerWarning = -50,
+                BatteryOutputPowerCritical = -5,
+                CategoryColor = "invalid",
+                Sensors =
+                [
+                    OsdSensor.CpuTemperature,
+                    OsdSensor.CpuTemperature,
+                    (OsdSensor)999
+                ]
+            });
+        Assert(normalized.RefreshIntervalSeconds == 1 &&
+               normalized.OpacityPercent == 100 &&
+               normalized.FpsWarningThreshold == 45 &&
+               normalized.FpsCriticalThreshold == 30 &&
+               normalized.BatteryOutputPowerWarning == -1 &&
+               normalized.BatteryOutputPowerCritical == -30 &&
+               normalized.CategoryColor == "7C9CFF" &&
+               normalized.Sensors.SequenceEqual([
+                   OsdSensor.CpuTemperature
+               ]),
+            "OSD settings normalization is incorrect.");
+        var migrated = CurveProfileStore.NormalizeOsdSettings(
+            new ToolkitOsdSettings
+            {
+                Sensors =
+                [
+                    OsdSensor.MemoryTemperature,
+                    OsdSensor.StorageTemperatures,
+                    OsdSensor.FanSpeeds
+                ]
+            });
+        Assert(!migrated.Sensors.Contains(OsdSensor.MemoryTemperature) &&
+               !migrated.Sensors.Contains(OsdSensor.StorageTemperatures) &&
+               !migrated.Sensors.Contains(OsdSensor.FanSpeeds) &&
+               migrated.Sensors.Contains(OsdSensor.MemoryCommitted) &&
+               migrated.Sensors.Contains(OsdSensor.MemorySlot2Temperature) &&
+               migrated.Sensors.Contains(OsdSensor.Storage8Temperature) &&
+               migrated.Sensors.Contains(OsdSensor.Fan2Speed),
+            "Legacy aggregate OSD sensors were not migrated safely.");
+
+        using var runtime = new ToolkitRuntimeService(new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark"
+        });
+        runtime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty with
+        {
+            Temperatures = new TemperatureSnapshot(
+                61.5,
+                47.5,
+                54,
+                23.2,
+                14.4,
+                "CPU",
+                "GPU",
+                "VRAM")
+            {
+                CpuLoadPercent = 42,
+                CpuAverageClockMhz = 2800,
+                CpuMaximumClockMhz = 5100,
+                GpuLoadPercent = 55,
+                GpuMemoryLoadPercent = 30,
+                GpuCoreClockMhz = 1800,
+                GpuMemoryClockMhz = 8000,
+                GpuHotSpotTempC = 58,
+                VramChipTemperaturesC = [52, 54],
+                PhysicalMemoryUsedGb = 16,
+                PhysicalMemoryTotalGb = 32,
+                VirtualMemoryUsedGb = 20,
+                VirtualMemoryTotalGb = 40,
+                MemorySlotTemperaturesC =
+                    [45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56],
+                StorageDevices =
+                [
+                    new StorageTemperatureSnapshot("SSD", [35, 40])
+                ]
+            },
+            Fans = new FanSnapshot(
+                DateTimeOffset.Now,
+                2500,
+                2300,
+                new Dictionary<string, FanLimit>()),
+            Battery = new BatteryInformationSnapshot(
+                32,
+                -22,
+                -30,
+                20,
+                50,
+                60,
+                65,
+                92,
+                DateTime.Now.AddHours(-1),
+                10,
+                null,
+                null,
+                false)
+        });
+        var fpsSample = new FpsTelemetrySnapshot(
+            40,
+            19,
+            25,
+            DateTimeOffset.UtcNow);
+        Assert(OsdSensorCatalog.Severity(
+                   OsdSensor.Fps,
+                   runtime.Snapshot,
+                   runtime.Settings.Osd,
+                   fpsSample) == OsdValueSeverity.Warning &&
+               OsdSensorCatalog.Severity(
+                   OsdSensor.OnePercentLowFps,
+                   runtime.Snapshot,
+                   runtime.Settings.Osd,
+                   fpsSample) == OsdValueSeverity.Critical &&
+               OsdSensorCatalog.Severity(
+                   OsdSensor.FrameLatency,
+                   runtime.Snapshot,
+                   runtime.Settings.Osd,
+                   fpsSample) == OsdValueSeverity.Warning &&
+               OsdSensorCatalog.Severity(
+                   OsdSensor.BatteryOutputPower,
+                   runtime.Snapshot,
+                   runtime.Settings.Osd,
+                   FpsTelemetrySnapshot.Empty) == OsdValueSeverity.Warning &&
+               OsdSensorCatalog.Severity(
+                   OsdSensor.BatteryOutputPower,
+                   runtime.Snapshot with
+                   {
+                       Battery = runtime.Snapshot.Battery! with
+                       {
+                           ChargeDischargePowerW = -35
+                       }
+                   },
+                   runtime.Settings.Osd,
+                   FpsTelemetrySnapshot.Empty) == OsdValueSeverity.Critical,
+            "OSD FPS, latency, 1% Low, or battery threshold severity is incorrect.");
+        Assert(OsdSensorCatalog.Severity(
+                   OsdSensor.Fps,
+                   runtime.Snapshot,
+                   runtime.Settings.Osd,
+                   fpsSample with { Fps = 45 }) == OsdValueSeverity.Normal &&
+               OsdSensorCatalog.Severity(
+                   OsdSensor.BatteryOutputPower,
+                   runtime.Snapshot with
+                   {
+                       Battery = runtime.Snapshot.Battery! with
+                       {
+                           ChargeDischargePowerW = -1
+                       }
+                   },
+                   runtime.Settings.Osd,
+                   FpsTelemetrySnapshot.Empty) == OsdValueSeverity.Normal,
+            "OSD thresholds must use strict greater-than/lower-than comparisons.");
+        var osd = new ToolkitOsdWindow(runtime);
+        try
+        {
+            osd.ApplySettings();
+            osd.RefreshForTesting();
+            osd.SetFpsForTesting(fpsSample);
+            Assert(osd.Topmost && osd.AllowsTransparency &&
+                   !osd.ShowInTaskbar &&
+                   osd.VisibleSensorCountForTesting > 10 &&
+                   ContainsText(osd, "61.5 °C") &&
+                   ContainsText(osd, "16.0/32.0 GB (50%)") &&
+                   ContainsText(osd, "20.0/40.0 GB (50%)") &&
+                   ContainsText(osd, "45.0 °C") &&
+                   ContainsText(osd, "51.0 °C") &&
+                   ContainsText(osd, "硬盘1温度") &&
+                   ContainsText(osd, "功率") &&
+                   ContainsText(osd, "-22.0 W") &&
+                   ContainsText(osd, "容量") &&
+                   ContainsText(osd, "50.00 Wh") &&
+                   !ContainsText(osd, "45/46") &&
+                   ContainsText(osd, "35/40 °C"),
+                "The OSD does not render selected non-empty sensor values.");
+            Assert(osd.SensorValueForTesting(OsdSensor.Fps) == "40" &&
+                   osd.SensorValueForTesting(OsdSensor.OnePercentLowFps) ==
+                       "19" &&
+                   osd.SensorValueForTesting(OsdSensor.FrameLatency) ==
+                       "25.0 ms" &&
+                   osd.SensorValueForTesting(OsdSensor.BatteryCapacity) ==
+                       "50.00 Wh" &&
+                   osd.SensorColorForTesting(OsdSensor.Fps) ==
+                       (Color)ColorConverter.ConvertFromString("#FFFF00") &&
+                   osd.SensorColorForTesting(OsdSensor.OnePercentLowFps) ==
+                       (Color)ColorConverter.ConvertFromString("#FF0000") &&
+                   osd.SensorColorForTesting(OsdSensor.BatteryOutputPower) ==
+                       (Color)ColorConverter.ConvertFromString("#FFFF00"),
+                "FPS values or configured OSD severity colors are not rendered correctly.");
+            Assert(GetPrivateField<Border>(osd, "_background")
+                       .BorderThickness == new Thickness(0),
+                "The OSD still renders a bright outer border.");
+            runtime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty);
+            osd.SetFpsForTesting(FpsTelemetrySnapshot.Empty);
+            osd.RefreshForTesting();
+            Assert(osd.VisibleSensorCountForTesting == 0 &&
+                   ContainsText(osd, "等待传感器数据"),
+                "Empty OSD sensor values are not hidden.");
+        }
+        finally
+        {
+            osd.Close();
+        }
+
+        runtime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty with
+        {
+            Temperatures = new TemperatureSnapshot(
+                60, 50, 55, 30, 20, "CPU", "GPU", "VRAM")
+            {
+                CpuPerformanceCoreAverageClockMhz = 4200,
+                CpuEfficiencyCoreAverageClockMhz = 2800,
+                StorageDevices =
+                [
+                    new StorageTemperatureSnapshot("SSD 1", [35]),
+                    new StorageTemperatureSnapshot("SSD 2", [40])
+                ]
+            }
+        });
+
+        var settingsWindow = new OsdSettingsWindow(runtime);
+        try
+        {
+            Assert(ContainsText(settingsWindow, "常规") &&
+                   ContainsText(settingsWindow, "传感器") &&
+                   ContainsText(settingsWindow, "颜色") &&
+                   ContainsText(settingsWindow, "临界值") &&
+                   ContainsText(settingsWindow, "横向") &&
+                   ContainsText(settingsWindow, "纵向") &&
+                   ContainsText(settingsWindow, "刷新时间") &&
+                   ContainsText(settingsWindow, "吸附阈值") &&
+                   ContainsText(settingsWindow, "固定位置") &&
+                   ContainsText(settingsWindow, "不透明度") &&
+                   ContainsText(settingsWindow, "文字大小") &&
+                   ContainsText(settingsWindow, "对于内存利用率，显示") &&
+                   ContainsText(settingsWindow, "CPU") &&
+                   ContainsText(settingsWindow, "GPU") &&
+                   ContainsText(settingsWindow, "FPS") &&
+                   ContainsText(settingsWindow, "1% Low") &&
+                   ContainsText(settingsWindow, "显存") &&
+                   ContainsText(settingsWindow, "电池") &&
+                   ContainsText(settingsWindow, "功率") &&
+                   ContainsText(settingsWindow, "平均值") &&
+                   ContainsText(settingsWindow, "硬盘") &&
+                   ContainsText(settingsWindow, "风扇") &&
+                   ContainsText(settingsWindow, "背景色") &&
+                   ContainsText(settingsWindow, "警告值颜色") &&
+                   ContainsText(settingsWindow, "报警值颜色") &&
+                   ContainsText(settingsWindow, "1% Low 计算方式") &&
+                   ContainsText(settingsWindow, "电池输出功率") &&
+                   ContainsText(settingsWindow, "容量") &&
+                   ContainsText(settingsWindow, "性能核平均频率") &&
+                   ContainsText(settingsWindow, "能效核平均频率") &&
+                   ContainsText(settingsWindow, "硬盘1温度") &&
+                   ContainsText(settingsWindow, "硬盘2温度") &&
+                   !ContainsText(settingsWindow, "硬盘3温度"),
+                "The two-column OSD settings UI is incomplete.");
+        }
+        finally
+        {
+            settingsWindow.Close();
+        }
+
+        runtime.SetReportForTesting(new FeatureAvailabilityReport([
+            new FeatureAvailability(
+                FeatureIds.Osd,
+                "设置",
+                "OSD",
+                true,
+                "test"),
+            new FeatureAvailability(
+                FeatureIds.DataSharing,
+                "设置",
+                "与其它软件联动",
+                true,
+                "test")
+        ]));
+        using var page = new ToolkitSettingsPage(
+            runtime,
+            sensorIntegrationOnly: true);
+        var osdButton = GetPrivateField<Button>(page, "_osdSettings");
+        var osdSwitch = GetPrivateField<CheckBox>(page, "_osdEnabled");
+        var controls = LogicalTreeHelper.GetParent(osdButton) as StackPanel;
+        var labels = Descendants(page).OfType<TextBlock>()
+            .Select(text => text.Text)
+            .ToList();
+        Assert(ContainsText(page, "启用 OSD") &&
+               ContainsText(page, "记录传感器信息") &&
+               labels.IndexOf("启用 OSD") <
+                   labels.IndexOf("记录传感器信息") &&
+               labels.IndexOf("记录传感器信息") <
+                   labels.IndexOf("与其它软件联动") &&
+               controls is not null &&
+               ReferenceEquals(controls, LogicalTreeHelper.GetParent(osdSwitch)) &&
+               controls.Children.IndexOf(osdButton) <
+                   controls.Children.IndexOf(osdSwitch),
+            "The OSD setting is not placed above data sharing or its settings button is not left of the switch.");
     }
 
     private static void VerifyPerformanceFanLinkSettings()
@@ -4730,10 +6002,15 @@ internal static class Program
             startToTray: false,
             delayStartup: true);
         Assert(visibleXml.Contains(
-                   "<Arguments>--startup</Arguments>",
+                   "shell32.dll,ShellExec_RunDLL &quot;C:\\Program Files\\ThinkBook Toolkit\\ThinkBookToolkit.exe&quot; --startup</Arguments>",
                    StringComparison.Ordinal) &&
                trayXml.Contains(
-                   "<Arguments>--startup --startup-tray</Arguments>",
+                   "shell32.dll,ShellExec_RunDLL &quot;C:\\Program Files\\ThinkBook Toolkit\\ThinkBookToolkit.exe&quot; --startup --startup-tray</Arguments>",
+                   StringComparison.Ordinal) &&
+               visibleXml.Contains("rundll32.exe</Command>",
+                   StringComparison.OrdinalIgnoreCase) &&
+               visibleXml.Contains(
+                   "<WorkingDirectory>C:\\Program Files\\ThinkBook Toolkit</WorkingDirectory>",
                    StringComparison.Ordinal) &&
                !visibleXml.Contains("<Delay>", StringComparison.Ordinal) &&
                delayedXml.Contains(
@@ -4854,6 +6131,25 @@ internal static class Program
 
     private static void VerifyOverviewLayoutSettings()
     {
+        using (var runtime = new ToolkitRuntimeService(new AppSettings()))
+        using (var model = new HardwareMonitorViewModel(runtime))
+        {
+            model.Update(ToolkitRuntimeSnapshot.Empty);
+            var notifications = new List<string?>();
+            model.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);
+            model.Update(ToolkitRuntimeSnapshot.Empty);
+            Assert(notifications.Count == 0,
+                "Unchanged overview values still invalidate every binding.");
+            var snapshot = ToolkitRuntimeSnapshot.Empty with
+            {
+                Temperatures = new TemperatureSnapshot(50, null, null, null, null, "CPU", "", "")
+            };
+            model.Update(snapshot);
+            Assert(notifications.Contains(nameof(HardwareMonitorViewModel.CpuTemperature)) &&
+                   !notifications.Contains(nameof(HardwareMonitorViewModel.BatteryPower)) &&
+                   !notifications.Contains(string.Empty),
+                "Overview notifications do not follow changed display values.");
+        }
         var layout = new OverviewLayoutSettings();
         foreach (var item in layout.Cards[OverviewCardIds.Cpu].Items.Keys.ToArray())
             layout.Cards[OverviewCardIds.Cpu].Items[item] = false;
@@ -4931,7 +6227,8 @@ internal static class Program
             new AppSettings
             {
                 Language = "zh-CN",
-                Theme = "dark"
+                Theme = "dark",
+                SensorRecordingEnabled = true
             },
             persistSystemSessionState: false);
         runtime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty with
@@ -4944,6 +6241,8 @@ internal static class Program
         runtime.PrepareForSystemShutdown(ReasonSessionEnding.Shutdown);
         runtime.PrepareForSystemShutdown(ReasonSessionEnding.Logoff);
         Assert(runtime.IsSystemSessionEnding &&
+               runtime.Settings.SensorRecordingEnabled &&
+               string.IsNullOrEmpty(runtime.CurrentSensorRecordingPath) &&
                runtime.ExitRequested &&
                !runtime.Snapshot.FanControlRunning &&
                !runtime.Snapshot.FullSpeed &&

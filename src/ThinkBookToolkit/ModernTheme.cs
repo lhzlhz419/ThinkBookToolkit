@@ -74,6 +74,26 @@ internal static class ModernTheme
             new Action(() => ApplyWindowTitleBar(window, isDark)));
     }
 
+    internal static void ApplyWindowSurfaceStyles(
+        Window window,
+        bool isDark,
+        bool hasCustomBackground)
+    {
+        var standard = ToolkitPalette.For(isDark);
+        var surfaces = ToolkitPalette.For(isDark, hasCustomBackground);
+        // The closed controls should reveal the wallpaper, while popup
+        // surfaces stay solid so list items remain readable over other apps.
+        var controls = surfaces with { Surface = standard.Surface };
+        window.Resources[typeof(Button)] = ButtonStyle(controls);
+        window.Resources[typeof(TextBox)] = TextBoxStyle(controls);
+        window.Resources[typeof(ComboBox)] = ComboBoxStyle(controls);
+        window.Resources[typeof(ComboBoxItem)] = ComboBoxItemStyle(controls);
+        window.Resources[typeof(TabControl)] = TabControlStyle(controls);
+        window.Resources[typeof(TabItem)] = TabItemStyle(controls);
+        window.Resources[typeof(Slider)] = SliderStyle(controls);
+        window.Resources[typeof(ToolTip)] = ToolTipStyle(standard);
+    }
+
     internal static void ApplyWindowTitleBar(Window window, bool isDark)
     {
         if (!OperatingSystem.IsWindows())

@@ -7,6 +7,73 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-09-06
+
+### Added
+
+- Added configurable image, animated GIF and video backgrounds, including
+  size modes, scaling, transparency, blur, inversion, base color and playback
+  speed. GIF playback uses embedded delays and disposal/logical-screen
+  composition; animated-media settings previews show the first frame.
+- Added hardware-acceleration preferences: disabled, Windows automatic,
+  integrated GPU and discrete GPU when detected, with restart guidance.
+- Added a configurable sensor OSD with horizontal/vertical layouts, independent
+  refresh, font size, opacity, position locking, edge snapping, multi-monitor
+  positioning, sensor selection, colors and warning/critical thresholds.
+- Added FPS, 1% Low and frame-interval telemetry, including configured-game
+  fallback; separate GPU/VRAM groups, per-device temperatures, committed memory,
+  battery capacity and power, and per-fan readings.
+- Added sensor recording with configurable sampling, buffered minute batches,
+  compact numeric storage, gzip archives and temporary extraction for viewing.
+  History charts support time ranges, bounded point counts, averaged sampling,
+  hover values and clickable legends. Shutdown finalizes the recording while
+  preserving the preference to start a new file on the next launch.
+- Added a Sensors and integration navigation page, automation actions for OSD,
+  OSD position locking and sensor recording, and optional loopback HTTP control
+  of performance mode, fan strategy and full fan speed alongside data sharing.
+- Added an opt-in automatic GPU-overclock switch for subsequent launches,
+  independent of saved overclock values; the default is disabled.
+- Added P-core/E-core average-frequency readings and battery capacity in the
+  Overview, OSD and recording; battery power recording is disabled by default.
+- Added self-signed UIAccess release packaging for sensor and Fn-key overlays,
+  plus a separate non-UIAccess Guardian service executable.
+
+### Changed
+
+- Warranty summary dates and remaining days now use Lenovo `baseinfo`, while
+  the detailed warranty dialog displays valid `detailinfo` entries only.
+- Game start/stop automation detection is independent of fixed-RPM game detection.
+- Legacy ITS switching uses native LITSSVC service controls with diagnostics and
+  compatibility fallback. Legacy Hybrid iGPU switching avoids immediate WMI
+  readback and supports deferred confirmation and bounded retries.
+- Readable and writable power settings are handled separately; Beta switches
+  convert only supported writable WMI values and preserve usable locks.
+- Background playback uses bounded buffers and releases media when hidden or
+  cleared. Unblurred media uses high-quality scaling; video output is capped
+  at a 1280-pixel long edge. Background loading is deferred until initialization.
+- Reduced refresh allocations through direct Overview configuration lookups,
+  change-only property notifications, cached core classification, shared recent
+  sensor samples and lower-frequency static battery queries. The embedded fan
+  runtime no longer builds the legacy layout or curve editors.
+- Navigation releases departed pages; closed history viewers release samples
+  and chart caches. Small histories preserve source samples; larger histories
+  interpolate empty averaging buckets only between valid adjacent readings.
+
+### Fixed
+
+- Fixed background visibility through cards and controls, light/dark theme
+  inconsistencies, GIF composition, video white frames and video blur handling.
+- Fixed sensor OSD lock/unlock handling, unwanted secure-screen visibility,
+  multi-monitor dragging, tab clipping, color editors and sensor availability.
+- Fixed VRAM utilization reporting and hybrid-core classification overlap.
+- Fixed startup-task launching and installer elevation handling for UIAccess.
+- Fixed Guardian service startup using the UIAccess main executable; the service
+  now runs through its dedicated entry point without UIAccess.
+- Fixed device-page asynchronous work accessing a disposed cancellation source
+  after navigation, including late Loaded events and repeated disposal.
+- Fixed historical-record first display, artificial resampling gaps, battery
+  chart bounds and unreleased battery event-log records.
+
 ## [1.0.2] - 2026-08-27
 
 ### Added
@@ -426,7 +493,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v0.2.7...v1.0.0

@@ -44,6 +44,9 @@ internal static class AutomationStepCatalog
         M(AutomationStepKind.VantageEyeCare, "显示", "Display", "Vantage 护眼", "Vantage eye care", AutomationStepInputKind.Options),
         M(AutomationStepKind.PcManagerEyeCare, "显示", "Display", "电脑管家护眼", "PC Manager eye care", AutomationStepInputKind.Options),
         M(AutomationStepKind.ColorManagement, "显示", "Display", "色域调整", "Color gamut", AutomationStepInputKind.Options),
+        M(AutomationStepKind.OsdEnabled, "传感器", "Sensors", "OSD 开关", "OSD", AutomationStepInputKind.Options),
+        M(AutomationStepKind.OsdLockPosition, "传感器", "Sensors", "OSD 锁定位置", "Lock OSD position", AutomationStepInputKind.Options),
+        M(AutomationStepKind.SensorRecordingEnabled, "传感器", "Sensors", "记录传感器信息", "Record sensor data", AutomationStepInputKind.Options),
 
         M(AutomationStepKind.DolbyEnabled, "声音", "Sound", "Dolby Atmos", "Dolby Atmos", AutomationStepInputKind.Options),
         M(AutomationStepKind.DolbyProfile, "声音", "Sound", "杜比音效", "Dolby profile", AutomationStepInputKind.Options),
@@ -103,6 +106,9 @@ internal static class AutomationStepCatalog
         AutomationStepKind.NumLockOsd or
         AutomationStepKind.FnCtrlSwap or
         AutomationStepKind.Touchpad => BooleanOptions(),
+        AutomationStepKind.OsdEnabled or
+        AutomationStepKind.OsdLockPosition or
+        AutomationStepKind.SensorRecordingEnabled => BooleanOptions(),
         AutomationStepKind.FixedRpmGameMode =>
         [
             new("false", "普通", "Normal"),

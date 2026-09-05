@@ -1,8 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using ThinkBookToolkit;
 
 namespace ThinkBookToolkit.UiPreview;
@@ -10,8 +16,62 @@ namespace ThinkBookToolkit.UiPreview;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        if (args.Length >= 2 && args[0] == "--configure-probe-gpu" &&
+            Enum.TryParse<HardwareAccelerationMode>(args[1], true, out var mode))
+        {
+            HardwareAccelerationManager.SetWindowsGpuPreference(mode);
+            return;
+        }
+        if (args.Length >= 2 && args[0] == "--background-memory-probe")
+        {
+            RunBackgroundMemoryProbe(
+                args[1],
+                args.Length >= 3 && int.TryParse(args[2], out var blur)
+                    ? blur
+                    : 0,
+                args.Length >= 4 && int.TryParse(args[3], out var seconds)
+                    ? seconds
+                    : 5);
+            return;
+        }
+        if (args.Length >= 2 && args[0] == "--toolkit-background-memory-probe")
+        {
+            RunToolkitBackgroundMemoryProbe(
+                args[1],
+                args.Length >= 3 && int.TryParse(args[2], out var blur)
+                    ? blur
+                    : 0);
+            return;
+        }
+        if (args.Length >= 2 && args[0] == "--background-first-frame-probe")
+        {
+            RunBackgroundFirstFrameProbe(args[1]);
+            return;
+        }
+        if (args.Length >= 1 && args[0] == "--cpu-frequency-probe")
+        {
+            var classes = TemperatureReader
+                .HybridCoreEfficiencyClassesForTesting();
+            Console.WriteLine(
+                "PROBE cpu-classes=" + string.Join(
+                    ",",
+                    classes.OrderBy(pair => pair.Key)
+                        .Select(pair => $"{pair.Key}:{pair.Value}")));
+            using var reader = new TemperatureReader(enableGpuTelemetry: false);
+            for (var index = 0; index < 5; index++)
+            {
+                var snapshot = reader.Read();
+                Console.WriteLine(
+                    $"PROBE cpu-frequency average={snapshot.CpuAverageClockMhz:0.##}; " +
+                    $"performance={snapshot.CpuPerformanceCoreAverageClockMhz:0.##}; " +
+                    $"efficiency={snapshot.CpuEfficiencyCoreAverageClockMhz:0.##}; " +
+                    $"maximum={snapshot.CpuMaximumClockMhz:0.##}");
+                System.Threading.Thread.Sleep(500);
+            }
+            return;
+        }
         var application = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
         var settings = new AppSettings
         {
@@ -78,6 +138,211 @@ internal static class Program
             DateTimeOffset.Now,
             null));
         application.Run(window);
+    }
+
+    private static void RunBackgroundMemoryProbe(
+        string path,
+        int blur,
+        int activeSeconds)
+    {
+        RenderOptions.ProcessRenderMode = RenderMode.Default;
+        var application = new Application
+        {
+            ShutdownMode = ShutdownMode.OnMainWindowClose
+        };
+        var background = new AnimatedBackgroundImage();
+        background.PlaybackFailed += (_, error) =>
+            Console.WriteLine("PROBE video-error=" + error);
+        var host = new Grid { ClipToBounds = true };
+        host.Children.Add(background);
+        var window = new Window
+        {
+            Title = $"Background memory probe · blur {blur}",
+            Width = 1600,
+            Height = 900,
+            ShowActivated = false,
+            ShowInTaskbar = false,
+            Content = host
+        };
+        window.Loaded += async (_, _) =>
+        {
+            await Task.Delay(1000);
+            PrintMemory("empty-window", blur, 0);
+            background.SetViewport(new Size(1600, 900));
+            background.SetSizeMode(BackgroundImageSizeMode.Stretch);
+            background.LoadFile(path);
+            background.SetBlurRadius(blur);
+            await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(activeSeconds, 1, 60)));
+            PrintMemory("active", blur, background.EstimatedManagedGifBytesForTesting);
+            Console.WriteLine(
+                "PROBE video=" + background.VideoDiagnosticsForTesting);
+            SaveProbeFrame(background.Source);
+            SaveProbeWindow(window);
+            background.Clear();
+            host.Children.Clear();
+            window.Content = null;
+            if (PresentationSource.FromVisual(window) is HwndSource source)
+                source.CompositionTarget.RenderMode = RenderMode.SoftwareOnly;
+            await window.Dispatcher.InvokeAsync(
+                () => { },
+                System.Windows.Threading.DispatcherPriority.ContextIdle);
+            GC.Collect(2, GCCollectionMode.Forced, true, true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(2, GCCollectionMode.Forced, true, false);
+            if (PresentationSource.FromVisual(window) is HwndSource restored)
+                restored.CompositionTarget.RenderMode = RenderMode.Default;
+            await Task.Delay(1000);
+            PrintMemory("cleared", blur, 0);
+            window.Close();
+        };
+        PrintMemory("baseline", blur, 0);
+        application.Run(window);
+    }
+
+    private static void RunToolkitBackgroundMemoryProbe(string path, int blur)
+    {
+        RenderOptions.ProcessRenderMode = RenderMode.Default;
+        var application = new Application
+        {
+            ShutdownMode = ShutdownMode.OnMainWindowClose
+        };
+        var settings = new AppSettings
+        {
+            Language = "zh-CN",
+            Theme = "dark",
+            HardwareAccelerationMode = HardwareAccelerationMode.PowerSaving,
+            BackgroundImageSizeMode = BackgroundImageSizeMode.Stretch,
+            BackgroundImageOpacityPercent = 30,
+            CloseToTray = false
+        };
+        ModernTheme.Apply(application, true);
+        using var runtime = new ToolkitRuntimeService(settings);
+        var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false)
+        {
+            Title = $"Toolkit background probe · blur {blur}",
+            Width = 1600,
+            Height = 900,
+            ShowActivated = false,
+            ShowInTaskbar = false
+        };
+        runtime.SetReportForTesting(CreateReport());
+        window.Loaded += async (_, _) =>
+        {
+            await Task.Delay(1500);
+            PrintMemory("toolkit-empty", blur, 0);
+            settings.BackgroundImagePath = path;
+            settings.BackgroundImageBlurRadius = blur;
+            typeof(ToolkitMainWindow).GetMethod(
+                    "OnBackgroundImageChanged",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(window, [null, EventArgs.Empty]);
+            await Task.Delay(5000);
+            var background = typeof(ToolkitMainWindow).GetField(
+                    "_backgroundImage",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(window) as AnimatedBackgroundImage;
+            PrintMemory(
+                "toolkit-active",
+                blur,
+                background?.EstimatedManagedGifBytesForTesting ?? 0);
+            settings.BackgroundImagePath = string.Empty;
+            settings.BackgroundImageBlurRadius = 0;
+            typeof(ToolkitMainWindow).GetMethod(
+                    "OnBackgroundImageChanged",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(window, [null, EventArgs.Empty]);
+            await Task.Delay(2000);
+            PrintMemory("toolkit-cleared", blur, 0);
+            runtime.RequestExit();
+            window.Close();
+        };
+        application.Run(window);
+    }
+
+    private static void RunBackgroundFirstFrameProbe(string path)
+    {
+        var application = new Application
+        {
+            ShutdownMode = ShutdownMode.OnMainWindowClose
+        };
+        using var background = new AnimatedBackgroundImage();
+        background.PlaybackFailed += (_, error) =>
+            Console.WriteLine("PROBE video-error=" + error);
+        var host = new Grid { ClipToBounds = true };
+        host.Children.Add(background);
+        var window = new Window
+        {
+            Title = "Background first-frame probe",
+            Width = 960,
+            Height = 600,
+            Content = host,
+            ShowActivated = false,
+            ShowInTaskbar = false
+        };
+        window.Loaded += async (_, _) =>
+        {
+            background.SetViewport(window.RenderSize);
+            background.SetSizeMode(BackgroundImageSizeMode.Stretch);
+            background.LoadFile(path, enableAnimatedPlayback: false);
+            await Task.Delay(3000);
+            SaveProbeFrame(background.Source);
+            SaveProbeWindow(window);
+            Console.WriteLine(
+                "PROBE preview=" +
+                (background.Source is BitmapSource bitmap
+                    ? $"{bitmap.PixelWidth}x{bitmap.PixelHeight}"
+                    : "missing"));
+            window.Close();
+        };
+        application.Run(window);
+    }
+
+    private static void PrintMemory(string phase, int blur, long gifBytes)
+    {
+        using var process = Process.GetCurrentProcess();
+        process.Refresh();
+        Console.WriteLine(
+            $"PROBE phase={phase}; blur={blur}; " +
+            $"private={process.PrivateMemorySize64 / 1048576d:0.0} MB; " +
+            $"working={process.WorkingSet64 / 1048576d:0.0} MB; " +
+            $"managed={GC.GetTotalMemory(false) / 1048576d:0.0} MB; " +
+            $"gifBuffers={gifBytes / 1048576d:0.0} MB; " +
+            $"cpu={process.TotalProcessorTime.TotalMilliseconds:0} ms");
+    }
+
+    private static void SaveProbeFrame(ImageSource? source)
+    {
+        if (source is not BitmapSource bitmap)
+            return;
+        var path = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            "ThinkBookToolkit-background-probe.png");
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = System.IO.File.Create(path);
+        encoder.Save(stream);
+        Console.WriteLine("PROBE frame=" + path);
+    }
+
+    private static void SaveProbeWindow(Window window)
+    {
+        var width = Math.Max(1, (int)Math.Round(window.ActualWidth));
+        var height = Math.Max(1, (int)Math.Round(window.ActualHeight));
+        var bitmap = new RenderTargetBitmap(
+            width,
+            height,
+            96,
+            96,
+            PixelFormats.Pbgra32);
+        bitmap.Render(window);
+        var path = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            "ThinkBookToolkit-background-window-probe.png");
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = System.IO.File.Create(path);
+        encoder.Save(stream);
+        Console.WriteLine("PROBE window=" + path);
     }
 
     private static FeatureAvailabilityReport CreateReport() => new(

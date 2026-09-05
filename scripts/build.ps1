@@ -4,7 +4,10 @@ param(
     [switch]$Publish,
     [switch]$Installer,
     [switch]$SelfContained,
-    [switch]$IncludeLocalProprietaryDependencies
+    [switch]$IncludeLocalProprietaryDependencies,
+    [string]$CertificatePath = $env:TBT_CERT_PATH,
+    [string]$PublicCertificatePath = $env:TBT_CERT_PUBLIC_PATH,
+    [string]$CertificatePassword = $env:TBT_CERT_PASSWORD
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,6 +20,43 @@ $nvApiWrapperProject = Join-Path $projectRoot "external\NvAPIWrapper\NvAPIWrappe
 $amdPowerHelperProject = Join-Path $projectRoot "src\ThinkBookToolkit.AmdPowerHelper\ThinkBookToolkit.AmdPowerHelper.csproj"
 
 $zenStatesProject = Join-Path $projectRoot "external\ZenStates-Core\ZenStates-Core.csproj"
+
+function Find-SignTool {
+    $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+    $kitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    if (-not (Test-Path -LiteralPath $kitsRoot)) {
+        return $null
+    }
+    $direct = Join-Path $kitsRoot "x64\signtool.exe"
+    if (Test-Path -LiteralPath $direct) {
+        return $direct
+    }
+    return Get-ChildItem -LiteralPath $kitsRoot -Directory |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+}
+
+function Sign-ReleaseFile {
+    param(
+        [Parameter(Mandatory)] [string]$File,
+        [Parameter(Mandatory)] [string]$Pfx,
+        [Parameter(Mandatory)] [string]$Password,
+        [Parameter(Mandatory)] [string]$SignTool
+    )
+    & $SignTool sign /fd SHA256 /f $Pfx /p $Password $File
+    if ($LASTEXITCODE -ne 0) {
+        throw "SignTool failed to sign: $File"
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $File
+    if ($null -eq $signature.SignerCertificate) {
+        throw "The Authenticode signature was not embedded: $File"
+    }
+}
 
 if (-not (Test-Path -LiteralPath $nvApiWrapperProject)) {
     throw "NvAPIWrapper source dependency is missing. Run: git submodule update --init --recursive"
@@ -179,6 +219,13 @@ if ($Publish -or $Installer) {
     & dotnet @publishArguments
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Write-Host "Publish output: $output"
+    # The SCM service must not launch the UIAccess desktop executable.
+    $guardianProject = Join-Path $projectRoot "src\ThinkBookToolkit.Guardian\ThinkBookToolkit.Guardian.csproj"
+    & dotnet publish $guardianProject -c $Configuration -r win-x64 --self-contained ($SelfContained.IsPresent.ToString().ToLowerInvariant()) -o $output -m:1 --disable-build-servers
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if (-not (Test-Path -LiteralPath (Join-Path $output "ThinkBookToolkit.Guardian.exe"))) {
+        throw "Guardian service publish is incomplete."
+    }
     Write-Host "Installing AMD Power Helper into isolated subdirectory..."
 
     $amdHelperDestination = Join-Path $output "AmdPowerHelper"
@@ -204,6 +251,45 @@ if ($Publish -or $Installer) {
     Write-Host "AMD Power Helper output: $amdHelperDestination"
     if (-not $IncludeLocalProprietaryDependencies) {
         Write-Host "Public release mode: proprietary Lenovo dependencies were excluded; redistributable IntelPower dependencies were retained when available."
+    }
+
+    $resolvedCertificatePath = $CertificatePath
+    if ([string]::IsNullOrWhiteSpace($resolvedCertificatePath)) {
+        $resolvedCertificatePath = Join-Path $projectRoot `
+            "signing\ThinkBookToolkit.pfx"
+    }
+    $publicCertificatePath = $PublicCertificatePath
+    if ([string]::IsNullOrWhiteSpace($publicCertificatePath)) {
+        $publicCertificatePath = Join-Path $projectRoot `
+            "signing\ThinkBookToolkit.cer"
+    }
+    $signTool = $null
+    if ($Configuration -eq "Release") {
+        if (-not (Test-Path -LiteralPath $resolvedCertificatePath) -or
+            -not (Test-Path -LiteralPath $publicCertificatePath) -or
+            [string]::IsNullOrWhiteSpace($CertificatePassword)) {
+            throw "Release publishing requires the UIAccess signing certificate. Run scripts\generate_signing_certificate.ps1 and set TBT_CERT_PASSWORD."
+        }
+        $signTool = Find-SignTool
+        if ([string]::IsNullOrWhiteSpace($signTool)) {
+            throw "SignTool.exe was not found. Install the Windows SDK signing tools."
+        }
+        $applicationExe = Join-Path $output "ThinkBookToolkit.exe"
+        Sign-ReleaseFile `
+            -File $applicationExe `
+            -Pfx $resolvedCertificatePath `
+            -Password $CertificatePassword `
+            -SignTool $signTool
+        Copy-Item `
+            -LiteralPath $publicCertificatePath `
+            -Destination (Join-Path $output "ThinkBookToolkit.cer") `
+            -Force
+        Write-Host "Signed UIAccess executable: $applicationExe"
+        Sign-ReleaseFile `
+            -File (Join-Path $output "ThinkBookToolkit.Guardian.exe") `
+            -Pfx $resolvedCertificatePath `
+            -Password $CertificatePassword `
+            -SignTool $signTool
     }
 
     $archive = Join-Path $releaseOutput "ThinkBookToolkit-$version-win-x64-$publishKind.zip"
@@ -254,7 +340,16 @@ if ($Publish -or $Installer) {
             "/DFanBackendFileVersion=$fanBackendVersion" `
             $installerScript
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        Write-Host "Installer output: $(Join-Path $installerOutput "ThinkBookToolkit-$version-Setup.exe")"
+        $installerPath = Join-Path $installerOutput `
+            "ThinkBookToolkit-$version-Setup.exe"
+        if ($Configuration -eq "Release") {
+            Sign-ReleaseFile `
+                -File $installerPath `
+                -Pfx $resolvedCertificatePath `
+                -Password $CertificatePassword `
+                -SignTool $signTool
+        }
+        Write-Host "Installer output: $installerPath"
     }
 
     $releaseAssets = @($archive)

@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -69,9 +70,13 @@ internal sealed record ToolkitRuntimeSnapshot(
 
 internal sealed class ToolkitRuntimeService : IDisposable
 {
+    internal static TimeSpan BatteryRefreshInterval { get; } =
+        TimeSpan.FromSeconds(2);
     private readonly DispatcherTimer _pollTimer = new();
     private readonly DispatcherTimer _powerSettingsLockTimer = new();
     private readonly SemaphoreSlim _powerSettingsGate = new(1, 1);
+    private readonly SemaphoreSlim _temperatureReadGate = new(1, 1);
+    private readonly SemaphoreSlim _batteryReadGate = new(1, 1);
     private readonly FanWatchdogClient _fanWatchdog = new();
     private readonly HybridAutoGpuManager _hybridAutoGpu = new();
     private readonly bool _launchedAtStartup;
@@ -80,6 +85,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly AutomationRunner _automationRunner;
     private readonly KeyboardMacroService _macroService;
     private readonly LocalDataSharingService _dataSharing;
+    private readonly FpsSensorController _fpsMonitor;
+    private readonly ToolkitOsdManager _osdManager;
+    private readonly SensorRecordingService _sensorRecording;
+    private readonly GameProcessDetector _gameProcessDetector;
     private MainWindow? _fanRuntime;
     private TemperatureReader? _temperatureReader;
     private ToolkitMainWindow? _window;
@@ -92,6 +101,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private DateTimeOffset _lastBatteryRefresh;
     private DateTimeOffset _lastGpuRefresh;
     private DateTimeOffset _nextGpuOverclockRetry;
+    private GpuWorkingMode? _legacyGpuModeOverride;
+    private bool _legacyGpuModeAwaitingDisconnect;
+    private int _legacyGpuModeWriteAttempts;
+    private DateTimeOffset _nextLegacyGpuModeWrite;
     private bool? _lastAutomationAcConnected;
     private bool? _lastAutomationGamesRunning;
     private readonly string _bootSessionId;
@@ -116,6 +129,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
         bool persistSystemSessionState = true)
     {
         Settings = settings;
+        Settings.GpuOverclock = GpuOverclockPolicy.Normalize(
+            Settings.GpuOverclock);
+        Settings.GpuOverclock.Enabled =
+            Settings.AutoEnableGpuOverclockOnStartup;
         _launchedAtStartup = launchedAtStartup;
         _persistSystemSessionState = persistSystemSessionState;
         _fnKeyManager = new LenovoFnKeyManager(this);
@@ -123,10 +140,18 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _macroService = new KeyboardMacroService(
             settings,
             _fnKeyManager.HandleStandardKeyboardEvent);
+        _gameProcessDetector = new GameProcessDetector(settings);
+        _fpsMonitor = new FpsSensorController(
+            _gameProcessDetector.FindRunningGameProcessForFps);
         _bootSessionId = GpuModeRestartState.CurrentBootSessionId;
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
-        _dataSharing = new LocalDataSharingService(() => Snapshot);
+        _dataSharing = new LocalDataSharingService(
+            () => Snapshot,
+            () => Settings.SoftwareIntegrationMode,
+            HandleIntegrationControlAsync);
+        _osdManager = new ToolkitOsdManager(this);
+        _sensorRecording = new SensorRecordingService(this);
         _pollTimer.Tick += async (_, _) => await RefreshAsync();
         _powerSettingsLockTimer.Tick += async (_, _) =>
             await EnforcePowerSettingsLockAsync();
@@ -134,7 +159,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         GpuTelemetryControl.ModeChanged += OnGpuTelemetryModeChanged;
         SyncPollingInterval();
         SyncSystemThemeSubscription();
-        if (settings.ShareDataWithOtherSoftware)
+        if (settings.SoftwareIntegrationMode !=
+            SoftwareIntegrationMode.Disabled)
         {
             try
             {
@@ -146,6 +172,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     "Local data sharing could not be started from the saved settings.",
                     ex);
                 settings.ShareDataWithOtherSoftware = false;
+                settings.SoftwareIntegrationMode =
+                    SoftwareIntegrationMode.Disabled;
                 try { CurveProfileStore.SaveSettings(settings); } catch { }
             }
         }
@@ -166,6 +194,30 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public FeatureAvailabilityReport? Report { get; private set; }
 
     public ToolkitRuntimeSnapshot Snapshot { get; private set; }
+
+    internal FpsTelemetrySnapshot CurrentFps => _fpsMonitor.Current;
+
+    internal event EventHandler<FpsTelemetrySnapshot> FpsTelemetryUpdated
+    {
+        add => _fpsMonitor.Updated += value;
+        remove => _fpsMonitor.Updated -= value;
+    }
+
+    internal void SetFpsMonitoringConsumer(string consumer, bool enabled) =>
+        _fpsMonitor.SetConsumerEnabled(consumer, enabled);
+
+    internal string CurrentSensorRecordingPath =>
+        _sensorRecording.CurrentPath;
+
+    internal IReadOnlyList<SensorRecordingSample>
+        CurrentBufferedSensorRecordingSamples =>
+        _sensorRecording.BufferedSamples;
+
+    internal event EventHandler SensorRecordingSampleWritten
+    {
+        add => _sensorRecording.SampleWritten += value;
+        remove => _sensorRecording.SampleWritten -= value;
+    }
 
     public MainWindow? FanRuntime => _fanRuntime;
 
@@ -265,6 +317,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public bool IsDark => ResolveDarkTheme(Settings.Theme);
 
+    public bool HasCustomBackground =>
+        !string.IsNullOrWhiteSpace(Settings.BackgroundImagePath) ||
+        Settings.BackgroundBaseColorEnabled;
+
     public bool ExitRequested { get; private set; }
 
     internal bool IsSystemSessionEnding =>
@@ -275,6 +331,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public event EventHandler? AvailabilityChanged;
 
     public event EventHandler? AppearanceChanged;
+
+    public event EventHandler? BackgroundImageChanged;
 
     public event EventHandler? OverviewLayoutChanged;
 
@@ -364,6 +422,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             CurveProfileStore.SaveSettings(Settings);
             AutomationChanged?.Invoke(this, EventArgs.Empty);
+            _lastAutomationGamesRunning = null;
             error = null;
             return true;
         }
@@ -386,6 +445,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             CurveProfileStore.SaveSettings(Settings);
             AutomationChanged?.Invoke(this, EventArgs.Empty);
+            _lastAutomationGamesRunning = null;
             error = null;
             return true;
         }
@@ -502,7 +562,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             CurveProfileStore.SaveSettings(Settings);
-            _fanRuntime?.RuntimeReloadGameDetection();
+            _gameProcessDetector.ReloadKnownGames();
+            _lastAutomationGamesRunning = null;
             error = null;
             return true;
         }
@@ -721,7 +782,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
             _fanRuntime = new MainWindow(
                 startToTrayRequested: false,
                 embeddedMode: true,
-                sharedSettings: Settings)
+                sharedSettings: Settings,
+                sharedGameProcessDetector: _gameProcessDetector)
             {
                 ShowInTaskbar = false
             };
@@ -766,6 +828,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _ = RefreshWarrantyAsync();
         _pollTimer.Start();
         SyncPowerSettingsLockTimer();
+        _osdManager.Sync();
+        _sensorRecording.Sync();
         LogStage("background refresh scheduling");
     }
 
@@ -965,6 +1029,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         if (fansRestored)
             _fanWatchdog.TryDisarm(out _);
+
+        // SessionEnding must finish the file synchronously before Windows
+        // tears down the dispatcher. Stop preserves the enabled preference,
+        // so startup Sync creates a fresh file next time.
+        try { _sensorRecording.Stop(); }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error("Sensor recording could not finish during shutdown.", ex);
+        }
 
         Snapshot = Snapshot with
         {
@@ -1194,7 +1267,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
             PowerSettingsController.GetDefaultState(Snapshot.ItsMode) is
             { Atpp: { } defaultAtpp })
         {
-            legacy = legacy with { Atpp = defaultAtpp };
+            legacy = legacy with
+            {
+                Atpp = defaultAtpp,
+                AvailableSettings = legacy.AvailableSettings |
+                    PowerSettingsController.Flag(PowerSetting.Atpp)
+            };
         }
         var nvSnapshot = await Task.Run(NvPcfPowerController.Read);
         var current = NvPcfPowerPolicy.Merge(
@@ -1205,6 +1283,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
             Settings.NvApiPowerSettingsLocksByMode,
             Snapshot.ItsMode,
             create: true) ?? new PowerModeLockSettings();
+        var convertible = NvPcfPowerPolicy.ConvertibleSettingsFromWmi(
+            PowerSettingsController.CurrentProfile,
+            legacy);
         var settings = new[]
         {
             PowerSetting.NvPcfAcTargetTppLimit,
@@ -1212,7 +1293,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
             PowerSetting.NvPcfAcMinGpuLimit,
             PowerSetting.NvPcfAcMaxGpuLimit,
             PowerSetting.NvApiGpuTemperatureLimit
-        };
+        }.Where(setting =>
+            (convertible & PowerSettingsController.Flag(setting)) != 0)
+         .ToArray();
+        ToolkitLog.Info(
+            settings.Length == 0
+                ? "NVAPI Beta toggle will preserve all current GPU power " +
+                  "values because none has a writable Lenovo WMI counterpart."
+                : "NVAPI Beta toggle will convert only writable Lenovo WMI " +
+                  "counterparts: " + string.Join(", ", settings));
         var desired = ApplyConvertedOrLockedValues(
             current,
             converted,
@@ -1633,6 +1722,29 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    public bool TrySetGpuOverclockStartupEnabled(
+        bool enabled,
+        out string? error)
+    {
+        var previous = Settings.AutoEnableGpuOverclockOnStartup;
+        Settings.AutoEnableGpuOverclockOnStartup = enabled;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.AutoEnableGpuOverclockOnStartup = previous;
+            ToolkitLog.Error(
+                "GPU overclock startup preference could not be saved.",
+                ex);
+            error = ex.Message;
+            return false;
+        }
+    }
+
     public async Task<string?> SaveGpuOverclockSettingsAsync(
         GpuOverclockSettings settings,
         bool applyEvenIfDisabled = false)
@@ -1702,13 +1814,14 @@ internal sealed class ToolkitRuntimeService : IDisposable
         var previousNvApiProfiles = ClonePowerModeLocks(
             Settings.NvApiPowerSettingsLocksByMode);
         if (enabled &&
-            (!PowerSettingsController.IsValidState(target) ||
+            (!CanWritePowerSetting(setting) ||
+             !PowerSettingsController.IsValidState(target) ||
              !target!.IsAvailable(setting) ||
              !PowerSettingsController.Value(target, setting).HasValue))
         {
             error = L(
-                "请先成功读取当前功耗设置。",
-                "Read the current power settings successfully before enabling the lock.");
+                "此功耗参数当前不可写，或尚未成功读取当前值。",
+                "This power value is not currently writable, or its current value has not been read successfully.");
             return false;
         }
 
@@ -1792,6 +1905,65 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    internal bool CanWritePowerSetting(PowerSetting setting)
+    {
+        if (setting is PowerSetting.NvPcfAcTargetTppLimit or
+            PowerSetting.NvPcfAcDefaultGpuLimit or
+            PowerSetting.NvPcfAcMinGpuLimit or
+            PowerSetting.NvPcfAcMaxGpuLimit or
+            PowerSetting.NvPcfDynamicBoost or
+            PowerSetting.NvApiGpuTemperatureLimit)
+        {
+            return NvApiGpuPowerEnabled;
+        }
+
+        if (NvApiGpuPowerEnabled && setting is
+            PowerSetting.GpuPowerBoost or
+            PowerSetting.GpuConfigurableTgp or
+            PowerSetting.GpuTemperatureLimit or
+            PowerSetting.GpuToCpuDynamicBoost or
+            PowerSetting.Atpp)
+        {
+            return false;
+        }
+
+        if (AmdZenStatesCpuPowerEnabled && setting is
+            PowerSetting.CpuPl1 or
+            PowerSetting.CpuPl2 or
+            PowerSetting.CpuTurboTimeLimit or
+            PowerSetting.CpuTemperatureLimit)
+        {
+            return true;
+        }
+
+        if (IntelMmioCpuPowerEnabled && setting is
+            PowerSetting.CpuPl1 or
+            PowerSetting.CpuPl2 or
+            PowerSetting.CpuTurboTimeLimit)
+        {
+            return true;
+        }
+
+        return PowerSettingsController.IsWmiWritableSetting(
+            PowerSettingsController.CurrentProfile,
+            setting);
+    }
+
+    private PowerSettingsLockSelection WritablePowerLocks(
+        PowerSettingsLockSelection selection)
+    {
+        var filtered = selection with { };
+        foreach (var setting in Enum.GetValues<PowerSetting>())
+        {
+            if (filtered.IsLocked(setting) &&
+                !CanWritePowerSetting(setting))
+            {
+                filtered = filtered.With(setting, false);
+            }
+        }
+        return filtered;
+    }
+
     public bool TrySetPowerSettingsLockInterval(
         int seconds,
         out string? error)
@@ -1822,6 +1994,134 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    internal async Task<ToolkitRuntimeSnapshot> ReadOsdSnapshotAsync()
+    {
+        var snapshot = Snapshot;
+        if (_disposed)
+            return snapshot;
+        snapshot = snapshot with { Battery = await ReadBatterySnapshotAsync() ?? snapshot.Battery };
+
+        if (_fanRuntime is not null)
+        {
+            var performance = await _fanRuntime.RuntimeReadOsdSnapshotAsync();
+            return snapshot with
+            {
+                Temperatures = performance.Temperatures ?? snapshot.Temperatures,
+                Fans = performance.Fans ?? snapshot.Fans,
+                UpdatedAt = DateTimeOffset.Now,
+                Error = null
+            };
+        }
+
+        var temperatures = await ReadTemperatureSnapshotAsync();
+        return snapshot with
+        {
+            Temperatures = temperatures ?? snapshot.Temperatures,
+            UpdatedAt = DateTimeOffset.Now,
+            Error = null
+        };
+    }
+
+    private async Task<TemperatureSnapshot?> ReadTemperatureSnapshotAsync()
+    {
+        var reader = _temperatureReader;
+        if (reader is null)
+            return null;
+        await _temperatureReadGate.WaitAsync();
+        try
+        {
+            return await Task.Run(reader.Read);
+        }
+        finally
+        {
+            _temperatureReadGate.Release();
+        }
+    }
+
+    private async Task<BatteryInformationSnapshot?> ReadBatterySnapshotAsync(bool force = false)
+    {
+        if (_disposed || Report?.IsAvailable(FeatureIds.BatteryInformation) != true)
+            return _cachedBattery;
+        await _batteryReadGate.WaitAsync();
+        try
+        {
+            if (!_disposed && (force || _cachedBattery is null ||
+                DateTimeOffset.UtcNow - _lastBatteryRefresh >= TimeSpan.FromMilliseconds(500)))
+            {
+                _cachedBattery = await Task.Run(BatteryInformationReader.Read);
+                _lastBatteryRefresh = DateTimeOffset.UtcNow;
+            }
+            return _cachedBattery;
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning("Battery refresh failed: " + ex.Message);
+            _lastBatteryRefresh = DateTimeOffset.UtcNow;
+            return _cachedBattery;
+        }
+        finally { _batteryReadGate.Release(); }
+    }
+
+    private void InitializeHybridCoreDisplayDefaults(
+        TemperatureSnapshot? temperatures)
+    {
+        if (Settings.HybridCoreDisplayDefaultsInitialized ||
+            temperatures?.CpuPerformanceCoreAverageClockMhz is null ||
+            temperatures.CpuEfficiencyCoreAverageClockMhz is null)
+        {
+            return;
+        }
+        Settings.OverviewLayout = OverviewLayoutDefaults.Normalize(
+            Settings.OverviewLayout);
+        var cpu = Settings.OverviewLayout.Cards[OverviewCardIds.Cpu];
+        cpu.Items["average-frequency"] = false;
+        cpu.Items["performance-core-average-frequency"] = true;
+        cpu.Items["efficiency-core-average-frequency"] = true;
+        Settings.Osd.Sensors.Remove(OsdSensor.CpuAverageFrequency);
+        Settings.SensorRecording.Sensors.Remove(
+            OsdSensor.CpuAverageFrequency);
+        if (!Settings.Osd.Sensors.Contains(
+                OsdSensor.CpuPerformanceCoreAverageFrequency))
+        {
+            Settings.Osd.Sensors.Add(
+                OsdSensor.CpuPerformanceCoreAverageFrequency);
+        }
+        if (!Settings.SensorRecording.Sensors.Contains(
+                OsdSensor.CpuPerformanceCoreAverageFrequency))
+        {
+            Settings.SensorRecording.Sensors.Add(
+                OsdSensor.CpuPerformanceCoreAverageFrequency);
+        }
+        if (!Settings.Osd.Sensors.Contains(
+                OsdSensor.CpuEfficiencyCoreAverageFrequency))
+        {
+            Settings.Osd.Sensors.Add(
+                OsdSensor.CpuEfficiencyCoreAverageFrequency);
+        }
+        if (!Settings.SensorRecording.Sensors.Contains(
+                OsdSensor.CpuEfficiencyCoreAverageFrequency))
+        {
+            Settings.SensorRecording.Sensors.Add(
+                OsdSensor.CpuEfficiencyCoreAverageFrequency);
+        }
+        Settings.HybridCoreDisplayDefaultsInitialized = true;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            _osdManager.ApplySettings();
+            OverviewLayoutChanged?.Invoke(this, EventArgs.Empty);
+            ToolkitLog.Info(
+                "Hybrid CPU topology detected; P-core and E-core average " +
+                "frequencies replaced the combined average by default.");
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning(
+                "Hybrid-core display defaults could not be saved: " +
+                ex.Message);
+        }
+    }
+
     public async Task RefreshAsync(bool force = false)
     {
         if (_polling || _disposed)
@@ -1840,7 +2140,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
             var temperatures = performance?.Temperatures;
             var fans = performance?.Fans;
             if (temperatures is null && _temperatureReader is not null)
-                temperatures = await Task.Run(_temperatureReader.Read);
+                temperatures = await ReadTemperatureSnapshotAsync();
+            InitializeHybridCoreDisplayDefaults(temperatures);
             if (Settings.GpuOverclock.Enabled &&
                 GpuTelemetryControl.Mode == GpuTelemetryMode.Full &&
                 (temperatures?.DiscreteGpuState is
@@ -1865,10 +2166,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
             {
                 if (force ||
                     _cachedBattery is null ||
-                    now - _lastBatteryRefresh >= TimeSpan.FromSeconds(10))
+                    now - _lastBatteryRefresh >= BatteryRefreshInterval)
                 {
-                    _cachedBattery = await Task.Run(BatteryInformationReader.Read);
-                    _lastBatteryRefresh = now;
+                    await ReadBatterySnapshotAsync(force);
                 }
                 battery = _cachedBattery;
             }
@@ -1903,10 +2203,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 itsMode = await Task.Run(() => new ItsModeDetector().ReadMode());
             }
 
-            GpuWorkingMode? gpuMode = performance?.GpuMode;
+            GpuWorkingMode? gpuMode =
+                _legacyGpuModeOverride ?? performance?.GpuMode;
             IReadOnlyList<GpuWorkingMode> gpuModes =
                 _cachedGpuMode?.SupportedModes ?? [];
-            if (Report?.IsAvailable(FeatureIds.GpuMode) == true)
+            if (Report?.IsAvailable(FeatureIds.GpuMode) == true &&
+                !_legacyGpuModeOverride.HasValue)
             {
                 if (_cachedGpuMode is null ||
                     now - _lastGpuRefresh >= TimeSpan.FromSeconds(5))
@@ -1923,6 +2225,28 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 await _hybridAutoGpu.UpdateAsync(gpuMode, battery.IsAcConnected);
             else
                 await _hybridAutoGpu.ObserveAsync();
+            await ReconcileLegacyLiveGpuModeAsync();
+            gpuMode = _legacyGpuModeOverride ?? gpuMode;
+
+            bool? automationGamesRunning = null;
+            if (ShouldMonitorAutomationGameEvents(Settings))
+            {
+                try
+                {
+                    automationGamesRunning = await Task.Run(
+                        _gameProcessDetector.AreGamesRunning);
+                }
+                catch (Exception ex)
+                {
+                    ToolkitLog.Warning(
+                        "Independent automation game detection failed: " +
+                        ex.Message);
+                }
+            }
+            else
+            {
+                _lastAutomationGamesRunning = null;
+            }
 
             Snapshot = new(
                 temperatures,
@@ -1946,7 +2270,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             ProcessAutomationTriggerStates(
                 battery?.IsAcConnected,
-                performance?.GamesRunning);
+                automationGamesRunning);
             UpdateTrayText();
             SyncPowerSettingsLockTimer();
             if (itsMode != ItsMode.Unknown &&
@@ -1995,6 +2319,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
         if (gamesRunning.HasValue)
             _lastAutomationGamesRunning = gamesRunning.Value;
     }
+
+    internal static bool ShouldMonitorAutomationGameEvents(
+        AppSettings settings) =>
+        settings.AutomationEnabled &&
+        settings.Automations.Any(automation =>
+            automation.Triggers.Contains(AutomationTriggerKind.GameStarted) ||
+            automation.Triggers.Contains(AutomationTriggerKind.GameStopped));
 
     internal static IReadOnlyList<AutomationTriggerKind>
         ResolveAutomationTransitions(
@@ -2132,10 +2463,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public async Task<string?> SetItsModeAsync(ItsMode mode)
     {
         var detector = new ItsModeDetector();
-        if (!detector.IsModeSupported(mode))
+        var controlPath = detector.GetControlPath();
+        if (!ItsModeDetector.IsModeSupported(mode, controlPath))
         {
-            return detector.GetControlPath() ==
-                   ItsModeControlPath.LegacyLitssvc &&
+            return controlPath == ItsModeControlPath.LegacyLitssvc &&
                    mode == ItsMode.Geek
                 ? L(
                     "旧版 LITSSVC 接口不支持极客模式",
@@ -2161,50 +2492,91 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             await Task.Run(() => ItsModeController.SetMode(mode));
-            var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(
+                controlPath == ItsModeControlPath.LegacyLitssvc ? 10 : 3);
+            var confirmed = false;
+            var lastReadMode = ItsMode.Unknown;
             while (DateTimeOffset.UtcNow < deadline)
             {
-                if (await Task.Run(detector.ReadMode) == mode)
+                lastReadMode = await Task.Run(detector.ReadMode);
+                if (lastReadMode == mode)
                 {
-                    Snapshot = Snapshot with { ItsMode = mode };
-                    SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                    _confirmedPerformanceModeDuringRefresh = mode;
-                    _lastFanLinkedPerformanceMode = mode;
-                    var generation = ++_fanPerformanceModeChangeGeneration;
-                    _ = ApplyFanStrategyForPerformanceModeAsync(
-                        mode,
-                        generation);
-                    try
-                    {
-                        await RefreshAsync(force: true);
-                    }
-                    finally
-                    {
-                        _confirmedPerformanceModeDuringRefresh = null;
-                    }
-                    _powerSettingsLockTimer.Stop();
-                    try
-                    {
-                        await ResetNvPcfAfterPerformanceModeChangeAsync(mode);
-                    }
-                    catch (Exception ex)
-                    {
-                        ToolkitLog.Error(
-                            "NVPCF defaults could not be restored " +
-                            $"after switching to {mode}.",
-                            ex);
-                        SetStatus(L(
-                            "性能模式已切换，但 NVAPI GPU 功耗恢复默认失败：",
-                            "The performance mode changed, but the NVAPI GPU power defaults could not be restored: ") +
-                            ex.GetBaseException().Message);
-                    }
-                    SyncPowerSettingsLockTimer();
-                    await EnforcePowerSettingsLockAsync();
-                    return null;
+                    confirmed = true;
+                    break;
                 }
                 await Task.Delay(200);
             }
-            return L("固件未确认新的性能模式", "Firmware did not confirm the new mode");
+            if (!confirmed &&
+                controlPath == ItsModeControlPath.ModernDispatcher &&
+                detector.IsLegacyPathAvailable())
+            {
+                ToolkitLog.Warning(
+                    "The modern ITS dispatcher accepted the command but did " +
+                    "not confirm it; retrying through the available LITSSVC " +
+                    $"legacy path. target={mode}; lastRead={lastReadMode}.");
+                await Task.Run(() => ItsModeController.SetLegacyMode(mode));
+                ItsModeDetector.PreferLegacyPathForCurrentProcess();
+                controlPath = ItsModeControlPath.LegacyLitssvc;
+                deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+                while (DateTimeOffset.UtcNow < deadline)
+                {
+                    lastReadMode = await Task.Run(detector.ReadMode);
+                    if (lastReadMode == mode)
+                    {
+                        confirmed = true;
+                        break;
+                    }
+                    await Task.Delay(200);
+                }
+            }
+            if (!confirmed && controlPath != ItsModeControlPath.LegacyLitssvc)
+            {
+                return L(
+                    "固件未确认新的性能模式",
+                    "Firmware did not confirm the new mode");
+            }
+            if (!confirmed)
+            {
+                ToolkitLog.Warning(
+                    "Legacy LITSSVC accepted all service controls, but its " +
+                    "registry state did not confirm the target within 10 " +
+                    $"seconds; accepting the verified native write. target={mode}; " +
+                    $"lastRead={lastReadMode}.");
+            }
+
+            Snapshot = Snapshot with { ItsMode = mode };
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            _confirmedPerformanceModeDuringRefresh = mode;
+            _lastFanLinkedPerformanceMode = mode;
+            var generation = ++_fanPerformanceModeChangeGeneration;
+            _ = ApplyFanStrategyForPerformanceModeAsync(mode, generation);
+            try
+            {
+                await RefreshAsync(force: true);
+            }
+            finally
+            {
+                _confirmedPerformanceModeDuringRefresh = null;
+            }
+            _powerSettingsLockTimer.Stop();
+            try
+            {
+                await ResetNvPcfAfterPerformanceModeChangeAsync(mode);
+            }
+            catch (Exception ex)
+            {
+                ToolkitLog.Error(
+                    "NVPCF defaults could not be restored " +
+                    $"after switching to {mode}.",
+                    ex);
+                SetStatus(L(
+                    "性能模式已切换，但 NVAPI GPU 功耗恢复默认失败：",
+                    "The performance mode changed, but the NVAPI GPU power defaults could not be restored: ") +
+                    ex.GetBaseException().Message);
+            }
+            SyncPowerSettingsLockTimer();
+            await EnforcePowerSettingsLockAsync();
+            return null;
         }
         catch (Exception ex)
         {
@@ -2506,11 +2878,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 : await Task.Run(GpuModeController.ReadState);
             var source = hasCurrentBootTransition
                 ? transition.Source
-                : state!.CurrentMode;
+                : _legacyGpuModeOverride ?? state!.CurrentMode;
             var sourceUsesDirectGraphicsConfiguration =
                 hasCurrentBootTransition
                     ? transition.SourceUsesDirectGraphicsConfiguration
-                    : state!.UsesDirectGraphicsConfiguration;
+                    : _legacyGpuModeOverride.HasValue
+                        ? false
+                        : state!.UsesDirectGraphicsConfiguration;
             var result = await Task.Run(() =>
                 GpuModeController.SetModeFromEffectiveState(
                     source,
@@ -2518,6 +2892,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     target));
             if (result.RequiresRestart)
             {
+                ClearLegacyLiveGpuModeOverride();
                 GpuModeRestartState.MarkPending(
                     Settings,
                     source,
@@ -2533,6 +2908,19 @@ internal sealed class ToolkitRuntimeService : IDisposable
             else
             {
                 GpuModeRestartState.Clear(Settings);
+                if (result.AwaitingLiveConfirmation)
+                {
+                    BeginLegacyLiveGpuModeTransition(target, state);
+                    SetStatus(L(
+                        "已请求切换到混合核显模式，正在等待独显负载释放",
+                        "iGPU-only mode was requested; waiting for discrete GPU clients to release it"));
+                }
+                else
+                {
+                    ClearLegacyLiveGpuModeOverride();
+                    _cachedGpuMode = null;
+                    _lastGpuRefresh = DateTimeOffset.MinValue;
+                }
             }
             CurveProfileStore.SaveSettings(Settings);
             PublishGpuTransitionState();
@@ -2878,8 +3266,23 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public bool TrySetDataSharing(
         bool enabled,
         int port,
+        out string? error) => TrySetSoftwareIntegration(
+        enabled
+            ? SoftwareIntegrationMode.ShareDataOnly
+            : SoftwareIntegrationMode.Disabled,
+        port,
+        out error);
+
+    public bool TrySetSoftwareIntegration(
+        SoftwareIntegrationMode mode,
+        int port,
         out string? error)
     {
+        if (!Enum.IsDefined(mode))
+        {
+            error = L("联动模式无效。", "The integration mode is invalid.");
+            return false;
+        }
         if (!CurveProfileStore.IsValidDataSharingPort(port))
         {
             error = L(
@@ -2888,15 +3291,17 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return false;
         }
 
-        var previousEnabled = Settings.ShareDataWithOtherSoftware;
+        var previousMode = Settings.SoftwareIntegrationMode;
         var previousPort = Settings.DataSharingPort;
         try
         {
-            if (enabled)
+            if (mode != SoftwareIntegrationMode.Disabled)
                 _dataSharing.Start(port);
             else
                 _dataSharing.Stop();
-            Settings.ShareDataWithOtherSoftware = enabled;
+            Settings.SoftwareIntegrationMode = mode;
+            Settings.ShareDataWithOtherSoftware =
+                mode != SoftwareIntegrationMode.Disabled;
             Settings.DataSharingPort = port;
             CurveProfileStore.SaveSettings(Settings);
             error = null;
@@ -2904,11 +3309,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         catch (Exception ex)
         {
-            Settings.ShareDataWithOtherSoftware = previousEnabled;
+            Settings.SoftwareIntegrationMode = previousMode;
+            Settings.ShareDataWithOtherSoftware =
+                previousMode != SoftwareIntegrationMode.Disabled;
             Settings.DataSharingPort = previousPort;
             try
             {
-                if (previousEnabled)
+                if (previousMode != SoftwareIntegrationMode.Disabled)
                     _dataSharing.Start(previousPort);
                 else
                     _dataSharing.Stop();
@@ -2921,6 +3328,142 @@ internal sealed class ToolkitRuntimeService : IDisposable
             }
             error = ex.GetBaseException().Message;
             return false;
+        }
+    }
+
+    private async Task<string?> HandleIntegrationControlAsync(
+        string route,
+        string value)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            return await dispatcher.InvokeAsync(() =>
+                    HandleIntegrationControlAsync(route, value))
+                .Task.Unwrap();
+        }
+        return route switch
+        {
+            "performance-mode" =>
+                Enum.TryParse<ItsMode>(value, true, out var mode) &&
+                PerformanceModeCycle.IsSelectableMode(mode)
+                    ? await SetItsModeAsync(mode)
+                    : "Invalid performance mode. Use PowerSaving, " +
+                      "Intelligent, Performance, or Geek.",
+            "fan-strategy" =>
+                Enum.TryParse<FanControlMode>(value, true, out var strategy) &&
+                strategy is FanControlMode.FirmwareAutomatic or
+                    FanControlMode.FixedRpm or FanControlMode.FanCurve or
+                    FanControlMode.AdvancedCurve
+                    ? await SetFanModeAsync(strategy)
+                    : "Invalid fan strategy. Use FirmwareAutomatic, " +
+                      "FixedRpm, FanCurve, or AdvancedCurve.",
+            "fan-full-speed" => bool.TryParse(value, out var enabled)
+                ? await SetFullSpeedAsync(enabled)
+                : "Invalid fan-full-speed value. Use true or false.",
+            _ => "Unknown control route."
+        };
+    }
+
+    public bool TrySetOsdEnabled(bool enabled, out string? error)
+    {
+        var previous = Settings.OsdEnabled;
+        Settings.OsdEnabled = enabled;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            _osdManager.Sync();
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.OsdEnabled = previous;
+            _osdManager.Sync();
+            error = ex.GetBaseException().Message;
+            return false;
+        }
+    }
+
+    public bool TrySetOsdSettings(
+        ToolkitOsdSettings settings,
+        out string? error)
+    {
+        var previous = Settings.Osd;
+        Settings.Osd = CurveProfileStore.NormalizeOsdSettings(settings);
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            _osdManager.ApplySettings();
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.Osd = previous;
+            _osdManager.ApplySettings();
+            error = ex.GetBaseException().Message;
+            return false;
+        }
+    }
+
+    public bool TrySetSensorRecordingEnabled(
+        bool enabled,
+        out string? error)
+    {
+        var previous = Settings.SensorRecordingEnabled;
+        var previousPath = Settings.LastSensorRecordingPath;
+        Settings.SensorRecordingEnabled = enabled;
+        try
+        {
+            _sensorRecording.Sync();
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.SensorRecordingEnabled = previous;
+            Settings.LastSensorRecordingPath = previousPath;
+            try { _sensorRecording.Sync(); } catch { }
+            error = ex.GetBaseException().Message;
+            return false;
+        }
+    }
+
+    public bool TrySetSensorRecordingSettings(
+        SensorRecordingSettings settings,
+        out string? error)
+    {
+        var previous = Settings.SensorRecording;
+        Settings.SensorRecording =
+            CurveProfileStore.NormalizeSensorRecordingSettings(settings);
+        try
+        {
+            _sensorRecording.Sync();
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.SensorRecording = previous;
+            try { _sensorRecording.Sync(); } catch { }
+            error = ex.GetBaseException().Message;
+            return false;
+        }
+    }
+
+    internal void SaveOsdPosition()
+    {
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning(
+                "The OSD position could not be saved: " + ex.Message);
         }
     }
 
@@ -3320,6 +3863,174 @@ internal sealed class ToolkitRuntimeService : IDisposable
         return true;
     }
 
+    public bool TrySetBackgroundImage(
+        string? path,
+        double scalePercent,
+        double opacityPercent,
+        int blurRadius,
+        BackgroundImageSizeMode sizeMode,
+        bool inverted,
+        bool baseColorEnabled,
+        string? baseColor,
+        int mediaSpeedPercent,
+        out string? error)
+    {
+        var normalizedPath = path?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(normalizedPath))
+        {
+            if (!AnimatedBackgroundImage.IsSupportedPath(normalizedPath))
+            {
+                error = L(
+                    "不支持所选背景媒体格式。",
+                    "The selected background media format is not supported.");
+                return false;
+            }
+            if (!File.Exists(normalizedPath))
+            {
+                error = L(
+                    "所选背景媒体文件不存在。",
+                    "The selected background media file does not exist.");
+                return false;
+            }
+            try
+            {
+                normalizedPath = Path.GetFullPath(normalizedPath);
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+        if (scalePercent is < 10 or > 500)
+        {
+            error = L(
+                "背景图像大小必须在 10% 到 500% 之间。",
+                "Background image size must be between 10% and 500%.");
+            return false;
+        }
+        if (opacityPercent is < 0 or > 100)
+        {
+            error = L(
+                "背景透明度必须在 0% 到 100% 之间。",
+                "Background transparency must be between 0% and 100%.");
+            return false;
+        }
+        if (blurRadius is < 0 or > 40)
+        {
+            error = L(
+                "背景模糊必须在 0 到 40 之间。",
+                "Background blur must be between 0 and 40.");
+            return false;
+        }
+        if (!Enum.IsDefined(sizeMode))
+        {
+            error = L(
+                "背景图像大小模式无效。",
+                "The background image size mode is invalid.");
+            return false;
+        }
+        var rawBaseColor = baseColor?.Trim().ToUpperInvariant() ?? string.Empty;
+        if (rawBaseColor.StartsWith("0X", StringComparison.Ordinal))
+            rawBaseColor = rawBaseColor[2..];
+        if (baseColorEnabled &&
+            (rawBaseColor.Length != 6 ||
+             rawBaseColor.Any(character => !Uri.IsHexDigit(character))))
+        {
+            error = L(
+                "基础背景颜色必须是六位十六进制颜色。",
+                "The base background color must be a six-digit hexadecimal color.");
+            return false;
+        }
+        var normalizedBaseColor = CurveProfileStore.NormalizeBackgroundColor(
+            rawBaseColor);
+        if (mediaSpeedPercent is < 10 or > 500)
+        {
+            error = L(
+                "动画和视频播放速度必须在 10% 到 500% 之间。",
+                "Animation and video playback speed must be between 10% and 500%.");
+            return false;
+        }
+
+        var previousPath = Settings.BackgroundImagePath;
+        var previousScale = Settings.BackgroundImageScalePercent;
+        var previousOpacity = Settings.BackgroundImageOpacityPercent;
+        var previousBlur = Settings.BackgroundImageBlurRadius;
+        var previousSizeMode = Settings.BackgroundImageSizeMode;
+        var previousInverted = Settings.BackgroundImageInverted;
+        var previousBaseColorEnabled = Settings.BackgroundBaseColorEnabled;
+        var previousBaseColor = Settings.BackgroundBaseColor;
+        var previousMediaSpeed = Settings.BackgroundMediaSpeedPercent;
+        Settings.BackgroundImagePath = normalizedPath;
+        Settings.BackgroundImageScalePercent = scalePercent;
+        Settings.BackgroundImageOpacityPercent = opacityPercent;
+        Settings.BackgroundImageBlurRadius = blurRadius;
+        Settings.BackgroundImageSizeMode = sizeMode;
+        Settings.BackgroundImageInverted = inverted;
+        Settings.BackgroundBaseColorEnabled = baseColorEnabled;
+        Settings.BackgroundBaseColor = normalizedBaseColor;
+        Settings.BackgroundMediaSpeedPercent = mediaSpeedPercent;
+        try
+        {
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            BackgroundImageChanged?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.BackgroundImagePath = previousPath;
+            Settings.BackgroundImageScalePercent = previousScale;
+            Settings.BackgroundImageOpacityPercent = previousOpacity;
+            Settings.BackgroundImageBlurRadius = previousBlur;
+            Settings.BackgroundImageSizeMode = previousSizeMode;
+            Settings.BackgroundImageInverted = previousInverted;
+            Settings.BackgroundBaseColorEnabled = previousBaseColorEnabled;
+            Settings.BackgroundBaseColor = previousBaseColor;
+            Settings.BackgroundMediaSpeedPercent = previousMediaSpeed;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    public bool TrySetHardwareAccelerationMode(
+        HardwareAccelerationMode mode,
+        out string? error)
+    {
+        if (!Enum.IsDefined(mode))
+        {
+            error = L(
+                "硬件加速模式无效。",
+                "The hardware acceleration mode is invalid.");
+            return false;
+        }
+        var previous = Settings.HardwareAccelerationMode;
+        try
+        {
+            HardwareAccelerationManager.SetWindowsGpuPreference(mode);
+            Settings.HardwareAccelerationMode = mode;
+            CurveProfileStore.SaveSettings(Settings);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Settings.HardwareAccelerationMode = previous;
+            try
+            {
+                HardwareAccelerationManager.SetWindowsGpuPreference(previous);
+            }
+            catch (Exception rollbackError)
+            {
+                ToolkitLog.Error(
+                    "The previous Windows GPU rendering preference could not be restored.",
+                    rollbackError);
+            }
+            error = ex.Message;
+            return false;
+        }
+    }
+
     private bool TrySaveSetting<T>(
         Func<T> read,
         Action<T> write,
@@ -3455,7 +4166,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             var selection = modeLock is null
                 ? new PowerSettingsLockSelection()
                 : modeLock.Locks with { };
-            var effectiveSelection = selection;
+            var effectiveSelection = WritablePowerLocks(selection);
             if (GpuTelemetryControl.Mode != GpuTelemetryMode.Full)
             {
                 effectiveSelection = effectiveSelection with
@@ -3600,20 +4311,25 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 ? Settings.PowerSettingsLockIntervalSeconds
                 : 2);
         var modeLock = CurrentPowerModeLock(create: false);
-        var hasLocksUsableWithCurrentGpuState = modeLock is not null &&
-            (GpuTelemetryControl.Mode == GpuTelemetryMode.Full ||
-             modeLock.Locks.CpuPl1 || modeLock.Locks.CpuPl2 ||
-             modeLock.Locks.CpuTemperatureLimit ||
-             modeLock.Locks.CpuTurboTimeLimit ||
-             modeLock.Locks.GpuPowerBoost ||
-             modeLock.Locks.GpuConfigurableTgp ||
-             modeLock.Locks.GpuTemperatureLimit ||
-             modeLock.Locks.GpuToCpuDynamicBoost ||
-             modeLock.Locks.Atpp);
+        var effectiveLocks = modeLock is null
+            ? new PowerSettingsLockSelection()
+            : WritablePowerLocks(modeLock.Locks);
+        if (GpuTelemetryControl.Mode != GpuTelemetryMode.Full)
+        {
+            effectiveLocks = effectiveLocks with
+            {
+                NvPcfAcTargetTppLimit = false,
+                NvPcfAcDefaultGpuLimit = false,
+                NvPcfAcMinGpuLimit = false,
+                NvPcfAcMaxGpuLimit = false,
+                NvPcfDynamicBoost = false,
+                NvApiGpuTemperatureLimit = false
+            };
+        }
         if (!_disposed && modeLock is not null &&
-            hasLocksUsableWithCurrentGpuState &&
+            effectiveLocks.Any &&
             PowerSettingsController.IsValidLockConfiguration(
-                modeLock.Locks,
+                effectiveLocks,
                 modeLock.Target) &&
             CanWritePowerSettings)
         {
@@ -3676,9 +4392,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private async Task RefreshHybridGpuProtectionAsync(
         bool forceGpuModeRefresh)
     {
-        GpuWorkingMode? mode = _cachedGpuMode?.CurrentMode;
+        GpuWorkingMode? mode =
+            _legacyGpuModeOverride ?? _cachedGpuMode?.CurrentMode;
         var now = DateTimeOffset.UtcNow;
         if (Report?.IsAvailable(FeatureIds.GpuMode) == true &&
+            !_legacyGpuModeOverride.HasValue &&
             (forceGpuModeRefresh ||
              _cachedGpuMode is null ||
              now - _lastGpuRefresh >= TimeSpan.FromSeconds(5)))
@@ -3765,6 +4483,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
             DispatcherPriority.Normal,
             new Action(() =>
             {
+                if (!connected &&
+                    _legacyGpuModeOverride ==
+                    GpuWorkingMode.IntegratedOnly)
+                {
+                    ConfirmLegacyLiveGpuModeDisconnect();
+                }
                 var message = connected
                     ? L("独立显卡已连接", "The discrete GPU is connected")
                     : L("独立显卡已断开连接", "The discrete GPU is disconnected");
@@ -3775,6 +4499,90 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     message,
                     Forms.ToolTipIcon.Info);
             }));
+    }
+
+    private void BeginLegacyLiveGpuModeTransition(
+        GpuWorkingMode target,
+        GpuModeState? detectedState)
+    {
+        _legacyGpuModeOverride = target;
+        _legacyGpuModeAwaitingDisconnect =
+            target == GpuWorkingMode.IntegratedOnly;
+        _legacyGpuModeWriteAttempts = 1;
+        _nextLegacyGpuModeWrite =
+            DateTimeOffset.UtcNow.AddSeconds(2);
+        if (detectedState is not null)
+        {
+            _cachedGpuMode = detectedState with { CurrentMode = target };
+            _lastGpuRefresh = DateTimeOffset.UtcNow;
+        }
+        ToolkitLog.Info(
+            $"Legacy live GPU mode transition is pending: target={target}; " +
+            "the previous firmware readback is intentionally ignored.");
+    }
+
+    private async Task ReconcileLegacyLiveGpuModeAsync()
+    {
+        if (!_legacyGpuModeAwaitingDisconnect ||
+            _legacyGpuModeOverride != GpuWorkingMode.IntegratedOnly)
+        {
+            return;
+        }
+
+        if (_hybridAutoGpu.State ==
+            HybridAutoGpuState.IntegratedOnlyTelemetry)
+        {
+            ConfirmLegacyLiveGpuModeDisconnect();
+            return;
+        }
+
+        // Retry only after the isolated NVIDIA/LHM process has completely
+        // stopped. A write followed by continuous GPU probing is exactly the
+        // failure mode observed on affected old ThinkBook firmware.
+        if (GpuTelemetryControl.Mode != GpuTelemetryMode.Paused ||
+            _legacyGpuModeWriteAttempts >= 5 ||
+            DateTimeOffset.UtcNow < _nextLegacyGpuModeWrite)
+        {
+            return;
+        }
+
+        _legacyGpuModeWriteAttempts++;
+        _nextLegacyGpuModeWrite =
+            DateTimeOffset.UtcNow.AddSeconds(2);
+        try
+        {
+            ToolkitLog.Info(
+                $"Retrying the legacy iGPU-only request after GPU " +
+                $"telemetry stopped (attempt " +
+                $"{_legacyGpuModeWriteAttempts}/5).");
+            await Task.Run(
+                GpuModeController.RetryLegacyIntegratedOnlyWithoutReadback);
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning(
+                $"Legacy iGPU-only retry " +
+                $"{_legacyGpuModeWriteAttempts}/5 failed: " +
+                ex.GetBaseException().Message);
+        }
+    }
+
+    private void ConfirmLegacyLiveGpuModeDisconnect()
+    {
+        if (!_legacyGpuModeAwaitingDisconnect)
+            return;
+        _legacyGpuModeAwaitingDisconnect = false;
+        ToolkitLog.Info(
+            $"Legacy live GPU mode transition was confirmed by dGPU PnP " +
+            $"removal after {_legacyGpuModeWriteAttempts} write attempt(s).");
+    }
+
+    private void ClearLegacyLiveGpuModeOverride()
+    {
+        _legacyGpuModeOverride = null;
+        _legacyGpuModeAwaitingDisconnect = false;
+        _legacyGpuModeWriteAttempts = 0;
+        _nextLegacyGpuModeWrite = DateTimeOffset.MinValue;
     }
 
     private static void OnGpuTelemetryModeChanged(GpuTelemetryMode mode)
@@ -3963,6 +4771,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _fnKeyManager.Dispose();
         _macroService.Dispose();
         _dataSharing.Dispose();
+        _sensorRecording.Dispose();
+        _fpsMonitor.Dispose();
+        _osdManager.Dispose();
         try { _fnKeyNotification?.Close(); } catch { }
         _fnKeyNotification = null;
         _fnKeyNotificationDark = null;
@@ -3971,6 +4782,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _hybridAutoGpu.Dispose();
         try { _fanRuntime?.Close(); } catch { }
         _fanRuntime = null;
+        _gameProcessDetector.Dispose();
         if (_trayIcon is not null)
         {
             _trayIcon.Visible = false;

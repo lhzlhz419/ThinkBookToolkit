@@ -10,10 +10,17 @@ using System.Threading;
 
 namespace ThinkBookToolkit;
 
+internal sealed record GameProcessCandidate(
+    int ProcessId,
+    string ProcessName,
+    string? Path);
+
 public sealed class GameProcessDetector : IDisposable
 {
     private const string GameConfigStorePath = @"System\GameConfigStore\Children";
     private const string MatchedExeFullPathName = "MatchedExeFullPath";
+    private static readonly TimeSpan ResultCacheDuration =
+        TimeSpan.FromMilliseconds(500);
 
     private static readonly HashSet<string> IgnoredProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -46,11 +53,19 @@ public sealed class GameProcessDetector : IDisposable
     };
 
     private readonly HashSet<string> _knownGamePaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _explicitGamePaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _explicitGameNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<string?>> _knownGamesByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<int> _pinnedProcessIds = [];
     private readonly EffectiveGameModeMonitor _effectiveGameMode = new();
     private readonly AppSettings? _settings;
+    private readonly object _sync = new();
     private DateTimeOffset _nextGameConfigReload;
+    private DateTimeOffset _lastDetection;
+    private bool _lastDetectionResult;
+    private DateTimeOffset _lastFpsCandidateDetection;
+    private GameProcessCandidate? _lastFpsCandidate;
+    private int? _lastFpsExcludedProcessId;
 
     public int KnownGameCount => _knownGamePaths.Count;
 
@@ -63,9 +78,18 @@ public sealed class GameProcessDetector : IDisposable
 
     public void ReloadKnownGames()
     {
+        lock (_sync)
+            ReloadKnownGamesCore();
+    }
+
+    private void ReloadKnownGamesCore()
+    {
         _knownGamePaths.Clear();
+        _explicitGamePaths.Clear();
+        _explicitGameNames.Clear();
         _knownGamesByName.Clear();
         _pinnedProcessIds.Clear();
+        _lastDetection = DateTimeOffset.MinValue;
         _nextGameConfigReload = DateTimeOffset.UtcNow.AddSeconds(30);
 
         using var root = Registry.CurrentUser.OpenSubKey(GameConfigStorePath, writable: false);
@@ -79,13 +103,104 @@ public sealed class GameProcessDetector : IDisposable
             }
         }
         foreach (var path in _settings?.IncludedGamePaths ?? [])
+        {
             AddKnownGamePath(path);
+            var normalized = NormalizePath(path);
+            if (normalized is null)
+                continue;
+            _explicitGamePaths.Add(normalized);
+            _explicitGameNames.Add(NormalizeName(normalized));
+        }
+        _lastFpsCandidateDetection = DateTimeOffset.MinValue;
+        _lastFpsCandidate = null;
+        _lastFpsExcludedProcessId = null;
+    }
+
+    internal GameProcessCandidate? FindRunningGameProcessForFps(
+        int? excludedProcessId = null)
+    {
+        lock (_sync)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastFpsCandidateDetection < TimeSpan.FromSeconds(1) &&
+                _lastFpsExcludedProcessId == excludedProcessId)
+                return _lastFpsCandidate;
+            if (now >= _nextGameConfigReload)
+                ReloadKnownGamesCore();
+            var foregroundId = EffectiveGameModeMonitor.TryGetForegroundProcessId(
+                out var value)
+                ? value
+                : 0;
+            var candidates = new List<(GameProcessCandidate Candidate,
+                bool Foreground, bool Explicit)>();
+            foreach (var process in Process.GetProcesses())
+            {
+                using (process)
+                {
+                    string name;
+                    try { name = NormalizeName(process.ProcessName); }
+                    catch { continue; }
+                    string? path = null;
+                    try { path = NormalizePath(process.MainModule?.FileName); }
+                    catch { }
+                    if (IsExcluded(path))
+                        continue;
+                    var explicitPath =
+                        path is not null && _explicitGamePaths.Contains(path);
+                    var nameKnown = _knownGamesByName.TryGetValue(
+                        name,
+                        out var knownPaths);
+                    if (!explicitPath && !nameKnown)
+                        continue;
+                    var explicitGame = explicitPath ||
+                        path is null && _explicitGameNames.Contains(name);
+                    var pathMatches = explicitPath || knownPaths?.Any(knownPath =>
+                        knownPath is null ||
+                        path is not null && string.Equals(
+                            knownPath,
+                            path,
+                            StringComparison.OrdinalIgnoreCase)) == true;
+                    if (!pathMatches && !explicitGame)
+                        continue;
+                    candidates.Add((
+                        new GameProcessCandidate(
+                            process.Id,
+                            process.ProcessName,
+                            path),
+                        process.Id == foregroundId,
+                        explicitGame));
+                }
+            }
+            _lastFpsCandidate = candidates
+                .Where(candidate =>
+                    candidate.Candidate.ProcessId != excludedProcessId)
+                .OrderByDescending(candidate => candidate.Foreground)
+                .ThenByDescending(candidate => candidate.Explicit)
+                .Select(candidate => candidate.Candidate)
+                .FirstOrDefault();
+            _lastFpsCandidateDetection = now;
+            _lastFpsExcludedProcessId = excludedProcessId;
+            return _lastFpsCandidate;
+        }
     }
 
     public bool AreGamesRunning()
     {
-        if (DateTimeOffset.UtcNow >= _nextGameConfigReload)
-            ReloadKnownGames();
+        lock (_sync)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastDetection < ResultCacheDuration)
+                return _lastDetectionResult;
+            if (now >= _nextGameConfigReload)
+                ReloadKnownGamesCore();
+            _lastDetectionResult = DetectGamesRunning();
+            _lastDetection = now;
+            return _lastDetectionResult;
+        }
+    }
+
+    private bool DetectGamesRunning()
+    {
         var processes = ReadProcesses().ToArray();
         var excludedIds = processes
             .Where(process => IsExcluded(process.Path))

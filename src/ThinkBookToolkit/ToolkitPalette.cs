@@ -44,4 +44,24 @@ internal readonly record struct ToolkitPalette(
             "#1FA971",
             "#C57A12",
             "#D94A59");
+
+    public static ToolkitPalette For(bool isDark, bool hasBackgroundImage)
+    {
+        var palette = For(isDark);
+        if (!hasBackgroundImage)
+            return palette;
+        return isDark
+            ? palette with
+            {
+                Sidebar = "#CC10182A",
+                Surface = "#59151F33",
+                SurfaceRaised = "#801B2840"
+            }
+            : palette with
+            {
+                Sidebar = "#99FFFFFF",
+                Surface = "#40FFFFFF",
+                SurfaceRaised = "#66F7F9FD"
+            };
+    }
 }

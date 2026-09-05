@@ -1,11 +1,11 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "1.0.2"
+  #define AppVersion "1.0.3"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\dist\v1.0.2\ThinkBookToolkit-1.0.2-win-x64-framework-dependent"
+  #define SourceDir "..\dist\v1.0.3\ThinkBookToolkit-1.0.3-win-x64-framework-dependent"
 #endif
 #ifndef OutputDir
-  #define OutputDir "..\dist\v1.0.2"
+  #define OutputDir "..\dist\v1.0.3"
 #endif
 #ifndef ChineseMessagesFile
   #define ChineseMessagesFile "compiler:Languages\ChineseSimplified.isl"
@@ -95,6 +95,10 @@ chinesesimplified.RestoreFanBackendFailed=安装已完成，但无法恢复选�
 english.RestoreFanBackendFailed=Setup completed, but the preserved fan backend could not be restored: %1
 chinesesimplified.ToolkitStillRunning=ThinkBook Toolkit 仍在运行，安装程序无法安全地自动退出这个版本。%n%n请在系统托盘中右键单击 ThinkBook Toolkit 图标并选择“退出”。程序完全退出后，点击“重试”。%n%n请勿使用任务管理器强制结束进程，以免风扇保持在最后写入的转速。
 english.ToolkitStillRunning=ThinkBook Toolkit is still running and this version cannot be closed safely by Setup.%n%nRight-click the ThinkBook Toolkit tray icon and choose Exit. After the application has completely exited, click Retry.%n%nDo not force-end the process in Task Manager, because the fans could remain at the last written speed.
+chinesesimplified.UiAccessPathNote=安装在其它位置可能导致 OSD 在全屏游戏中不可用。
+english.UiAccessPathNote=Installing elsewhere may prevent the OSD from appearing over full-screen games.
+chinesesimplified.UiAccessPathWarning=所选路径不在 Program Files 受保护目录中。安装在其它位置可能导致 OSD 在全屏游戏中不可用。%n%n是否仍要使用此路径？
+english.UiAccessPathWarning=The selected path is outside the protected Program Files folders. Installing elsewhere may prevent the OSD from appearing over full-screen games.%n%nUse this path anyway?
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
@@ -109,15 +113,19 @@ Name: "{autodesktop}\ThinkBook Toolkit"; Filename: "{app}\ThinkBookToolkit.exe";
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Run]
-Filename: "{sys}\sc.exe"; Parameters: "create {#GuardianServiceName} binPath= ""\""{app}\ThinkBookToolkit.exe\"" --fan-watchdog-service"" start= demand DisplayName= ""ThinkBook Toolkit Guardian"""; Flags: runhidden waituntilterminated
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Import-Certificate -FilePath '{app}\ThinkBookToolkit.cer' -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' | Out-Null"""; Flags: runhidden waituntilterminated; StatusMsg: "Trusting ThinkBook Toolkit..."
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Import-Certificate -FilePath '{app}\ThinkBookToolkit.cer' -CertStoreLocation 'Cert:\LocalMachine\Root' | Out-Null"""; Flags: runhidden waituntilterminated; StatusMsg: "Enabling UIAccess..."
+Filename: "{sys}\sc.exe"; Parameters: "create {#GuardianServiceName} binPath= ""\""{app}\ThinkBookToolkit.Guardian.exe\"""" start= demand DisplayName= ""ThinkBook Toolkit Guardian"""; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "description {#GuardianServiceName} ""Restores firmware automatic fan control if ThinkBook Toolkit exits unexpectedly."""; Flags: runhidden waituntilterminated
-Filename: "{app}\ThinkBookToolkit.exe"; Parameters: "--configure-lenovo-dll-directory ""{code:CustomLenovoDllDirectory}"""; Flags: runhidden waituntilterminated; Check: UseCustomLenovoDllDirectory
-Filename: "{app}\ThinkBookToolkit.exe"; Parameters: "--configure-lenovo-dll-directory"; Flags: runhidden waituntilterminated; Check: not UseCustomLenovoDllDirectory
-Filename: "{app}\ThinkBookToolkit.exe"; Description: "{cm:LaunchProgram,ThinkBook Toolkit}"; Flags: nowait postinstall skipifsilent runascurrentuser
+Filename: "{app}\ThinkBookToolkit.exe"; Parameters: "--configure-lenovo-dll-directory ""{code:CustomLenovoDllDirectory}"""; Verb: "runas"; Flags: shellexec runhidden waituntilterminated; Check: UseCustomLenovoDllDirectory
+Filename: "{app}\ThinkBookToolkit.exe"; Parameters: "--configure-lenovo-dll-directory"; Verb: "runas"; Flags: shellexec runhidden waituntilterminated; Check: not UseCustomLenovoDllDirectory
+Filename: "{app}\ThinkBookToolkit.exe"; Description: "{cm:LaunchProgram,ThinkBook Toolkit}"; Verb: "runas"; Flags: shellexec nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\sc.exe"; Parameters: "stop {#GuardianServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "StopThinkBookToolkitGuardian"
 Filename: "{sys}\sc.exe"; Parameters: "delete {#GuardianServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteThinkBookToolkitGuardian"
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -eq 'CN=ThinkBookToolkit' | Remove-Item -Force -ErrorAction SilentlyContinue"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveThinkBookToolkitTrustedPeopleCertificate"
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Get-ChildItem Cert:\LocalMachine\Root | Where-Object Subject -eq 'CN=ThinkBookToolkit' | Remove-Item -Force -ErrorAction SilentlyContinue"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveThinkBookToolkitRootCertificate"
 
 [Code]
 var
@@ -127,6 +135,7 @@ var
   PreserveExistingFanBackend: Boolean;
   FanBackendDecisionDirectory: String;
   PreservedFanBackendPath: String;
+  UiAccessPathNote: TNewStaticText;
 
 const
   FanBackendFileName = 'ThinkBookToolkit.FanBackend.dll';
@@ -134,6 +143,28 @@ const
 function NormalizedDirectory(Path: String): String;
 begin
   Result := RemoveBackslashUnlessRoot(Path);
+end;
+
+function IsUiAccessSecurePath(Path: String): Boolean;
+var
+  NormalizedPath: String;
+  ProgramFiles64: String;
+  ProgramFiles32: String;
+begin
+  NormalizedPath := Uppercase(NormalizedDirectory(Path));
+  ProgramFiles64 := Uppercase(NormalizedDirectory(ExpandConstant('{commonpf64}')));
+  ProgramFiles32 := Uppercase(NormalizedDirectory(ExpandConstant('{commonpf32}')));
+  Result :=
+    SameText(NormalizedPath, ProgramFiles64) or
+    SameText(NormalizedPath, ProgramFiles32) or
+    (Pos(ProgramFiles64 + '\', NormalizedPath) = 1) or
+    (Pos(ProgramFiles32 + '\', NormalizedPath) = 1);
+end;
+
+procedure UpdateUiAccessPathNote(Sender: TObject);
+begin
+  if Assigned(UiAccessPathNote) then
+    UiAccessPathNote.Visible := not IsUiAccessSecurePath(WizardForm.DirEdit.Text);
 end;
 
 function DirectoryHasContents(Path: String): Boolean;
@@ -335,7 +366,8 @@ begin
     ApplicationPath := ExpandConstant('{app}\ThinkBookToolkit.exe');
     if FileExists(ApplicationPath) then
     begin
-      Exec(
+      ShellExec(
+        'runas',
         ApplicationPath,
         '--exit-for-update',
         ExpandConstant('{app}'),
@@ -344,7 +376,8 @@ begin
         ResultCode);
     end;
 
-    for WaitIndex := 1 to 20 do
+    { Fan/control cleanup can take longer than five seconds on some backends. }
+    for WaitIndex := 1 to 80 do
     begin
       if not ToolkitIsRunning then
         Break;
@@ -517,6 +550,18 @@ var
   ExistingLenovoDllDirectory: String;
   UseExistingLenovoDllDirectory: Boolean;
 begin
+  UiAccessPathNote := TNewStaticText.Create(WizardForm);
+  UiAccessPathNote.Parent := WizardForm.SelectDirPage;
+  UiAccessPathNote.Left := WizardForm.DirEdit.Left;
+  UiAccessPathNote.Top := WizardForm.DirEdit.Top + WizardForm.DirEdit.Height + ScaleY(8);
+  UiAccessPathNote.Width := WizardForm.DirEdit.Width;
+  UiAccessPathNote.Height := ScaleY(34);
+  UiAccessPathNote.WordWrap := True;
+  UiAccessPathNote.Font.Color := clRed;
+  UiAccessPathNote.Caption := CustomMessage('UiAccessPathNote');
+  WizardForm.DirEdit.OnChange := @UpdateUiAccessPathNote;
+  UpdateUiAccessPathNote(nil);
+
   UseExistingLenovoDllDirectory :=
     TryLoadExistingLenovoDllDirectory(ExistingLenovoDllDirectory);
 
@@ -576,6 +621,16 @@ begin
   if CurPageID = wpSelectDir then
   begin
     SelectedDirectory := NormalizedDirectory(WizardDirValue);
+    if not IsUiAccessSecurePath(SelectedDirectory) and
+       (SuppressibleMsgBox(
+          CustomMessage('UiAccessPathWarning'),
+          mbError,
+          MB_YESNO or MB_DEFBUTTON2,
+          IDNO) <> IDYES) then
+    begin
+      Result := False;
+      Exit;
+    end;
     ConfirmedDeleteDirectory := '';
     if not SameText(FanBackendDecisionDirectory, SelectedDirectory) then
     begin

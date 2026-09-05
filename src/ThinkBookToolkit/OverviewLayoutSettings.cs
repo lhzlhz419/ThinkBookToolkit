@@ -53,9 +53,9 @@ internal static class OverviewLayoutDefaults
     private static readonly IReadOnlyDictionary<string, string[]> Definitions =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "maximum-frequency", "temperature", "power"],
+            [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "performance-core-average-frequency", "efficiency-core-average-frequency", "maximum-frequency", "temperature", "power"],
             [OverviewCardIds.Gpu] = ["utilization", "vram-utilization", "core-frequency", "vram-frequency", "core-temperature", "hotspot-temperature", "vram-temperature", "power"],
-            [OverviewCardIds.Battery] = ["status", "charge", "health", "power"],
+            [OverviewCardIds.Battery] = ["status", "charge", "capacity", "health", "power"],
             [OverviewCardIds.MemoryStorage] = ["physical-memory", "virtual-memory", "slot1-temperature", "slot2-temperature", "disk-temperatures", "disk-health", "utilization", "average-temperature"],
             [OverviewCardIds.Fans] = ["fan1-speed", "fan2-speed", "fan1-target", "fan2-target"],
             [OverviewCardIds.Power] = ["cpu-pl1", "cpu-pl2", "cpu-temperature", "turbo-time", "gpu-boost", "gpu-tgp", "gpu-temperature", "gpu-to-cpu", "atpp", "nv-target-tpp", "nv-default-gpu", "nv-min-gpu", "nv-max-gpu", "nv-gpu-temperature", "nv-dynamic-boost"],
@@ -132,18 +132,19 @@ internal static class OverviewLayoutDefaults
         OverviewLayoutSettings? value,
         string cardId)
     {
-        var normalized = Normalize(value);
-        return normalized.Cards.TryGetValue(cardId, out var card) &&
-               card.Enabled;
+        if (!Definitions.TryGetValue(cardId, out var items)) return false;
+        if (value?.Cards?.TryGetValue(cardId, out var card) != true || card is null)
+            return true;
+        return card.Enabled && items.Any(item =>
+            card.Items?.TryGetValue(item, out var enabled) != true || enabled);
     }
 
     public static bool IsHeroCardEnabled(
         OverviewLayoutSettings? value,
         string cardId)
     {
-        var normalized = Normalize(value);
-        return normalized.HeroCards.TryGetValue(cardId, out var enabled) &&
-               enabled;
+        return HeroDefinitions.Contains(cardId, StringComparer.OrdinalIgnoreCase) &&
+            (value?.HeroCards?.TryGetValue(cardId, out var enabled) != true || enabled);
     }
 
     public static bool IsItemEnabled(
@@ -151,11 +152,12 @@ internal static class OverviewLayoutDefaults
         string cardId,
         string itemId)
     {
-        var normalized = Normalize(value);
-        return normalized.Cards.TryGetValue(cardId, out var card) &&
-               card.Enabled &&
-               card.Items.TryGetValue(itemId, out var enabled) &&
-               enabled;
+        if (!Definitions.TryGetValue(cardId, out var items) ||
+            !items.Contains(itemId, StringComparer.OrdinalIgnoreCase)) return false;
+        if (value?.Cards?.TryGetValue(cardId, out var card) != true || card is null)
+            return true;
+        return card.Enabled &&
+            (card.Items?.TryGetValue(itemId, out var enabled) != true || enabled);
     }
 
     public static IReadOnlyDictionary<string, string[]> CardDefinitions =>
@@ -168,9 +170,9 @@ internal static class OverviewLayoutDefaults
         DetailedCardDefinitions { get; } =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "maximum-frequency", "temperature", "power"],
+            [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "performance-core-average-frequency", "efficiency-core-average-frequency", "maximum-frequency", "temperature", "power"],
             [OverviewCardIds.Gpu] = ["utilization", "vram-utilization", "core-frequency", "vram-frequency", "core-temperature", "hotspot-temperature", "vram-temperature", "power"],
-            [OverviewCardIds.Battery] = ["status", "charge", "health", "power"],
+            [OverviewCardIds.Battery] = ["status", "charge", "capacity", "health", "power"],
             [OverviewCardIds.MemoryStorage] = ["physical-memory", "virtual-memory", "slot1-temperature", "slot2-temperature", "disk-temperatures", "disk-health"],
             [OverviewCardIds.Fans] = ["fan1-speed", "fan2-speed", "fan1-target", "fan2-target"],
             [OverviewCardIds.Power] = ["cpu-pl1", "cpu-pl2", "cpu-temperature", "turbo-time", "gpu-boost", "gpu-tgp", "gpu-temperature", "gpu-to-cpu", "atpp", "nv-target-tpp", "nv-default-gpu", "nv-min-gpu", "nv-max-gpu", "nv-gpu-temperature", "nv-dynamic-boost"],
@@ -183,7 +185,7 @@ internal static class OverviewLayoutDefaults
         {
             [OverviewCardIds.Cpu] = ["temperature", "power"],
             [OverviewCardIds.Gpu] = ["core-temperature", "power"],
-            [OverviewCardIds.Battery] = ["charge", "health", "power"],
+            [OverviewCardIds.Battery] = ["charge", "capacity", "health", "power"],
             [OverviewCardIds.MemoryStorage] = ["utilization", "average-temperature"],
             [OverviewCardIds.Fans] = ["fan1-speed", "fan2-speed"],
             [OverviewCardIds.Warranty] = ["status", "remaining-days"]

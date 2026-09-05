@@ -7,3 +7,4 @@ dist/
 *.user
 *.suo
 *.zip
+signing/*.pfx

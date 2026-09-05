@@ -45,6 +45,25 @@ ThinkBook Toolkit 是面向部分 Lenovo ThinkBook 设备的 Windows 原生控�
 
 切换 GPU 模式或执行部分固件操作可能需要重启。正常退出以及执行会重启计算机的操作前，软件会先尝试恢复固件自动风扇控制。
 
+## 与其它软件联动
+
+“设置 > 与其它软件联动”默认使用端口 `2975`，仅监听本机回环地址。
+`GET http://127.0.0.1:2975/` 可读取共享的传感器快照。选择“允许共享数据和调整部分设置”后，可向以下地址提交带有 `value` 字段的 JSON：
+
+```text
+POST /performance-mode  PowerSaving | Intelligent | Performance | Geek
+POST /fan-strategy      FirmwareAutomatic | FixedRpm | FanCurve | AdvancedCurve
+POST /fan-full-speed    true | false
+```
+
+例如：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:2975/performance-mode `
+  -Method Post -ContentType application/json `
+  -Body '{"value":"Performance"}'
+```
+
 ## 可替换风扇后端
 
 Toolkit 会从程序目录加载 `ThinkBookToolkit.FanBackend.dll`。本仓库只包含 WMI 实现；替换这一个文件即可改变风扇监控与控制方式。Toolkit 不会根据设备型号选择或拒绝某个后端。

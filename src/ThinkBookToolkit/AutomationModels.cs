@@ -37,7 +37,10 @@ public enum AutomationStepKind
     ToggleToolkitWindow,
     OpenApplication,
     Delay = 30,
-    RunMacro = 31
+    RunMacro = 31,
+    OsdEnabled = 32,
+    OsdLockPosition = 33,
+    SensorRecordingEnabled = 34
 }
 
 public enum AutomationTriggerKind

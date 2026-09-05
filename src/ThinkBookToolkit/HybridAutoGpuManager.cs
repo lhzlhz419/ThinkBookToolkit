@@ -151,7 +151,6 @@ internal sealed class HybridAutoGpuManager : IDisposable
                     state.CurrentMode))
                 return;
 
-            RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
             var isAcConnected = true;
             if (BatteryInformationReader.TryGetAcConnectionState(
                     out var detectedAcState))
@@ -479,7 +478,8 @@ internal sealed class HybridAutoGpuManager : IDisposable
             return;
 
         RenderOptions.ProcessRenderMode =
-            HybridAutoGpuPolicy.ShouldUseSoftwareRendering(_workingMode)
+            HardwareAccelerationManager.CurrentMode ==
+            HardwareAccelerationMode.Disabled
                 ? RenderMode.SoftwareOnly
                 : RenderMode.Default;
     }

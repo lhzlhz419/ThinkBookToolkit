@@ -66,7 +66,9 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
     protected ToolkitPageBase(ToolkitRuntimeService runtime)
     {
         Runtime = runtime;
-        Palette = ToolkitPalette.For(runtime.IsDark);
+        Palette = ToolkitPalette.For(
+            runtime.IsDark,
+            runtime.HasCustomBackground);
         FontFamily = UiTypography.FontFamilyFor(runtime.Settings.Language);
         FontSize = 14;
         Foreground = Brush(Palette.Text);
@@ -318,7 +320,9 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             new MonitorSection(null,
             [
                 new(L("利用率", "Utilization"), nameof(HardwareMonitorViewModel.CpuUtilization), ItemId: "utilization"),
-                new(L("平均频率", "Average frequency"), nameof(HardwareMonitorViewModel.CpuAverageFrequency), ItemId: "average-frequency"),
+                new(L("平均频率", "Average frequency"), nameof(HardwareMonitorViewModel.CpuAverageFrequency), ItemId: "average-frequency", VisibilityProperty: nameof(HardwareMonitorViewModel.CpuAverageFrequencyVisible)),
+                new(L("性能核平均频率", "Performance-core average frequency"), nameof(HardwareMonitorViewModel.CpuPerformanceCoreAverageFrequency), ItemId: "performance-core-average-frequency", VisibilityProperty: nameof(HardwareMonitorViewModel.CpuPerformanceCoreAverageFrequencyVisible)),
+                new(L("能效核平均频率", "Efficiency-core average frequency"), nameof(HardwareMonitorViewModel.CpuEfficiencyCoreAverageFrequency), ItemId: "efficiency-core-average-frequency", VisibilityProperty: nameof(HardwareMonitorViewModel.CpuEfficiencyCoreAverageFrequencyVisible)),
                 new(L("最高频率", "Maximum frequency"), nameof(HardwareMonitorViewModel.CpuMaximumFrequency), ItemId: "maximum-frequency"),
                 new(L("温度", "Temperature"), nameof(HardwareMonitorViewModel.CpuTemperature), ItemId: "temperature"),
                 new(L("功耗", "Power"), nameof(HardwareMonitorViewModel.CpuPower), ItemId: "power")
@@ -355,6 +359,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             [
                 new(L("当前状态", "Status"), nameof(HardwareMonitorViewModel.BatteryState), ItemId: "status"),
                 new(L("电量", "Charge"), nameof(HardwareMonitorViewModel.BatteryCharge), ItemId: "charge"),
+                new(L("电池容量", "Capacity"), nameof(HardwareMonitorViewModel.BatteryCapacity), ItemId: "capacity"),
                 new(L("健康度", "Health"), nameof(HardwareMonitorViewModel.BatteryHealth), ItemId: "health"),
                 new(L("功率", "Power"), nameof(HardwareMonitorViewModel.BatteryPower), ItemId: "power")
             ])), layout);
@@ -364,7 +369,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             new MonitorSection(null,
             [
                 new(L("物理内存", "Physical memory"), nameof(HardwareMonitorViewModel.PhysicalMemory), ItemId: "physical-memory"),
-                new(L("虚拟内存", "Virtual memory"), nameof(HardwareMonitorViewModel.VirtualMemory), ItemId: "virtual-memory"),
+                new(L("已提交", "Committed"), nameof(HardwareMonitorViewModel.VirtualMemory), ItemId: "virtual-memory"),
                 new(L("内存插槽1温度", "Memory slot 1 temperature"), nameof(HardwareMonitorViewModel.MemorySlot1Temperature), ItemId: "slot1-temperature"),
                 new(L("内存插槽2温度", "Memory slot 2 temperature"), nameof(HardwareMonitorViewModel.MemorySlot2Temperature), ItemId: "slot2-temperature")
             ],

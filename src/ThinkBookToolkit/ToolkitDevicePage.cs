@@ -13,6 +13,8 @@ internal sealed class ToolkitDevicePage : ToolkitPageBase
 {
     private readonly DeviceViewModel _viewModel;
     private readonly CancellationTokenSource _lifetime = new();
+    private bool _disposed;
+    private bool _loadingInProgress;
     private readonly StackPanel _root = new();
     private readonly TextBlock _loading;
 
@@ -30,30 +32,53 @@ internal sealed class ToolkitDevicePage : ToolkitPageBase
         };
         _root.Children.Add(_loading);
         Content = _root;
-        Loaded += async (_, _) => await LoadAsync();
+        Loaded += OnLoaded;
     }
 
     internal void RenderForTesting() => Render();
 
+    private async void OnLoaded(object sender, RoutedEventArgs args)
+    {
+        try { await LoadAsync(); }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error("Device page loading failed.", ex);
+            if (!_disposed)
+                Runtime.SetStatus(L("设备信息读取失败：", "Device information failed: ") + ex.Message);
+        }
+    }
+
     private async Task LoadAsync()
     {
-        if (!_viewModel.DeviceLoadAttempted &&
-            Runtime.Report?.IsAvailable(FeatureIds.DeviceInformation) != false)
+        if (_disposed || _loadingInProgress)
+            return;
+        _loadingInProgress = true;
+        var token = _lifetime.Token;
+        try
         {
-            await _viewModel.LoadDeviceAsync(_lifetime.Token);
-        }
-        Render();
-
-        if (!_viewModel.WarrantyLoadAttempted &&
-            Runtime.Report?.IsAvailable(FeatureIds.WarrantyInformation) == true)
-        {
-            await _viewModel.LoadWarrantyAsync(_lifetime.Token);
+            if (!_viewModel.DeviceLoadAttempted &&
+                Runtime.Report?.IsAvailable(FeatureIds.DeviceInformation) != false)
+            {
+                await _viewModel.LoadDeviceAsync(token);
+            }
+            if (token.IsCancellationRequested) return;
             Render();
+
+            if (!_viewModel.WarrantyLoadAttempted &&
+                Runtime.Report?.IsAvailable(FeatureIds.WarrantyInformation) == true)
+            {
+                await _viewModel.LoadWarrantyAsync(token);
+                if (token.IsCancellationRequested) return;
+                Render();
+            }
         }
+        finally { _loadingInProgress = false; }
     }
 
     private void Render()
     {
+        if (_disposed) return;
         _root.Children.Clear();
         var info = _viewModel.Snapshot;
         if (info is not null)
@@ -478,6 +503,9 @@ internal sealed class ToolkitDevicePage : ToolkitPageBase
 
     public override void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+        Loaded -= OnLoaded;
         _lifetime.Cancel();
         _lifetime.Dispose();
         base.Dispose();
@@ -498,7 +526,9 @@ internal sealed class ToolkitDevicePage : ToolkitPageBase
             DeviceLoadAttempted = true;
             try
             {
-                Snapshot = await Task.Run(DeviceInformationService.ReadAll, cancellationToken);
+                var snapshot = await Task.Run(DeviceInformationService.ReadAll, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                Snapshot = snapshot;
                 Status = string.Empty;
             }
             catch (OperationCanceledException) { }
@@ -516,7 +546,9 @@ internal sealed class ToolkitDevicePage : ToolkitPageBase
             WarrantyLoadAttempted = true;
             try
             {
-                Warranty = await WarrantyService.GetWarrantyAsync(cancellationToken);
+                var warranty = await WarrantyService.GetWarrantyAsync(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                Warranty = warranty;
                 Status = Warranty.State == WarrantyState.Unavailable
                     ? Runtime.L("保修信息不可用", "Warranty information is unavailable")
                     : string.Empty;

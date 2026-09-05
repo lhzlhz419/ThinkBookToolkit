@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.ServiceProcess;
 
 namespace ThinkBookToolkit;
@@ -88,15 +90,14 @@ internal static class ItsModeController
             ? LegacyFullSpeedEnable
             : LegacyFullSpeedDisable;
 
-    private static void SetLegacyMode(ItsMode mode)
+    internal static void SetLegacyMode(ItsMode mode)
     {
         var serviceCommands = LegacyServiceCommandsForMode(mode);
         if (mode != ItsMode.Geek)
             TryDisableLegacyGeekOverlay();
 
-        using var service = new ServiceController(LegacyServiceName);
         foreach (var command in serviceCommands)
-            service.ExecuteCommand(command);
+            SendLegacyServiceControl((uint)command);
 
         uint? energyOutput = null;
         if (mode == ItsMode.Geek)
@@ -135,6 +136,98 @@ internal static class ItsModeController
                 "the LITSSVC mode transition will continue: " + ex.Message);
         }
     }
+
+    private static void SendLegacyServiceControl(uint controlCode)
+    {
+        var manager = OpenSCManager(
+            null,
+            null,
+            ScManagerConnect);
+        if (manager == IntPtr.Zero)
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "OpenSCManager failed.");
+        }
+        try
+        {
+            var service = OpenService(
+                manager,
+                LegacyServiceName,
+                ServiceQueryStatus | ServiceUserDefinedControl);
+            if (service == IntPtr.Zero)
+            {
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    $"OpenService({LegacyServiceName}) failed.");
+            }
+            try
+            {
+                if (!ControlService(
+                        service,
+                        controlCode,
+                        out var status))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        $"ControlService({LegacyServiceName}, " +
+                        $"0x{controlCode:X2}) failed.");
+                }
+                ToolkitLog.Info(
+                    $"Legacy service control succeeded: " +
+                    $"service={LegacyServiceName}; command=0x{controlCode:X2}; " +
+                    $"state={status.CurrentState}; win32={status.Win32ExitCode}; " +
+                    $"serviceExit={status.ServiceSpecificExitCode}.");
+            }
+            finally
+            {
+                _ = CloseServiceHandle(service);
+            }
+        }
+        finally
+        {
+            _ = CloseServiceHandle(manager);
+        }
+    }
+
+    private const uint ScManagerConnect = 0x0001;
+    private const uint ServiceQueryStatus = 0x0004;
+    private const uint ServiceUserDefinedControl = 0x0100;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ServiceStatus
+    {
+        public uint ServiceType;
+        public uint CurrentState;
+        public uint ControlsAccepted;
+        public uint Win32ExitCode;
+        public uint ServiceSpecificExitCode;
+        public uint CheckPoint;
+        public uint WaitHint;
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenSCManager(
+        string? machineName,
+        string? databaseName,
+        uint desiredAccess);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenService(
+        IntPtr manager,
+        string serviceName,
+        uint desiredAccess);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ControlService(
+        IntPtr service,
+        uint control,
+        out ServiceStatus status);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseServiceHandle(IntPtr handle);
 
     private static Exception Unsupported(
         ItsMode mode,

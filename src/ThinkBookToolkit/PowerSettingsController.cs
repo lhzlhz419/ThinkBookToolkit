@@ -98,6 +98,10 @@ internal static class PowerSettingsController
 
     private static readonly PowerSetting[] Settings =
         Enum.GetValues<PowerSetting>();
+    private static readonly PowerSetting[] WmiReadableSettings = Settings
+        .Where(setting =>
+            (PowerSettingAvailability.LegacyAll & Flag(setting)) != 0)
+        .ToArray();
 
     private static readonly Lazy<PowerDeviceProfile> DetectedProfile = new(() =>
     {
@@ -124,6 +128,11 @@ internal static class PowerSettingsController
 
     internal static void SetProfileForTesting(PowerDeviceProfile? profile) =>
         _profileForTesting = profile;
+
+    internal static bool IsWmiWritableSetting(
+        PowerDeviceProfile profile,
+        PowerSetting setting) =>
+        profile.Writable && profile.IsExpected(setting);
 
     internal static PowerDeviceProfile ResolveProfile(
         string model,
@@ -279,6 +288,7 @@ internal static class PowerSettingsController
         {
             var nvPcfAvailable =
                 (state.AvailableSettings & NvPcfPowerPolicy.NvPcfMask) != 0;
+            var betaCpuAvailable = state.BetaCpuPowerKind.HasValue;
             if (nvPcfAvailable && !NvPcfPowerPolicy.IsValid(state))
                 return false;
             if (state.BetaCpuPowerKind.HasValue &&
@@ -290,7 +300,7 @@ internal static class PowerSettingsController
                 return false;
             if (profile.Writable)
                 Validate(state, profile);
-            return profile.Writable || nvPcfAvailable;
+            return profile.Writable || nvPcfAvailable || betaCpuAvailable;
         }
         catch (ArgumentException) { return false; }
         catch (OverflowException) { return false; }
@@ -374,7 +384,7 @@ internal static class PowerSettingsController
             using var other = GetActiveOtherMethod();
             foreach (var setting in Settings)
             {
-                if (CurrentProfile.IsExpected(setting) &&
+                if (IsWmiWritableSetting(CurrentProfile, setting) &&
                     selection.IsLocked(setting) && current.IsAvailable(setting) &&
                     target.IsAvailable(setting) &&
                     Value(current, setting) is int currentValue &&
@@ -415,7 +425,7 @@ internal static class PowerSettingsController
     private static PowerSettingsState ReadState(ManagementObject other, PowerDeviceProfile profile)
     {
         var raw = new Dictionary<PowerSetting, int>();
-        foreach (var setting in Settings.Where(profile.IsExpected))
+        foreach (var setting in WmiReadableSettings)
         {
             if (TryReadFeatureValue(other, Id(setting), out var value))
                 raw[setting] = value;
@@ -454,7 +464,8 @@ internal static class PowerSettingsController
             throw new NotSupportedException("Power settings are read-only on this device.");
         foreach (var setting in Settings)
         {
-            if (profile.IsExpected(setting) && state.IsAvailable(setting) &&
+            if (IsWmiWritableSetting(profile, setting) &&
+                state.IsAvailable(setting) &&
                 Value(state, setting) is int value)
                 WriteSetting(other, setting, value, profile);
         }
@@ -486,7 +497,8 @@ internal static class PowerSettingsController
                 PowerSetting.CpuTurboTimeLimit or
                 PowerSetting.CpuTemperatureLimit)
                 continue;
-            if (!profile.IsExpected(setting) || !state.IsAvailable(setting))
+            if (!IsWmiWritableSetting(profile, setting) ||
+                !state.IsAvailable(setting))
                 continue;
             var value = Value(state, setting);
             if (!value.HasValue)

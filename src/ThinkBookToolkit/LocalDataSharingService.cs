@@ -15,6 +15,8 @@ internal sealed record SharedHardwareSnapshot(
     int? Fan2Rpm,
     string? PerformanceMode);
 
+internal sealed record IntegrationControlResult(bool Success, string? Error);
+
 internal sealed class LocalDataSharingService : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -23,14 +25,21 @@ internal sealed class LocalDataSharingService : IDisposable
     };
 
     private readonly Func<ToolkitRuntimeSnapshot> _snapshotProvider;
+    private readonly Func<SoftwareIntegrationMode> _modeProvider;
+    private readonly Func<string, string, Task<string?>> _controlHandler;
     private readonly object _gate = new();
     private HttpListener? _listener;
     private CancellationTokenSource? _cancellation;
     private Task? _listenerTask;
 
-    public LocalDataSharingService(Func<ToolkitRuntimeSnapshot> snapshotProvider)
+    public LocalDataSharingService(
+        Func<ToolkitRuntimeSnapshot> snapshotProvider,
+        Func<SoftwareIntegrationMode> modeProvider,
+        Func<string, string, Task<string?>> controlHandler)
     {
         _snapshotProvider = snapshotProvider;
+        _modeProvider = modeProvider;
+        _controlHandler = controlHandler;
     }
 
     public bool IsRunning
@@ -155,6 +164,8 @@ internal sealed class LocalDataSharingService : IDisposable
         {
             var response = context.Response;
             response.Headers["Access-Control-Allow-Origin"] = "*";
+            response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
+            response.Headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
             response.Headers["Cache-Control"] = "no-store";
             if (context.Request.HttpMethod.Equals(
                     "OPTIONS",
@@ -164,23 +175,76 @@ internal sealed class LocalDataSharingService : IDisposable
                 response.Close();
                 return;
             }
-            if (!context.Request.HttpMethod.Equals(
+            if (context.Request.HttpMethod.Equals(
                     "GET",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                await WriteJsonAsync(
+                    response,
+                    BuildSnapshot(_snapshotProvider()),
+                    HttpStatusCode.OK,
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            if (!context.Request.HttpMethod.Equals(
+                    "POST",
                     StringComparison.OrdinalIgnoreCase))
             {
                 response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
                 response.Close();
                 return;
             }
-
-            var payload = BuildSnapshot(_snapshotProvider());
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions);
-            response.StatusCode = (int)HttpStatusCode.OK;
-            response.ContentType = "application/json; charset=utf-8";
-            response.ContentLength64 = bytes.Length;
-            await response.OutputStream.WriteAsync(bytes, cancellationToken)
-                .ConfigureAwait(false);
-            response.Close();
+            if (_modeProvider() != SoftwareIntegrationMode.ShareDataAndControl)
+            {
+                await WriteJsonAsync(
+                    response,
+                    new IntegrationControlResult(
+                        false,
+                        "Control requests are disabled."),
+                    HttpStatusCode.Forbidden,
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            var route = context.Request.Url?.AbsolutePath.Trim('/').ToLowerInvariant()
+                ?? string.Empty;
+            if (route is not ("performance-mode" or "fan-strategy" or
+                "fan-full-speed"))
+            {
+                await WriteJsonAsync(
+                    response,
+                    new IntegrationControlResult(false, "Unknown control route."),
+                    HttpStatusCode.NotFound,
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            string value;
+            using (var document = await JsonDocument.ParseAsync(
+                       context.Request.InputStream,
+                       cancellationToken: cancellationToken).ConfigureAwait(false))
+            {
+                if (!document.RootElement.TryGetProperty("value", out var property))
+                {
+                    await WriteJsonAsync(
+                        response,
+                        new IntegrationControlResult(false, "JSON property 'value' is required."),
+                        HttpStatusCode.BadRequest,
+                        cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                value = property.ValueKind == JsonValueKind.String
+                    ? property.GetString() ?? string.Empty
+                    : property.GetRawText();
+            }
+            var error = await _controlHandler(route, value).ConfigureAwait(false);
+            await WriteJsonAsync(
+                response,
+                new IntegrationControlResult(
+                    string.IsNullOrWhiteSpace(error),
+                    error),
+                string.IsNullOrWhiteSpace(error)
+                    ? HttpStatusCode.OK
+                    : HttpStatusCode.BadRequest,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -197,6 +261,20 @@ internal sealed class LocalDataSharingService : IDisposable
             }
             catch { }
         }
+    }
+
+    private static async Task WriteJsonAsync<T>(
+        HttpListenerResponse response,
+        T value,
+        HttpStatusCode status,
+        CancellationToken token)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
+        response.StatusCode = (int)status;
+        response.ContentType = "application/json; charset=utf-8";
+        response.ContentLength64 = bytes.Length;
+        await response.OutputStream.WriteAsync(bytes, token).ConfigureAwait(false);
+        response.Close();
     }
 
     private void StopCore()

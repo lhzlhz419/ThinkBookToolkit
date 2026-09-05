@@ -33,7 +33,8 @@ internal sealed record GpuModeApplyResult(
     bool ParentStaged,
     bool ChildStaged,
     GpuControlProtocol Protocol,
-    string? Warning = null);
+    string? Warning = null,
+    bool AwaitingLiveConfirmation = false);
 
 internal static class GpuModeController
 {
@@ -163,8 +164,13 @@ internal static class GpuModeController
             }
         }
 
-        SetAndVerifyChildMode(target, capabilities);
-        return new(false, false, true, capabilities.Protocol);
+        var awaitingLiveConfirmation = SetChildMode(target, capabilities);
+        return new(
+            false,
+            false,
+            true,
+            capabilities.Protocol,
+            AwaitingLiveConfirmation: awaitingLiveConfirmation);
     }
 
     public static bool IsHybridMode(GpuWorkingMode mode) =>
@@ -208,7 +214,7 @@ internal static class GpuModeController
         ExitLegacyDiscreteMode();
         try
         {
-            SetAndVerifyChildMode(target, capabilities);
+            _ = SetChildMode(target, capabilities);
             return new(true, true, true, capabilities.Protocol);
         }
         catch (Exception ex)
@@ -238,25 +244,43 @@ internal static class GpuModeController
     internal static bool IsBiosAssistantSuccess(uint returnData) =>
         (returnData & 0x80000000u) != 0;
 
-    private static void SetAndVerifyChildMode(
+    private static bool SetChildMode(
         GpuWorkingMode target,
         GpuModeCapabilities capabilities)
     {
         if (!IsHybridMode(target))
             throw new ArgumentOutOfRangeException(nameof(target));
-        using var gameZone = LenovoWmi.GetActiveInstance(GameZoneClass);
-        if (capabilities.SupportsGSync)
-        {
-            TryDisableGSync(gameZone);
-        }
-        if (!capabilities.SupportsIgpuMode)
-            return;
         var expected = target switch
         {
             GpuWorkingMode.IntegratedOnly => 1,
             GpuWorkingMode.HybridAuto => 2,
             _ => 0
         };
+        using var gameZone = LenovoWmi.GetActiveInstance(GameZoneClass);
+        if (capabilities.SupportsGSync)
+        {
+            TryDisableGSync(
+                gameZone,
+                verify: capabilities.Protocol !=
+                        GpuControlProtocol.LegacyThreeMode);
+        }
+        if (!capabilities.SupportsIgpuMode)
+            return false;
+        if (capabilities.Protocol == GpuControlProtocol.LegacyThreeMode)
+        {
+            // LLT's old GameZone path treats this as a void setter. Some
+            // providers expose an output object that is not meaningful, so
+            // do not validate it or perform an immediate status read.
+            LenovoWmi.InvokeVoid(gameZone, "SetIGPUModeStatus",
+                new Dictionary<string, object> { ["mode"] = expected });
+            ToolkitLog.Info(
+                $"Legacy GPU mode request {target} was accepted without " +
+                "immediate readback validation.");
+            return ShouldAwaitLiveConfirmation(
+                capabilities.Protocol,
+                target);
+        }
+
         LenovoWmi.InvokeChecked(gameZone, "SetIGPUModeStatus",
             new Dictionary<string, object> { ["mode"] = expected });
         var actual = LenovoWmi.InvokeCheckedInt(
@@ -264,15 +288,45 @@ internal static class GpuModeController
         if (actual != expected)
             throw new InvalidOperationException(
                 $"iGPUMode mismatch: expected={expected}, actual={actual}.");
+        return false;
     }
 
-    private static void TryDisableGSync(ManagementObject gameZone)
+    internal static void RetryLegacyIntegratedOnlyWithoutReadback()
+    {
+        using var gameZone = LenovoWmi.GetActiveInstance(GameZoneClass);
+        LenovoWmi.InvokeVoid(
+            gameZone,
+            "SetIGPUModeStatus",
+            new Dictionary<string, object> { ["mode"] = 1 });
+        ToolkitLog.Info(
+            "Legacy iGPU-only request was written again without readback.");
+    }
+
+    internal static bool ShouldAwaitLiveConfirmation(
+        GpuControlProtocol protocol,
+        GpuWorkingMode target) =>
+        protocol == GpuControlProtocol.LegacyThreeMode &&
+        target == GpuWorkingMode.IntegratedOnly;
+
+    private static void TryDisableGSync(
+        ManagementObject gameZone,
+        bool verify)
     {
         try
         {
-            LenovoWmi.InvokeChecked(gameZone, "SetGSyncStatus",
-                new Dictionary<string, object> { ["Data"] = 0 });
-            if (TryReadGSync(gameZone, out var actual) && actual != 0)
+            if (verify)
+            {
+                LenovoWmi.InvokeChecked(gameZone, "SetGSyncStatus",
+                    new Dictionary<string, object> { ["Data"] = 0 });
+            }
+            else
+            {
+                LenovoWmi.InvokeVoid(gameZone, "SetGSyncStatus",
+                    new Dictionary<string, object> { ["Data"] = 0 });
+            }
+            if (verify &&
+                TryReadGSync(gameZone, out var actual) &&
+                actual != 0)
             {
                 ToolkitLog.Warning(
                     $"GSync remained enabled after the compatibility " +

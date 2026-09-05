@@ -15,6 +15,9 @@ and does not replace or modify those terms.
 | BlackSharp.Core | 1.1.4 | MPL-2.0 | <https://github.com/Blacktempel/BlackSharp> |
 | HidSharp | 2.6.4 | Apache-2.0 | <https://www.zer7.com/software/hidsharp> |
 | LLT.WindowsDisplayAPI | 1.3.2-pre17 | LGPL-3.0-only | <https://github.com/LenovoLegionToolkit-Team/WindowsDisplayAPI> |
+| LLT.PresentMonFps | 2.0.8-pre.12 | MIT | <https://github.com/LenovoLegionToolkit-Team/PresentMonFps> |
+| Vortice.MediaFoundation | 3.8.3 | MIT | <https://github.com/amerkoleci/Vortice.Windows> |
+| Vortice.Direct3D11 | 3.8.3 | MIT | <https://github.com/amerkoleci/Vortice.Windows> |
 | NvAPIWrapper source submodule | commit `a024687` | LGPL-3.0 | <https://github.com/LenovoLegionToolkit-Team/NvAPIWrapper> |
 | ZenStates-Core source submodule | v1.90 (`999cdb6`) | GPL-3.0 | <https://github.com/irusanov/ZenStates-Core> |
 | NAudio.Wasapi / NAudio.Core | 2.2.1 | MIT | <https://github.com/naudio/NAudio> |

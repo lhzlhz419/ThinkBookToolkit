@@ -174,6 +174,7 @@ internal static class WarrantyService
         var serialHash = HashSerialNumber(serialNumber);
         var cached = await ReadCacheAsync(cancellationToken);
         var matchingCache = cached is not null &&
+                            cached.SchemaVersion >= 3 &&
                             string.Equals(
                                 cached.SerialHash,
                                 serialHash,
@@ -182,7 +183,7 @@ internal static class WarrantyService
 
         if (matchingCache &&
             cached!.IsFromToday() &&
-            cached.SchemaVersion >= 2)
+            cached.SchemaVersion >= 3)
         {
             cached.TryGetDates(out var cachedStart, out var cachedEnd);
             return WarrantySnapshot.FromDates(
@@ -199,7 +200,7 @@ internal static class WarrantyService
             await SaveCacheAsync(
                 new WarrantyCacheEntry
                 {
-                    SchemaVersion = 2,
+                    SchemaVersion = 3,
                     SerialHash = serialHash,
                     StartDate = result.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     EndDate = result.EndDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -336,8 +337,13 @@ internal static class WarrantyService
                 "Lenovo China did not return valid warranty data.");
         }
 
+        if (!TryReadBaseSummary(data, out var summaryStart, out var summaryEnd))
+        {
+            throw new InvalidOperationException(
+                "Lenovo China returned no valid base warranty summary.");
+        }
+
         var items = new List<WarrantyEntitlement>();
-        AddEntitlements(items, data, "baseinfo", "Base");
         if (TryGetProperty(data, "detailinfo", out var detail))
         {
             AddEntitlements(items, detail, "warranty", "Warranty");
@@ -355,13 +361,49 @@ internal static class WarrantyService
             .OrderBy(item => item.StartDate)
             .ThenBy(item => item.EndDate)
             .ToArray();
-        if (distinct.Length == 0)
-            throw new InvalidOperationException(
-                "Lenovo China returned no warranty item with valid start and end dates.");
         return new WarrantyQueryResult(
-            distinct.Min(item => item.StartDate),
-            distinct.Max(item => item.EndDate),
+            summaryStart,
+            summaryEnd,
             distinct);
+    }
+
+    private static bool TryReadBaseSummary(
+        JsonElement data,
+        out DateOnly startDate,
+        out DateOnly endDate)
+    {
+        startDate = default;
+        endDate = default;
+        if (!TryGetProperty(data, "baseinfo", out var values) ||
+            values.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        var starts = new List<DateOnly>();
+        var ends = new List<DateOnly>();
+        foreach (var value in values.EnumerateArray())
+        {
+            AddDate(starts, OptionalDate(value, "StartDate"));
+            AddDate(starts, OptionalDate(value, "PartStartDate"));
+            AddDate(starts, OptionalDate(value, "LaborStartDate"));
+            AddDate(starts, OptionalDate(value, "OnSiteStartDate"));
+            AddDate(ends, OptionalDate(value, "EndDate"));
+        }
+
+        if (starts.Count == 0 || ends.Count == 0)
+            return false;
+        startDate = starts.Min();
+        endDate = ends.Max();
+        return startDate < endDate;
+    }
+
+    private static void AddDate(
+        ICollection<DateOnly> target,
+        DateOnly? value)
+    {
+        if (value.HasValue)
+            target.Add(value.Value);
     }
 
     private static void AddEntitlements(

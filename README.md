@@ -82,6 +82,27 @@ Changing GPU mode or some firmware options may require a system restart. The app
 restores firmware-automatic fan control before normal exit and before actions
 that restart the computer.
 
+## Local software integration
+
+Settings > Integrate with other software exposes a loopback-only JSON endpoint
+on port `2975` by default. `GET http://127.0.0.1:2975/` returns the shared sensor
+snapshot. In "Share data and control selected settings" mode, send a JSON body
+containing `value` to one of these endpoints:
+
+```text
+POST /performance-mode  PowerSaving | Intelligent | Performance | Geek
+POST /fan-strategy      FirmwareAutomatic | FixedRpm | FanCurve | AdvancedCurve
+POST /fan-full-speed    true | false
+```
+
+For example:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:2975/performance-mode `
+  -Method Post -ContentType application/json `
+  -Body '{"value":"Performance"}'
+```
+
 ## Replaceable fan backend
 
 Toolkit loads `ThinkBookToolkit.FanBackend.dll` from the application directory.
@@ -191,6 +212,7 @@ Create the public, framework-dependent `0.2.4` release under
 `dist\v0.2.4\ThinkBookToolkit-0.2.4-win-x64-framework-dependent`:
 
 ```powershell
+.\scripts\generate_signing_certificate.ps1 -Password $env:TBT_CERT_PASSWORD
 .\scripts\build.ps1 -Configuration Release -Publish
 ```
 
@@ -200,6 +222,16 @@ Create the online installer (requires
 ```powershell
 .\scripts\build.ps1 -Configuration Release -Installer
 ```
+
+Release builds request UIAccess so that the hardware and Fn-key OSD windows
+can remain above full-screen applications. Set `TBT_CERT_PASSWORD` to a strong
+private value and run `generate_signing_certificate.ps1` once before publishing.
+The generated PFX is ignored by Git and must never be committed or distributed;
+the public CER is copied into the installer, which trusts it during installation.
+Debug builds use a separate non-UIAccess manifest and do not require signing.
+Installing outside a protected Program Files directory can prevent Windows from
+granting UIAccess, so Setup displays a warning when a different location is
+selected.
 
 The result is `dist\v0.2.4\ThinkBookToolkit-0.2.4-Setup.exe`. Its default destination
 is `Program Files\ThinkBook Toolkit`, and the destination can be changed in the

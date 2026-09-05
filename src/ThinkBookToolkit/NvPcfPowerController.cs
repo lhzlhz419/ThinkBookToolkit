@@ -92,6 +92,48 @@ internal static class NvPcfPowerPolicy
         };
     }
 
+    internal static PowerSettingAvailability ConvertibleSettingsFromWmi(
+        PowerDeviceProfile profile,
+        PowerSettingsState state)
+    {
+        if (!profile.Writable)
+            return PowerSettingAvailability.None;
+
+        bool Writable(PowerSetting setting) =>
+            PowerSettingsController.IsWmiWritableSetting(profile, setting) &&
+            state.IsAvailable(setting);
+        var result = PowerSettingAvailability.None;
+        if (Writable(PowerSetting.Atpp) &&
+            Writable(PowerSetting.GpuConfigurableTgp))
+        {
+            result |= PowerSettingsController.Flag(
+                PowerSetting.NvPcfAcTargetTppLimit);
+        }
+        if (Writable(PowerSetting.GpuConfigurableTgp))
+        {
+            result |= PowerSettingsController.Flag(
+                PowerSetting.NvPcfAcDefaultGpuLimit);
+        }
+        if (Writable(PowerSetting.GpuConfigurableTgp) &&
+            Writable(PowerSetting.GpuToCpuDynamicBoost))
+        {
+            result |= PowerSettingsController.Flag(
+                PowerSetting.NvPcfAcMinGpuLimit);
+        }
+        if (Writable(PowerSetting.GpuConfigurableTgp) &&
+            Writable(PowerSetting.GpuPowerBoost))
+        {
+            result |= PowerSettingsController.Flag(
+                PowerSetting.NvPcfAcMaxGpuLimit);
+        }
+        if (Writable(PowerSetting.GpuTemperatureLimit))
+        {
+            result |= PowerSettingsController.Flag(
+                PowerSetting.NvApiGpuTemperatureLimit);
+        }
+        return result;
+    }
+
     public static PowerSettingsState ToLegacy(PowerSettingsState state)
     {
         if (!TryValues(state, out var target, out var @default,

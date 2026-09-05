@@ -45,8 +45,8 @@ internal sealed class WarrantyDetailsWindow : Window
         list.Children.Add(new TextBlock
         {
             Text = _runtime.L(
-                $"最长有效期截至 {snapshot.EndDate:yyyy-MM-dd}，距今 {snapshot.RemainingDays} 天。仅显示同时具有有效开始和截止日期的项目。",
-                $"The longest coverage ends on {snapshot.EndDate:yyyy-MM-dd}, {snapshot.RemainingDays} days from today. Only entries with valid start and end dates are shown."),
+                "以下内容来自联想接口的详细保修信息，仅显示同时具有有效开始和截止日期的项目。",
+                "The entries below come from Lenovo's detailed warranty data. Only entries with valid start and end dates are shown."),
             Foreground = Brush(_palette.Muted),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 5, 0, 16)

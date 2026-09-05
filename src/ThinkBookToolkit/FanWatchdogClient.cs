@@ -69,10 +69,10 @@ internal sealed class FanWatchdogClient
         }
         catch (Exception ex)
         {
-            error = ex.Message;
+            error = ex.Message + " " + ex.GetBaseException().Message;
             ToolkitLog.Warning(
                 "Fan watchdog could not be armed. Forced process termination will not be able to restore firmware automatic fan control: " +
-                ex.Message);
+                error);
             return false;
         }
     }

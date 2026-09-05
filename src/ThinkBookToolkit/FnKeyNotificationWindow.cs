@@ -1,15 +1,13 @@
 using System;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 
 namespace ThinkBookToolkit;
 
-internal sealed class FnKeyNotificationWindow : Window
+internal sealed class FnKeyNotificationWindow : UiAccessOverlayWindow
 {
     private readonly DispatcherTimer _timer;
     private readonly TextBlock _message;
@@ -57,7 +55,7 @@ internal sealed class FnKeyNotificationWindow : Window
             Child = text
         };
 
-        SourceInitialized += (_, _) => ApplyNoActivateStyle();
+        SetOverlayClickThrough(true);
         Loaded += (_, _) => PositionWindow();
         _timer = new DispatcherTimer
         {
@@ -81,6 +79,7 @@ internal sealed class FnKeyNotificationWindow : Window
             Show();
         UpdateLayout();
         PositionWindow();
+        EscalateZOrder();
         _timer.Stop();
         _timer.Start();
     }
@@ -92,14 +91,6 @@ internal sealed class FnKeyNotificationWindow : Window
         Top = work.Bottom - ActualHeight - 54;
     }
 
-    private void ApplyNoActivateStyle()
-    {
-        var handle = new WindowInteropHelper(this).Handle;
-        var style = GetWindowLongPtr(handle, GwlExStyle).ToInt64();
-        style |= WsExToolWindow | WsExNoActivate;
-        _ = SetWindowLongPtr(handle, GwlExStyle, new IntPtr(style));
-    }
-
     private static SolidColorBrush Brush(string value)
     {
         var brush = new SolidColorBrush(
@@ -108,18 +99,4 @@ internal sealed class FnKeyNotificationWindow : Window
         return brush;
     }
 
-    private const int GwlExStyle = -20;
-    private const long WsExToolWindow = 0x00000080L;
-    private const long WsExNoActivate = 0x08000000L;
-
-    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static extern IntPtr GetWindowLongPtr(
-        IntPtr window,
-        int index);
-
-    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static extern IntPtr SetWindowLongPtr(
-        IntPtr window,
-        int index,
-        IntPtr value);
 }

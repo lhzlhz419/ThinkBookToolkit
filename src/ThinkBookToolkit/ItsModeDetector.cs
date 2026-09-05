@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using System;
+using System.Threading;
 
 namespace ThinkBookToolkit;
 
@@ -16,6 +17,7 @@ public sealed class ItsModeDetector
     private const string LegacyPath = @"SYSTEM\CurrentControlSet\Services\LITSSVC\LNBITS\IC\MMC";
     private const string LegacyBasePath = @"SYSTEM\CurrentControlSet\Services\LITSSVC\LNBITS\IC";
     private const int DispatcherVersion3 = 8192;
+    private static int _preferLegacyPath;
 
     public bool IsModeSwitchSupported()
     {
@@ -36,10 +38,27 @@ public sealed class ItsModeDetector
         using var legacy = Registry.LocalMachine.OpenSubKey(
             LegacyPath,
             writable: false);
+        var legacyAvailable = legacyBase is not null && legacy is not null;
+        if (Volatile.Read(ref _preferLegacyPath) != 0 && legacyAvailable)
+            return ItsModeControlPath.LegacyLitssvc;
         return ResolveControlPath(
             version,
-            legacyBase is not null && legacy is not null);
+            legacyAvailable);
     }
+
+    internal bool IsLegacyPathAvailable()
+    {
+        using var baseKey = Registry.LocalMachine.OpenSubKey(
+            LegacyBasePath,
+            writable: false);
+        using var key = Registry.LocalMachine.OpenSubKey(
+            LegacyPath,
+            writable: false);
+        return baseKey is not null && key is not null;
+    }
+
+    internal static void PreferLegacyPathForCurrentProcess() =>
+        Volatile.Write(ref _preferLegacyPath, 1);
 
     internal bool IsModeSupported(ItsMode mode) =>
         IsModeSupported(mode, GetControlPath());
@@ -67,6 +86,12 @@ public sealed class ItsModeDetector
 
     public ItsMode ReadMode()
     {
+        if (Volatile.Read(ref _preferLegacyPath) != 0)
+        {
+            var preferredLegacy = ReadLegacyMode();
+            if (preferredLegacy != ItsMode.Unknown)
+                return preferredLegacy;
+        }
         var modern = ReadModernMode();
         if (modern != ItsMode.Unknown)
             return modern;

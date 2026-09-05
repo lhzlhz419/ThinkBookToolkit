@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Reflection;
 using ThinkBookToolkit.FanBackend;
 
 namespace ThinkBookToolkit;
@@ -13,6 +14,11 @@ internal sealed record HardwareMonitorMetric(
 internal class HardwareMonitorViewModel : ToolkitViewModelBase
 {
     private ToolkitRuntimeSnapshot _snapshot;
+    private static readonly PropertyInfo[] DisplayProperties = typeof(HardwareMonitorViewModel)
+        .GetProperties(BindingFlags.Instance | BindingFlags.Public)
+        .Where(property => property.DeclaringType == typeof(HardwareMonitorViewModel) &&
+            property.CanRead && property.GetIndexParameters().Length == 0).ToArray();
+    private readonly object?[] _displayValues = new object?[DisplayProperties.Length];
 
     public HardwareMonitorViewModel(ToolkitRuntimeService runtime)
         : base(runtime)
@@ -25,7 +31,19 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     public string CpuModel => Model(_snapshot.Temperatures?.CpuName);
     public string CpuUtilization => Percent(_snapshot.Temperatures?.CpuLoadPercent);
     public string CpuAverageFrequency => Frequency(_snapshot.Temperatures?.CpuAverageClockMhz);
+    public string CpuPerformanceCoreAverageFrequency => Frequency(
+        _snapshot.Temperatures?.CpuPerformanceCoreAverageClockMhz);
+    public string CpuEfficiencyCoreAverageFrequency => Frequency(
+        _snapshot.Temperatures?.CpuEfficiencyCoreAverageClockMhz);
     public string CpuMaximumFrequency => Frequency(_snapshot.Temperatures?.CpuMaximumClockMhz);
+    public bool CpuAverageFrequencyVisible =>
+        Show(OverviewCardIds.Cpu, "average-frequency");
+    public bool CpuPerformanceCoreAverageFrequencyVisible =>
+        HasHybridCoreFrequencies &&
+        Show(OverviewCardIds.Cpu, "performance-core-average-frequency");
+    public bool CpuEfficiencyCoreAverageFrequencyVisible =>
+        HasHybridCoreFrequencies &&
+        Show(OverviewCardIds.Cpu, "efficiency-core-average-frequency");
     public string CpuTemperature => Temperature(_snapshot.Temperatures?.CpuTempC);
     public string CpuPower => Power(_snapshot.Temperatures?.CpuPowerW);
 
@@ -46,6 +64,9 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
             : Runtime.L("放电中", "Discharging");
     public string BatteryCharge => _snapshot.Battery is { FullChargeCapacityWh: > 0 } battery
         ? $"{Math.Clamp(battery.CurrentCapacityWh * 100 / battery.FullChargeCapacityWh, 0, 100):0}%"
+        : "--";
+    public string BatteryCapacity => _snapshot.Battery is { } battery
+        ? $"{battery.CurrentCapacityWh:0.00} Wh"
         : "--";
     public string BatteryHealth => _snapshot.Battery is { } battery
         ? $"{battery.HealthPercent:0.00}%"
@@ -88,6 +109,7 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         (Show(OverviewCardIds.Gpu, "power"), GpuPower));
     public string CompactBattery => CompactValues(
         (Show(OverviewCardIds.Battery, "charge"), BatteryCharge),
+        (Show(OverviewCardIds.Battery, "capacity"), BatteryCapacity),
         (Show(OverviewCardIds.Battery, "health"), BatteryHealth),
         (Show(OverviewCardIds.Battery, "power"), BatteryPower));
     public string CompactMemory => CompactValues(
@@ -251,7 +273,19 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     public virtual void Update(ToolkitRuntimeSnapshot snapshot)
     {
         _snapshot = snapshot;
-        Notify(string.Empty);
+        for (var index = 0; index < DisplayProperties.Length; index++)
+        {
+            var property = DisplayProperties[index];
+            var value = property.GetValue(this);
+            var previous = _displayValues[index];
+            if (Equals(previous, value) ||
+                previous is IReadOnlyList<HardwareMonitorMetric> oldMetrics &&
+                value is IReadOnlyList<HardwareMonitorMetric> newMetrics &&
+                oldMetrics.SequenceEqual(newMetrics))
+                continue;
+            _displayValues[index] = value;
+            Notify(property.Name);
+        }
     }
 
     private bool Show(string cardId, string itemId) =>
@@ -259,6 +293,12 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
             Runtime.Settings.OverviewLayout,
             cardId,
             itemId);
+
+    private bool HasHybridCoreFrequencies =>
+        _snapshot.Temperatures?.CpuPerformanceCoreAverageClockMhz.HasValue ==
+            true &&
+        _snapshot.Temperatures?.CpuEfficiencyCoreAverageClockMhz.HasValue ==
+            true;
 
     private static string CompactValues(
         params (bool Visible, string Value)[] values) =>

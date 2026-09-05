@@ -83,12 +83,13 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             "#A984FF");
         Add(
             OverviewCardIds.Battery,
-            ["charge", "health", "power"],
+            ["charge", "capacity", "health", "power"],
             L("电池", "Battery"),
             nameof(OverviewViewModel.CompactBattery),
             Detail(
                 OverviewCardIds.Battery,
                 ("charge", L("电量", "Charge")),
+                ("capacity", L("容量", "Capacity")),
                 ("health", L("健康度", "Health")),
                 ("power", L("功率", "Power"))),
             "\uE850",
@@ -200,6 +201,14 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
 
     private Border BuildHero()
     {
+        var heroAlpha = HeroBackgroundAlpha(
+            Runtime.HasCustomBackground);
+        Color HeroColor(string value)
+        {
+            var color = ColorFrom(value);
+            color.A = heroAlpha;
+            return color;
+        }
         var content = new Grid();
         content.ColumnDefinitions.Add(new ColumnDefinition
         {
@@ -282,8 +291,8 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             MinHeight = 172,
             CornerRadius = new CornerRadius(20),
             Background = new LinearGradientBrush(
-                ColorFrom("#5178F3"),
-                ColorFrom("#7955D9"),
+                HeroColor("#5178F3"),
+                HeroColor("#7955D9"),
                 0),
             Padding = new Thickness(24, 20, 22, 20),
             Margin = new Thickness(0, 0, 0, 16),
@@ -297,6 +306,9 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
                 pills.Children.Add(element);
         }
     }
+
+    internal static byte HeroBackgroundAlpha(bool hasBackgroundImage) =>
+        hasBackgroundImage ? (byte)0xB3 : byte.MaxValue;
 
     private Border HeroStatus(string label, string property, double valueFontSize = 14)
     {
