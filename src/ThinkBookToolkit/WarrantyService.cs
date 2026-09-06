@@ -174,7 +174,7 @@ internal static class WarrantyService
         var serialHash = HashSerialNumber(serialNumber);
         var cached = await ReadCacheAsync(cancellationToken);
         var matchingCache = cached is not null &&
-                            cached.SchemaVersion >= 3 &&
+                            cached.SchemaVersion >= 4 &&
                             string.Equals(
                                 cached.SerialHash,
                                 serialHash,
@@ -183,7 +183,7 @@ internal static class WarrantyService
 
         if (matchingCache &&
             cached!.IsFromToday() &&
-            cached.SchemaVersion >= 3)
+            cached.SchemaVersion >= 4)
         {
             cached.TryGetDates(out var cachedStart, out var cachedEnd);
             return WarrantySnapshot.FromDates(
@@ -200,7 +200,7 @@ internal static class WarrantyService
             await SaveCacheAsync(
                 new WarrantyCacheEntry
                 {
-                    SchemaVersion = 3,
+                    SchemaVersion = 4,
                     SerialHash = serialHash,
                     StartDate = result.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     EndDate = result.EndDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -384,6 +384,9 @@ internal static class WarrantyService
         var ends = new List<DateOnly>();
         foreach (var value in values.EnumerateArray())
         {
+            if (Text(value, "ServiceProductName").Trim() == "智询常伴" ||
+                Text(value, "ServiceProductNumber").Trim() == "2010290000001")
+                continue;
             AddDate(starts, OptionalDate(value, "StartDate"));
             AddDate(starts, OptionalDate(value, "PartStartDate"));
             AddDate(starts, OptionalDate(value, "LaborStartDate"));

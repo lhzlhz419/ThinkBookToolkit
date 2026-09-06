@@ -261,51 +261,9 @@ internal static class FeatureAvailabilityService
                 ? "NVAPI 控制组件可用"
                 : "未检测到 NVIDIA 独立显卡");
 
-        try
-        {
-            var nvPcf = NvPcfPowerController.Read();
-            var optionalChinese = string.Join("、", new[]
-            {
-                nvPcf.DynamicBoostEnabled.HasValue ? "Dynamic Boost" : null,
-                nvPcf.GpuTemperatureLimitC.HasValue ? "GPU 温度墙" : null
-            }.Where(value => value is not null));
-            var optionalEnglish = string.Join(", ", new[]
-            {
-                nvPcf.DynamicBoostEnabled.HasValue ? "Dynamic Boost" : null,
-                nvPcf.GpuTemperatureLimitC.HasValue ? "GPU thermal limit" : null
-            }.Where(value => value is not null));
-            result.Add(new(
-                FeatureIds.NvApiGpuPower,
-                "性能",
-                "NVAPI GPU 功耗调整（Beta）",
-                true,
-                $"已读取 4 项 NVPCF 功耗参数" +
-                (optionalChinese.Length > 0
-                    ? $"；附加可用：{optionalChinese}"
-                    : string.Empty) +
-                $"；布局：{nvPcf.LayoutName}",
-                EnglishDetail:
-                    "All four NVPCF power values are readable" +
-                    (optionalEnglish.Length > 0
-                        ? $"; additionally available: {optionalEnglish}"
-                        : string.Empty) +
-                    $"; layout: {nvPcf.LayoutName}"));
-        }
-        catch (Exception ex)
-        {
-            result.Add(new(
-                FeatureIds.NvApiGpuPower,
-                "性能",
-                "NVAPI GPU 功耗调整（Beta）",
-                false,
-                ExceptionDetail(ex)));
-        }
-        finally
-        {
-            // Capability detection must not retain an NVAPI client that could
-            // prevent Hybrid Auto or Hybrid iGPU mode from ejecting the dGPU.
-            NvPcfPowerController.Shutdown();
-        }
+        AddState(result, FeatureIds.NvApiGpuPower, "性能",
+            "NVAPI GPU 功耗调整（Beta）", false,
+            "等待 NVIDIA 独显活跃后检测。");
 
         if (CpuVendorDetector.IsIntel)
         {

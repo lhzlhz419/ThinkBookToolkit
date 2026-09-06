@@ -44,6 +44,54 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        var gpuFeatures = new FeatureAvailabilityReport([
+            new(FeatureIds.DiscreteGpuManagement, "性能", "状态", false, "missing"),
+            new(FeatureIds.GpuOverclock, "性能", "超频", true, "keep"),
+            new(FeatureIds.NvApiGpuPower, "性能", "功耗", false, "wait")]);
+        Assert(ReferenceEquals(gpuFeatures,
+                ToolkitRuntimeService.RestoreConnectedGpuFeatures(gpuFeatures, false)),
+            "Disconnected GPU must not trigger feature recovery.");
+        var recoveredGpu = ToolkitRuntimeService.RestoreConnectedGpuFeatures(gpuFeatures, true);
+        Assert(recoveredGpu.IsAvailable(FeatureIds.DiscreteGpuManagement) &&
+               recoveredGpu.Items.Single(x => x.Id == FeatureIds.GpuOverclock).Detail == "keep" &&
+               !recoveredGpu.IsAvailable(FeatureIds.NvApiGpuPower),
+            "GPU recovery must only probe unavailable management/overclock features.");
+        Assert(DiscreteGpuStatusFormatter.Format(DiscreteGpuActivityState.NotPresent, "P0", true) == "无" &&
+               DiscreteGpuStatusFormatter.Format(DiscreteGpuActivityState.Off, "P8", true) == "关闭",
+            "Absent and powered-off GPUs must have distinct labels.");
+        Assert(ToolkitLog.Allows("INFO", "INFO") &&
+               ToolkitLog.Allows("INFO", "WARN") &&
+               ToolkitLog.Allows("WARN", "ERROR") &&
+               !ToolkitLog.Allows("WARN", "INFO") &&
+               !ToolkitLog.Allows("ERROR", "WARN") &&
+               ToolkitLog.Allows("ERROR", "ERROR") &&
+               !ToolkitLog.Allows("NONE", "ERROR") &&
+               new AppSettings().LogLevel == "ERROR",
+            "Log severity filtering or defaults are incorrect.");
+        var activeNvidia = new TemperatureSnapshot(null, 50, null, null, 20, "", "GPU", "")
+        {
+            GpuName = "NVIDIA GeForce RTX 4060",
+            DiscreteGpuState = DiscreteGpuActivityState.Active
+        };
+        Assert(!ToolkitRuntimeService.CanProbeNvApiPower(null) &&
+               ToolkitRuntimeService.CanProbeNvApiPower(activeNvidia) &&
+               !ToolkitRuntimeService.CanProbeNvApiPower(activeNvidia with
+                   { DiscreteGpuState = DiscreteGpuActivityState.Inactive }) &&
+               !ToolkitRuntimeService.CanProbeNvApiPower(activeNvidia with
+                   { DiscreteGpuState = DiscreteGpuActivityState.Off }) &&
+               !ToolkitRuntimeService.CanProbeNvApiPower(activeNvidia with
+                   { GpuName = "AMD Radeon Graphics" }),
+            "NVAPI power probing must require an active NVIDIA discrete GPU.");
+        using (var gpuRuntime = new ToolkitRuntimeService(new AppSettings { UseNvApiGpuPower = true }))
+        {
+            gpuRuntime.SetReportForTesting(new FeatureAvailabilityReport([
+                new(FeatureIds.NvApiGpuPower, "性能", "NVAPI", true, "test")]));
+            gpuRuntime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty with { Temperatures = activeNvidia });
+            Assert(gpuRuntime.NvApiGpuPowerEnabled, "Active GPU must restore the saved NVAPI preference.");
+            gpuRuntime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty);
+            Assert(!gpuRuntime.NvApiGpuPowerEnabled && !gpuRuntime.NvApiGpuPowerVisible &&
+                gpuRuntime.Settings.UseNvApiGpuPower, "GPU loss must suspend, not erase, the saved preference.");
+        }
         using (var lifetimeRuntime = new ToolkitRuntimeService(new AppSettings()))
         {
             var page = new ToolkitDevicePage(lifetimeRuntime);
@@ -112,7 +160,7 @@ internal static class Program
         using var runtime = new ToolkitRuntimeService(settings);
         ModernTheme.Apply(Application.Current, runtime.IsDark);
         var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false);
-        Assert(window.Title == "ThinkBook Toolkit v1.0.3",
+        Assert(window.Title == "ThinkBook Toolkit v1.0.4",
             "The native title bar does not show the current application version.");
         var backgroundLayer = typeof(ToolkitMainWindow)
             .GetField(
@@ -227,7 +275,7 @@ internal static class Program
         using (var versionSettingsPage = new ToolkitSettingsPage(runtime))
         {
             Assert(ContainsText(versionSettingsPage, "当前版本") &&
-                   ContainsText(versionSettingsPage, "v1.0.3") &&
+                   ContainsText(versionSettingsPage, "v1.0.4") &&
                    ContainsButtonText(versionSettingsPage, "检查更新") &&
                    ContainsText(versionSettingsPage, "软件更新检查") &&
                    ContainsText(versionSettingsPage, "自定义游戏检测路径"),
@@ -644,9 +692,31 @@ internal static class Program
                 GpuPerformanceState = string.Empty
             }
         });
-        Assert(gpuStatusRow.Visibility == Visibility.Collapsed &&
+        Assert(gpuStatusRow.Visibility == Visibility.Visible &&
+               ContainsText(gpuStatusRow, "关闭") &&
                gpuOverclockRow.Visibility == Visibility.Collapsed,
-            "dGPU status and overclock controls remain visible while the dGPU is off.");
+            "Powered-off dGPU status must stay visible while overclock controls are hidden.");
+        var restartGpu = GetPrivateField<Button>(performance, "_restartDiscreteGpu");
+        foreach (var gpuMode in Enum.GetValues<GpuWorkingMode>())
+        {
+            runtime.SetSnapshotForTesting(runtime.Snapshot with
+            {
+                GpuMode = gpuMode,
+                Temperatures = originalGpuTemperatures with { DiscreteGpuState = DiscreteGpuActivityState.Inactive }
+            });
+            Assert((restartGpu.Visibility == Visibility.Visible) ==
+                (gpuMode is GpuWorkingMode.Hybrid or GpuWorkingMode.IntegratedOnly or GpuWorkingMode.HybridAuto),
+                "Restart GPU button must only be visible in the three hybrid modes.");
+            Assert(restartGpu.IsEnabled, "An inactive GPU can be restarted.");
+        }
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+        {
+            GpuMode = GpuWorkingMode.Hybrid,
+            Temperatures = originalGpuTemperatures with { DiscreteGpuState = DiscreteGpuActivityState.NotPresent }
+        });
+        Assert(ContainsText(gpuStatusRow, "无") && !restartGpu.IsEnabled &&
+               gpuStatusRow.Visibility == Visibility.Collapsed,
+            "Missing GPU must retain its None state but hide the entire status row, including restart.");
         runtime.SetSnapshotForTesting(runtime.Snapshot with
         {
             Temperatures = originalGpuTemperatures
@@ -1180,8 +1250,8 @@ internal static class Program
                SameRow(globalSettings.Children[4], globalSettings.Children[5]) &&
                !ContainsText(globalSettings,
                    "使用 NVAPI 调整 GPU 功耗（Beta）") &&
-               ContainsText(settingsPage,
-                   "使用 NVAPI 调整 GPU 功耗（Beta）") &&
+               (ContainsText(settingsPage,
+                   "使用 NVAPI 调整 GPU 功耗（Beta）") == runtime.NvApiGpuPowerVisible) &&
                !SameRow(globalSettings.Children[2], globalSettings.Children[3]),
             "Global settings require too much width for the requested 3+3 layout.");
         Assert(SameRow(startupSettings.Children[0], startupSettings.Children[1]) &&
@@ -1783,15 +1853,27 @@ internal static class Program
                 }
             };
         settings.UseNvApiGpuPower = true;
+        var reportBeforeGpuLockTest = runtime.Report!;
+        runtime.SetReportForTesting(new FeatureAvailabilityReport(
+            reportBeforeGpuLockTest.Items.Where(x => x.Id != FeatureIds.NvApiGpuPower)
+                .Append(new(FeatureIds.NvApiGpuPower, "性能", "NVAPI", true, "test"))));
+        runtime.SetSnapshotForTesting(runtime.Snapshot with { Temperatures = activeNvidia });
         Assert(runtime.CurrentPowerSettingsLocks.NvPcfAcDefaultGpuLimit &&
                !runtime.CurrentPowerSettingsLocks.CpuPl1 &&
                settings.PowerSettingsLocksByMode[ItsMode.Intelligent.ToString()]
                    .Locks.CpuPl1,
             "NVAPI and Lenovo GPU power locks are not maintained independently.");
-        settings.UseNvApiGpuPower = false;
+        runtime.SetSnapshotForTesting(runtime.Snapshot with
+            { Temperatures = activeNvidia with { DiscreteGpuState = DiscreteGpuActivityState.Inactive } });
         Assert(runtime.CurrentPowerSettingsLocks.CpuPl1 &&
-               !runtime.CurrentPowerSettingsLocks.NvPcfAcDefaultGpuLimit,
+               !runtime.CurrentPowerSettingsLocks.NvPcfAcDefaultGpuLimit && settings.UseNvApiGpuPower,
             "Returning to Lenovo power control did not restore its independent locks.");
+        runtime.SetSnapshotForTesting(runtime.Snapshot with { Temperatures = activeNvidia });
+        Assert(runtime.CurrentPowerSettingsLocks.NvPcfAcDefaultGpuLimit,
+            "GPU recovery must restore the independent NVAPI locks.");
+        settings.UseNvApiGpuPower = false;
+        runtime.SetSnapshotForTesting(runtime.Snapshot);
+        runtime.SetReportForTesting(reportBeforeGpuLockTest);
         Assert(MainWindow.SuppressSmallTargetChanges(
                    new FanTargets(1599, 1600),
                    new FanTargets(1500, 1500)) ==
@@ -3164,7 +3246,7 @@ internal static class Program
 
     private static void VerifyApplicationUpdateService()
     {
-        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.3",
+        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.4",
             "The application version is not the expected release version.");
         var release = ApplicationUpdateService.ParseReleaseJson(
             "{\"tag_name\":\"v1.1.0\",\"html_url\":" +
@@ -4229,6 +4311,12 @@ internal static class Program
                 "PartStartDate": "2025-11-22 00:00:00",
                 "EndDate": "2031-03-05",
                 "DateDifference": 1654
+              },
+              {
+                "ServiceProductName": "智询常伴",
+                "ServiceProductNumber": "2010290000001",
+                "LaborStartDate": "2026-03-30 00:00:00",
+                "EndDate": "2046-03-30"
               }
             ],
             "detailinfo": {
@@ -4976,7 +5064,12 @@ internal static class Program
                 ToolkitRuntimeSnapshot.Empty with
                 {
                     ItsMode = ItsMode.Performance,
-                    PowerSettings = state
+                    PowerSettings = state,
+                    Temperatures = new TemperatureSnapshot(null, 50, null, null, 20, "", "GPU", "")
+                    {
+                        GpuName = "NVIDIA GeForce RTX 4060",
+                        DiscreteGpuState = DiscreteGpuActivityState.Active
+                    }
                 });
             var overviewValues = new HardwareMonitorViewModel(runtime);
             Assert(overviewValues.PowerNvTargetTpp == "185 W" &&

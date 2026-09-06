@@ -15,6 +15,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly ComboBox _refresh = new() { MinWidth = 150 };
     private readonly ComboBox _language = new() { MinWidth = 150 };
     private readonly ComboBox _theme = new() { MinWidth = 170 };
+    private readonly ComboBox _logLevel = new() { MinWidth = 150 };
     private readonly ComboBox _hardwareAcceleration = new() { MinWidth = 190 };
     private readonly ComboBox _overviewMode = new() { MinWidth = 150 };
     private readonly ComboBox _startupMode = new() { MinWidth = 170 };
@@ -190,6 +191,26 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 "Share data and control selected settings"),
             SoftwareIntegrationMode.ShareDataAndControl);
         WireEvents();
+        foreach (var level in new[] { "INFO", "WARN", "ERROR", "NONE" })
+            AddChoice(_logLevel, level == "NONE" ? L("无", "None") : level, level);
+        _logLevel.SelectionChanged += (_, _) =>
+        {
+            if (_syncing) return;
+            var previous = Runtime.Settings.LogLevel;
+            var level = Selected<string>(_logLevel) ?? "ERROR";
+            try
+            {
+                Runtime.Settings.LogLevel = level;
+                CurveProfileStore.SaveSettings(Runtime.Settings);
+                ToolkitLog.Configure(level);
+            }
+            catch (Exception ex)
+            {
+                Runtime.Settings.LogLevel = previous;
+                Runtime.SetStatus(L("日志等级保存失败：", "Log level could not be saved: ") + ex.Message);
+                SyncControls();
+            }
+        };
     }
 
     private UIElement BuildLayout()
@@ -230,6 +251,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("关闭并重新创建硬件数据读取组件。", "Close and recreate the hardware data readers."),
             _restartReaders,
             "\uE72C"));
+        global.Children.Add(SettingRow(
+            "Log 等级", L("仅记录所选等级及更严重的信息。", "Record the selected severity and above."),
+            _logLevel, "\uE9D9"));
         global.Children.Add(SettingRow(
             L("背景图像", "Background image"),
             L(
@@ -281,8 +305,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("关闭按钮隐藏窗口；从托盘菜单选择退出才结束程序。", "The close button hides the window; Exit in the tray menu ends the app."),
             _closeToTray));
         startup.Children.Add(startupPrimary);
-        if (Runtime.Settings.UseNvApiGpuPower ||
-            Runtime.Report?.IsAvailable(FeatureIds.NvApiGpuPower) != false)
+        if (Runtime.NvApiGpuPowerVisible)
         {
             startup.Children.Add(SettingRow(
                 L(
@@ -1099,6 +1122,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         Select(_refresh, settings.IntervalSeconds);
         Select(_language, settings.Language);
         Select(_theme, settings.Theme);
+        Select(_logLevel, settings.LogLevel);
         Select(
             _hardwareAcceleration,
             settings.HardwareAccelerationMode);
@@ -1122,10 +1146,10 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 : settings.AttemptDisableControlOnSleepWhenUnsupported;
         _alternativeFullSpeed.IsChecked = settings.UseAlternativeFullSpeedMethod;
         _continuousFanWrites.IsChecked = settings.ContinuouslyWriteFanTargets;
-        _useNvApiGpuPower.IsChecked = settings.UseNvApiGpuPower;
+        _useNvApiGpuPower.IsChecked = Runtime.NvApiGpuPowerEnabled;
         _useNvApiGpuPower.IsEnabled =
-            Runtime.Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true ||
-            settings.UseNvApiGpuPower;
+            Runtime.NvApiGpuPowerVisible &&
+            Runtime.Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true;
         _useIntelMmioCpuPower.IsChecked = settings.UseIntelMmioCpuPower;
         _useIntelMmioCpuPower.IsEnabled = true;
         _useAmdZenStatesCpuPower.IsChecked = settings.UseAmdZenStatesCpuPower;

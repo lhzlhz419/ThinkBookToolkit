@@ -221,9 +221,118 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public MainWindow? FanRuntime => _fanRuntime;
 
-    internal bool NvApiGpuPowerEnabled =>
-        Settings.UseNvApiGpuPower &&
-        Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true;
+    // The saved preference survives temporary GPU disappearance. The active
+    // backend changes only after the same handoff used by the manual toggle.
+    internal bool NvApiGpuPowerEnabled { get; private set; }
+
+    internal bool NvApiGpuPowerVisible { get; private set; }
+    private DateTimeOffset _nextNvApiProbe;
+    private bool _nvApiDefaultsResetPending;
+    private readonly DiscreteGpuPresenceDetector _gpuPresence = new(() => null);
+    private bool _gpuRestartBusy;
+
+    internal static FeatureAvailabilityReport RestoreConnectedGpuFeatures(
+        FeatureAvailabilityReport report, bool connected) => !connected ? report :
+        new(report.Items.Select(item => !item.Available &&
+            item.Id is FeatureIds.DiscreteGpuManagement or FeatureIds.GpuOverclock
+                ? item with { Available = true, PartiallyAvailable = false,
+                    Detail = "重新检测到 NVIDIA 独立显卡，NVAPI 控制组件可用。" }
+                : item));
+
+    private async Task<TemperatureSnapshot?> RefreshConnectedGpuAsync(TemperatureSnapshot? temperatures)
+    {
+        var presence = await Task.Run(() => _gpuPresence.Capture());
+        if (presence.Reliable && presence.IsPresent && Report is { } report &&
+            (!report.IsAvailable(FeatureIds.DiscreteGpuManagement) ||
+             !report.IsAvailable(FeatureIds.GpuOverclock)))
+        {
+            Report = RestoreConnectedGpuFeatures(report, connected: true);
+            FeatureAvailabilityCache.Current = Report;
+            AvailabilityChanged?.Invoke(this, EventArgs.Empty);
+        }
+        if (presence.Reliable && !presence.IsPresent)
+            return (temperatures ?? new TemperatureSnapshot(null, null, null, null, null, "", "", ""))
+                with { DiscreteGpuState = DiscreteGpuActivityState.NotPresent, GpuPerformanceState = "" };
+        return temperatures;
+    }
+
+    internal static bool CanProbeNvApiPower(TemperatureSnapshot? temperatures) =>
+        temperatures?.DiscreteGpuState == DiscreteGpuActivityState.Active &&
+        (temperatures.GpuName.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) ||
+         temperatures.GpuName.Contains("GeForce", StringComparison.OrdinalIgnoreCase));
+
+    private async Task UpdateNvApiAvailabilityAsync(TemperatureSnapshot? temperatures)
+    {
+        var active = CanProbeNvApiPower(temperatures);
+        var changed = active != NvApiGpuPowerVisible;
+        if (!active && NvApiGpuPowerEnabled)
+            await ChangeNvApiGpuPowerAsync(false, automatic: true);
+        NvApiGpuPowerVisible = active;
+        if (!active)
+        {
+            _nextNvApiProbe = DateTimeOffset.MinValue;
+            if (changed)
+            {
+                NvPcfPowerController.Shutdown();
+                if (Report is not null)
+                {
+                    Report = new FeatureAvailabilityReport(Report.Items.Select(item =>
+                        item.Id == FeatureIds.NvApiGpuPower
+                            ? item with { Available = false, PartiallyAvailable = false,
+                                Detail = "等待 NVIDIA 独显活跃后检测。" }
+                            : item));
+                    FeatureAvailabilityCache.Current = Report;
+                }
+                AvailabilityChanged?.Invoke(this, EventArgs.Empty);
+            }
+            return;
+        }
+        if (!changed && Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true)
+        {
+            if (Settings.UseNvApiGpuPower && !NvApiGpuPowerEnabled &&
+                DateTimeOffset.UtcNow >= _nextNvApiProbe)
+            {
+                _nextNvApiProbe = DateTimeOffset.UtcNow.AddSeconds(30);
+                await ChangeNvApiGpuPowerAsync(true, automatic: true);
+            }
+            return;
+        }
+        if (!changed && DateTimeOffset.UtcNow < _nextNvApiProbe) return;
+        _nextNvApiProbe = DateTimeOffset.UtcNow.AddSeconds(30);
+        await _powerSettingsGate.WaitAsync();
+        try
+        {
+            FeatureAvailability feature;
+            try
+            {
+                if (_nvApiDefaultsResetPending)
+                {
+                    await Task.Run(NvPcfPowerController.ResetAllPowerOverrides);
+                    _nvApiDefaultsResetPending = false;
+                }
+                await Task.Run(NvPcfPowerController.Read);
+                feature = new(FeatureIds.NvApiGpuPower, "性能", "NVAPI GPU 功耗调整（Beta）",
+                    true, "已读取 4 项 NVPCF 功耗参数。");
+            }
+            catch (Exception ex)
+            {
+                feature = new(FeatureIds.NvApiGpuPower, "性能", "NVAPI GPU 功耗调整（Beta）",
+                    false, ex.GetBaseException().Message);
+                ToolkitLog.Warning("Deferred NVAPI capability probe failed: " + ex);
+            }
+            finally { NvPcfPowerController.Shutdown(); }
+            if (Report is not null)
+            {
+                Report = new FeatureAvailabilityReport(Report.Items
+                    .Where(item => item.Id != FeatureIds.NvApiGpuPower).Append(feature));
+                FeatureAvailabilityCache.Current = Report;
+            }
+        }
+        finally { _powerSettingsGate.Release(); }
+        if (Settings.UseNvApiGpuPower && Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true)
+            await ChangeNvApiGpuPowerAsync(true, automatic: true);
+        AvailabilityChanged?.Invoke(this, EventArgs.Empty);
+    }
     internal bool IntelMmioCpuPowerEnabled =>
         Settings.UseIntelMmioCpuPower &&
         Report?.IsAvailable(FeatureIds.IntelMmioCpuPower) == true;
@@ -699,6 +808,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     internal void SetSnapshotForTesting(ToolkitRuntimeSnapshot snapshot)
     {
+        NvApiGpuPowerVisible = CanProbeNvApiPower(snapshot.Temperatures);
+        NvApiGpuPowerEnabled = NvApiGpuPowerVisible && Settings.UseNvApiGpuPower &&
+            Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true;
         Snapshot = snapshot;
         SnapshotChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -1161,12 +1273,16 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
-    public async Task<string?> SetNvApiGpuPowerEnabledAsync(bool enabled)
+    public Task<string?> SetNvApiGpuPowerEnabledAsync(bool enabled) =>
+        ChangeNvApiGpuPowerAsync(enabled, automatic: false);
+
+    private async Task<string?> ChangeNvApiGpuPowerAsync(bool enabled, bool automatic)
     {
-        if (enabled == Settings.UseNvApiGpuPower)
+        if (enabled == NvApiGpuPowerEnabled &&
+            (automatic || enabled == Settings.UseNvApiGpuPower))
             return null;
         if (enabled &&
-            Report?.IsAvailable(FeatureIds.NvApiGpuPower) != true)
+            (!NvApiGpuPowerVisible || Report?.IsAvailable(FeatureIds.NvApiGpuPower) != true))
         {
             return L(
                 "当前设备无法读取全部四项 NVPCF 功耗参数。",
@@ -1179,6 +1295,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         string? failure = null;
         _ = CurrentPowerModeLock(create: false);
         var previousEnabled = Settings.UseNvApiGpuPower;
+        var previousActive = NvApiGpuPowerEnabled;
         var previousLegacyProfiles = ClonePowerModeLocks(
             Settings.PowerSettingsLocksByMode);
         var previousNvApiProfiles = ClonePowerModeLocks(
@@ -1187,13 +1304,17 @@ internal sealed class ToolkitRuntimeService : IDisposable
         var previousTarget = Settings.PowerSettingsLockTarget;
         try
         {
-            var source = await Task.Run(ReadPowerSettingsCore);
+            var source = automatic && !enabled
+                ? _cachedPowerSettings ?? Snapshot.PowerSettings ?? NvPcfPowerPolicy.EmptyState()
+                : await Task.Run(ReadPowerSettingsCore);
             PowerSettingsState confirmed;
             if (enabled)
                 confirmed = await EnableNvApiGpuPowerCoreAsync(source);
             else
                 confirmed = await DisableNvApiGpuPowerCoreAsync(source);
-            Settings.UseNvApiGpuPower = enabled;
+            NvApiGpuPowerEnabled = enabled;
+            if (!automatic)
+                Settings.UseNvApiGpuPower = enabled;
             _cachedPowerSettings = confirmed;
             SyncLegacyPowerLockFields();
             CurveProfileStore.SaveSettings(Settings);
@@ -1204,6 +1325,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         catch (Exception ex)
         {
             Settings.UseNvApiGpuPower = previousEnabled;
+            NvApiGpuPowerEnabled = previousActive;
             Settings.PowerSettingsLocksByMode = previousLegacyProfiles;
             Settings.NvApiPowerSettingsLocksByMode = previousNvApiProfiles;
             Settings.PowerSettingsLocks = previousLocks;
@@ -1221,8 +1343,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
         if (changed)
         {
+            await EnforcePowerSettingsLockAsync();
             OverviewLayoutChanged?.Invoke(this, EventArgs.Empty);
-            await RefreshAsync(force: true);
+            if (!automatic)
+                await RefreshAsync(force: true);
         }
         return failure;
     }
@@ -1263,6 +1387,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private async Task<PowerSettingsState> EnableNvApiGpuPowerCoreAsync(
         PowerSettingsState legacy)
     {
+        if (_nvApiDefaultsResetPending)
+        {
+            await Task.Run(NvPcfPowerController.ResetAllPowerOverrides);
+            _nvApiDefaultsResetPending = false;
+        }
         if (legacy.Atpp is null &&
             PowerSettingsController.GetDefaultState(Snapshot.ItsMode) is
             { Atpp: { } defaultAtpp })
@@ -1330,9 +1459,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             await Task.Run(NvPcfPowerController.ResetAllPowerOverrides);
+            _nvApiDefaultsResetPending = false;
         }
         catch (Exception ex)
         {
+            _nvApiDefaultsResetPending = true;
             NvPcfPowerController.Shutdown();
             ToolkitLog.Error(
                 "NVAPI GPU power overrides could not be reset while " +
@@ -1584,7 +1715,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         if (modeLock?.Locks is not { Any: true })
             return;
         modeLock.Target = confirmed;
-        var inactiveProfiles = Settings.UseNvApiGpuPower
+        var inactiveProfiles = NvApiGpuPowerEnabled
             ? Settings.PowerSettingsLocksByMode
             : Settings.NvApiPowerSettingsLocksByMode;
         var inactive = PowerModeLock(
@@ -1663,10 +1794,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private void SyncLegacyPowerLockFields()
     {
         var modeLock = CurrentPowerModeLock(create: false);
-        if (modeLock is null)
-            return;
-        Settings.PowerSettingsLocks = modeLock.Locks with { };
-        Settings.PowerSettingsLockTarget = modeLock.Target;
+        Settings.PowerSettingsLocks = modeLock is null
+            ? new PowerSettingsLockSelection() : modeLock.Locks with { };
+        Settings.PowerSettingsLockTarget = modeLock?.Target;
     }
 
     public Task<GpuWorkerCommandResponse>
@@ -1690,10 +1820,61 @@ internal sealed class ToolkitRuntimeService : IDisposable
         return result;
     }
 
+    public async Task<string?> RestartDiscreteGpuAsync()
+    {
+        if (_gpuRestartBusy || !DiscreteGpuStatusFormatter.IsRestartMode(Snapshot.GpuMode) ||
+            Snapshot.Temperatures?.DiscreteGpuState is not
+                (DiscreteGpuActivityState.Active or DiscreteGpuActivityState.Inactive))
+            return L("当前状态无法重启独立显卡。", "The discrete GPU cannot be restarted in its current state.");
+        _gpuRestartBusy = true;
+        _powerSettingsLockTimer.Stop();
+        await _powerSettingsGate.WaitAsync();
+        try
+        {
+            var presence = await Task.Run(() => _gpuPresence.Capture(force: true));
+            if (!presence.Reliable || presence.MatchingDeviceIds.Count != 1)
+                return L("无法唯一确定要重启的独立显卡。", "Could not identify a unique discrete GPU to restart.");
+            var start = new ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "pnputil.exe"),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            start.ArgumentList.Add("/restart-device");
+            start.ArgumentList.Add(presence.MatchingDeviceIds[0]);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("PnPUtil did not start.");
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var detail = (await output) + (await error);
+            if (process.ExitCode != 0)
+                return L("重启独立显卡失败：", "Discrete GPU restart failed: ") + detail.Trim();
+            _cachedPowerSettings = null;
+            NvPcfPowerController.Shutdown();
+            GpuTelemetryControl.RestartWorkers();
+            _nextGpuOverclockRetry = DateTimeOffset.MinValue;
+            return null;
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Error("Discrete GPU restart failed.", ex);
+            return ex.GetBaseException().Message;
+        }
+        finally
+        {
+            _powerSettingsGate.Release();
+            _gpuRestartBusy = false;
+            SyncPowerSettingsLockTimer();
+            await RefreshAsync(force: true);
+        }
+    }
+
     public async Task<string?> SetGpuOverclockEnabledAsync(bool enabled)
     {
-        if (Snapshot.Temperatures?.DiscreteGpuState ==
-            DiscreteGpuActivityState.Off)
+        if (Snapshot.Temperatures?.DiscreteGpuState is
+            DiscreteGpuActivityState.Off or DiscreteGpuActivityState.NotPresent)
         {
             return L(
                 "独立显卡已关闭，无法更改超频状态。",
@@ -1757,8 +1938,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         settings.Enabled = enabled;
         if (enabled || applyEvenIfDisabled)
         {
-            if (Snapshot.Temperatures?.DiscreteGpuState ==
-                DiscreteGpuActivityState.Off)
+            if (Snapshot.Temperatures?.DiscreteGpuState is
+                DiscreteGpuActivityState.Off or DiscreteGpuActivityState.NotPresent)
             {
                 return L(
                     "独立显卡已关闭，当前设置无法应用。",
@@ -1882,7 +2063,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             PowerSetting.CpuTemperatureLimit or
             PowerSetting.CpuTurboTimeLimit))
             return;
-        var inactiveProfiles = Settings.UseNvApiGpuPower
+        var inactiveProfiles = NvApiGpuPowerEnabled
             ? Settings.PowerSettingsLocksByMode
             : Settings.NvApiPowerSettingsLocksByMode;
         var inactive = PowerModeLock(
@@ -2124,7 +2305,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public async Task RefreshAsync(bool force = false)
     {
-        if (_polling || _disposed)
+        if (_polling || _disposed || _gpuRestartBusy)
             return;
         ItsMode? modeToLink = null;
         int? modeToLinkGeneration = null;
@@ -2137,11 +2318,18 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 await _fanRuntime.RuntimeRefreshAsync();
 
             var performance = _fanRuntime?.RuntimeSnapshot();
+            var itsMode = _confirmedPerformanceModeDuringRefresh ?? performance?.ItsMode ?? ItsMode.Unknown;
+            if (Report?.IsAvailable(FeatureIds.PerformanceMode) == true && itsMode == ItsMode.Unknown)
+                itsMode = await Task.Run(() => new ItsModeDetector().ReadMode());
+            // Backend handoff must select locks for the newly observed mode.
+            Snapshot = Snapshot with { ItsMode = itsMode };
             var temperatures = performance?.Temperatures;
             var fans = performance?.Fans;
             if (temperatures is null && _temperatureReader is not null)
                 temperatures = await ReadTemperatureSnapshotAsync();
             InitializeHybridCoreDisplayDefaults(temperatures);
+            temperatures = await RefreshConnectedGpuAsync(temperatures);
+            await UpdateNvApiAvailabilityAsync(temperatures);
             if (Settings.GpuOverclock.Enabled &&
                 GpuTelemetryControl.Mode == GpuTelemetryMode.Full &&
                 (temperatures?.DiscreteGpuState is
@@ -2192,15 +2380,6 @@ internal sealed class ToolkitRuntimeService : IDisposable
                         _powerSettingsGate.Release();
                     }
                 }
-            }
-
-            var itsMode = _confirmedPerformanceModeDuringRefresh ??
-                          performance?.ItsMode ??
-                          ItsMode.Unknown;
-            if (Report?.IsAvailable(FeatureIds.PerformanceMode) == true &&
-                itsMode == ItsMode.Unknown)
-            {
-                itsMode = await Task.Run(() => new ItsModeDetector().ReadMode());
             }
 
             GpuWorkingMode? gpuMode =
@@ -4348,13 +4527,14 @@ internal sealed class ToolkitRuntimeService : IDisposable
         Settings.NvApiPowerSettingsLocksByMode ??=
             new Dictionary<string, PowerModeLockSettings>(
                 StringComparer.OrdinalIgnoreCase);
-        var profiles = Settings.UseNvApiGpuPower
+        var profiles = NvApiGpuPowerEnabled
             ? Settings.NvApiPowerSettingsLocksByMode
             : Settings.PowerSettingsLocksByMode;
         var key = mode.ToString();
         if (profiles.TryGetValue(key, out var profile))
             return profile;
-        var migrateLegacy = profiles.Count == 0 &&
+        var migrateLegacy = NvApiGpuPowerEnabled == Settings.UseNvApiGpuPower &&
+                            profiles.Count == 0 &&
                             Settings.PowerSettingsLocks is { Any: true };
         if (!create && !migrateLegacy)
             return null;

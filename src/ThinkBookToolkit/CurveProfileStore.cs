@@ -130,6 +130,8 @@ public static class CurveProfileStore
                 return defaults;
 
             defaults.ConfigurationVersion = CurrentConfigurationVersion;
+            defaults.LogLevel = loaded.LogLevel is "INFO" or "WARN" or "ERROR" or "NONE"
+                ? loaded.LogLevel : "ERROR";
             defaults.Language = loaded.Language is "en-US" or "zh-CN" ? loaded.Language : defaults.Language;
             defaults.Theme = loaded.Theme is "dark" or "light" or "system"
                 ? loaded.Theme

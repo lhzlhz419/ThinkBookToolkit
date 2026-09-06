@@ -18,7 +18,8 @@ public enum DiscreteGpuActivityState
     Unknown,
     Active,
     Inactive,
-    Off
+    Off,
+    NotPresent
 }
 
 public sealed record TemperatureSnapshot(
@@ -302,6 +303,7 @@ public sealed class AppSettings
     public string ConfigurationVersion { get; set; } = CurveProfileStore.CurrentConfigurationVersion;
     public string Language { get; set; } = "zh-CN";
     public string Theme { get; set; } = "light";
+    public string LogLevel { get; set; } = "ERROR";
     public string BackgroundImagePath { get; set; } = "";
     public double BackgroundImageScalePercent { get; set; } = 100;
     public double BackgroundImageOpacityPercent { get; set; } = 30;

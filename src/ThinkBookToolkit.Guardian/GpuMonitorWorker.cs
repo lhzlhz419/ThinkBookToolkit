@@ -585,11 +585,22 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
         {
             _gpu ??= FindLaptopGpu();
             if (_gpu is null)
-                return NvidiaActivitySnapshot.Off;
+                return new(string.Empty, DiscreteGpuActivityState.NotPresent, string.Empty);
 
             if (string.IsNullOrWhiteSpace(_gpuName))
                 _gpuName = _gpu.FullName ?? string.Empty;
             var name = _gpuName;
+            // RTD3/GC6 is powered off, not simply an idle GPU with no apps.
+            try
+            {
+                if (_gpu.GetCoprocInfo().PowerState is CoprocPowerState.Gc6 or CoprocPowerState.GcOff)
+                    return new(name, DiscreteGpuActivityState.Off, string.Empty);
+            }
+            catch (NVIDIAApiException ex) when (!MeansPoweredOff(ex))
+            {
+                // Older drivers may not expose coprocessor information.
+            }
+            catch (NotSupportedException) { }
             var performanceState = ReadPerformanceState(_gpu, out var off);
             if (off)
             {
@@ -601,6 +612,7 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
 
             var applications = GPUApi.QueryActiveApps(_gpu.Handle);
             var active = applications.Any(application =>
+                application.ProcessId != Environment.ProcessId &&
                 !ExcludedApplications.Contains(
                     application.ProcessName,
                     StringComparer.OrdinalIgnoreCase));
@@ -783,7 +795,7 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
     private static bool IsToolkitProcessName(string? name)
     {
         var normalized = Path.GetFileNameWithoutExtension(name ?? string.Empty);
-        return string.Equals(
+        return normalized.StartsWith("ThinkBookToolkit.GpuWorker", StringComparison.OrdinalIgnoreCase) || string.Equals(
             normalized,
             "ThinkBookToolkit",
             StringComparison.OrdinalIgnoreCase);

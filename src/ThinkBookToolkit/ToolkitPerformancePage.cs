@@ -25,6 +25,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     private readonly TextBlock _discreteGpuStatus = new();
     private readonly Button _viewGpuApplications;
     private readonly Button _killGpuApplications;
+    private readonly Button _restartDiscreteGpu;
+    private bool _restartingDiscreteGpu;
     private readonly Button _gpuOverclockSettings;
     private readonly CheckBox _gpuOverclockEnabled = new();
     private Border _discreteGpuStatusRow = new();
@@ -112,6 +114,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             L("强制关闭占用应用", "Force close applications"),
             danger: true);
         _gpuOverclockSettings = ActionButton(L("设置", "Settings"));
+        _restartDiscreteGpu = ActionButton(
+            L("重启独立显卡", "Restart discrete GPU"), danger: true);
         _performanceModeOrderSettings = ActionButton(
             L("设置", "Settings"));
         _fanStatus = StatusText();
@@ -337,6 +341,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         _discreteGpuStatus.Foreground = Brush(Palette.Text);
         gpuStatusControl.Children.Add(_viewGpuApplications);
         gpuStatusControl.Children.Add(_killGpuApplications);
+        _restartDiscreteGpu.Margin = new Thickness(0, 0, 14, 0);
+        gpuStatusControl.Children.Add(_restartDiscreteGpu);
         gpuStatusControl.Children.Add(_discreteGpuStatus);
         _discreteGpuStatusRow = SettingRow(
             L("独立显卡状态", "Discrete GPU status"),
@@ -345,11 +351,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
                 "Shows the current discrete-GPU activity and performance state."),
             gpuStatusControl,
             "\uE7F4");
-        if (Runtime.Report?.IsAvailable(
-                FeatureIds.DiscreteGpuManagement) != false)
-        {
-            content.Children.Add(_discreteGpuStatusRow);
-        }
+        content.Children.Add(_discreteGpuStatusRow);
 
         var overclockControl = new StackPanel
         {
@@ -1544,6 +1546,21 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             await ShowGpuApplicationsAsync();
         _killGpuApplications.Click += async (_, _) =>
             await KillGpuApplicationsAsync();
+        _restartDiscreteGpu.Click += async (_, _) =>
+        {
+            _restartingDiscreteGpu = true;
+            _restartDiscreteGpu.IsEnabled = false;
+            try
+            {
+                var error = await Runtime.RestartDiscreteGpuAsync();
+                _modeStatus.Text = error ?? L("独立显卡已重启。", "Discrete GPU restarted.");
+            }
+            finally
+            {
+                _restartingDiscreteGpu = false;
+                SyncRuntimeControls();
+            }
+        };
         _gpuOverclockSettings.Click += (_, _) =>
         {
             var window = new GpuOverclockWindow(
@@ -2499,15 +2516,18 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         _pendingRestartText.Text = PendingGpuModeText(snapshot);
         var gpuState = snapshot.Temperatures?.DiscreteGpuState ??
                        DiscreteGpuActivityState.Unknown;
-        var gpuClosed = gpuState == DiscreteGpuActivityState.Off;
+        var gpuClosed = gpuState is DiscreteGpuActivityState.Off or DiscreteGpuActivityState.NotPresent;
         var gpuActive = gpuState == DiscreteGpuActivityState.Active;
         _discreteGpuStatus.Text = DiscreteGpuStatusFormatter.Format(
             gpuState,
             snapshot.Temperatures?.GpuPerformanceState,
             Runtime.IsChinese);
-        _discreteGpuStatusRow.Visibility = gpuClosed
-            ? Visibility.Collapsed
-            : Visibility.Visible;
+        _discreteGpuStatusRow.Visibility = gpuState == DiscreteGpuActivityState.NotPresent
+            ? Visibility.Collapsed : Visibility.Visible;
+        _restartDiscreteGpu.Visibility = DiscreteGpuStatusFormatter.IsRestartMode(snapshot.GpuMode)
+            ? Visibility.Visible : Visibility.Collapsed;
+        _restartDiscreteGpu.IsEnabled = !_restartingDiscreteGpu &&
+            gpuState is DiscreteGpuActivityState.Active or DiscreteGpuActivityState.Inactive;
         _gpuOverclockRow.Visibility = gpuClosed
             ? Visibility.Collapsed
             : Visibility.Visible;

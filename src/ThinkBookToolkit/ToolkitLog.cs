@@ -8,10 +8,46 @@ internal static class ToolkitLog
 {
     private static readonly object Sync = new();
     private static StreamWriter? _writer;
+    private static string _level = "ERROR";
+
+    internal static bool Allows(string configured, string level) => configured switch
+    {
+        "INFO" => true,
+        "WARN" => level is "WARN" or "ERROR",
+        "ERROR" => level == "ERROR",
+        _ => false
+    };
+
+    public static void Configure(string level)
+    {
+        lock (Sync)
+        {
+            _level = level;
+            if (level == "NONE")
+            {
+                _writer?.Dispose();
+                _writer = null;
+            }
+            else if (_writer is null) OpenWriter();
+        }
+    }
 
     public static string? CurrentPath { get; private set; }
 
     public static void Initialize()
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(
+                File.ReadAllText(CurveProfileStore.SettingsPath));
+            if (document.RootElement.TryGetProperty("LogLevel", out var value))
+                _level = value.GetString() ?? "ERROR";
+        }
+        catch { }
+        if (_level != "NONE") OpenWriter();
+    }
+
+    private static void OpenWriter()
     {
         try
         {
@@ -58,8 +94,7 @@ internal static class ToolkitLog
                 return;
             try
             {
-                _writer.WriteLine(
-                    $"[{DateTimeOffset.Now:O}] [INFO] ThinkBook Toolkit stopped.");
+                Info("ThinkBook Toolkit stopped.");
                 _writer.Dispose();
             }
             catch
@@ -74,7 +109,8 @@ internal static class ToolkitLog
         try
         {
             lock (Sync)
-                _writer?.WriteLine($"[{DateTimeOffset.Now:O}] [{level}] {message}");
+                if (Allows(_level, level))
+                    _writer?.WriteLine($"[{DateTimeOffset.Now:O}] [{level}] {message}");
         }
         catch
         {

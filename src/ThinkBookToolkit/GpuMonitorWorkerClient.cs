@@ -50,6 +50,7 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
     public GpuMonitorWorkerClient()
     {
         GpuTelemetryControl.ModeChanged += OnTelemetryModeChanged;
+        GpuTelemetryControl.RestartRequested += RestartWorker;
     }
 
     public GpuMonitorWorkerSnapshot? Read()
@@ -274,7 +275,7 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
         StopWorker();
         var executable = Path.Combine(
             AppContext.BaseDirectory,
-            "ThinkBookToolkit.exe");
+            "ThinkBookToolkit.GpuWorker.exe");
         if (!File.Exists(executable))
         {
             if (!_missingExecutableLogged)
@@ -397,6 +398,16 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
         _appliedOverclockSignature = string.Empty;
     }
 
+    private void RestartWorker()
+    {
+        lock (_sync)
+        {
+            StopWorker();
+            _nextStart = DateTimeOffset.MinValue;
+            _nonNvidiaFallbackUntil = DateTimeOffset.MinValue;
+        }
+    }
+
     private static int? TryGetExitCode(Process? process)
     {
         try
@@ -417,5 +428,6 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
             StopWorker();
         }
         GpuTelemetryControl.ModeChanged -= OnTelemetryModeChanged;
+        GpuTelemetryControl.RestartRequested -= RestartWorker;
     }
 }

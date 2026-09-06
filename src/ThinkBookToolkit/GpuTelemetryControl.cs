@@ -16,6 +16,9 @@ internal static class GpuTelemetryControl
     private static GpuTelemetryMode _mode = GpuTelemetryMode.Full;
 
     public static event Action<GpuTelemetryMode>? ModeChanged;
+    public static event Action? RestartRequested;
+
+    public static void RestartWorkers() => RestartRequested?.Invoke();
 
     public static GpuTelemetryMode Mode
     {

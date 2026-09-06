@@ -227,6 +227,17 @@ if ($Publish -or $Installer) {
         throw "Guardian service publish is incomplete."
     }
     Write-Host "Installing AMD Power Helper into isolated subdirectory..."
+    # GPU isolation must also use an ordinary asInvoker, non-UIAccess apphost.
+    $gpuWorkerProject = Join-Path $projectRoot "src\ThinkBookToolkit.GpuWorker\ThinkBookToolkit.GpuWorker.csproj"
+    # Preserve the main publish's dependency filter across ProjectReference.
+    # Otherwise publishing this host would copy local Lenovo DLLs back in.
+    $gpuWorkerPublishArguments = @($publishArguments)
+    $gpuWorkerPublishArguments[1] = $gpuWorkerProject
+    & dotnet @gpuWorkerPublishArguments
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if (-not (Test-Path -LiteralPath (Join-Path $output "ThinkBookToolkit.GpuWorker.exe"))) {
+        throw "GPU worker publish is incomplete."
+    }
 
     $amdHelperDestination = Join-Path $output "AmdPowerHelper"
 
@@ -250,6 +261,12 @@ if ($Publish -or $Installer) {
 
     Write-Host "AMD Power Helper output: $amdHelperDestination"
     if (-not $IncludeLocalProprietaryDependencies) {
+        $lenovoContent = Get-ChildItem -LiteralPath $output -Recurse -File |
+            Where-Object { $_.Name -eq "WrapPlugin.dll" -or
+                $_.FullName -match '[\\/](LenovoPcManager|VantageAddins)[\\/]' }
+        if ($lenovoContent) {
+            throw "Public release contains proprietary Lenovo dependencies. Packaging was stopped."
+        }
         Write-Host "Public release mode: proprietary Lenovo dependencies were excluded; redistributable IntelPower dependencies were retained when available."
     }
 
@@ -285,6 +302,11 @@ if ($Publish -or $Installer) {
             -Destination (Join-Path $output "ThinkBookToolkit.cer") `
             -Force
         Write-Host "Signed UIAccess executable: $applicationExe"
+        Sign-ReleaseFile `
+            -File (Join-Path $output "ThinkBookToolkit.GpuWorker.exe") `
+            -Pfx $resolvedCertificatePath `
+            -Password $CertificatePassword `
+            -SignTool $signTool
         Sign-ReleaseFile `
             -File (Join-Path $output "ThinkBookToolkit.Guardian.exe") `
             -Pfx $resolvedCertificatePath `

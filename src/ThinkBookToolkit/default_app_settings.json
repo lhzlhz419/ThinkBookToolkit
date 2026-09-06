@@ -2,6 +2,7 @@
   "ConfigurationVersion": "1.0",
   "Language": "zh-CN",
   "Theme": "light",
+  "LogLevel": "ERROR",
   "BackgroundImagePath": "",
   "BackgroundImageScalePercent": 100.0,
   "BackgroundImageOpacityPercent": 30.0,

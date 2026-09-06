@@ -60,7 +60,7 @@ internal static class HybridAutoGpuPolicy
         DiscreteGpuActivityState activityState) =>
         telemetryMode == GpuTelemetryMode.Quiescing &&
         activityState is DiscreteGpuActivityState.Inactive or
-            DiscreteGpuActivityState.Off;
+            DiscreteGpuActivityState.Off or DiscreteGpuActivityState.NotPresent;
 
     public static GpuTelemetryMode ResolveTelemetryMode(
         GpuWorkingMode? workingMode,

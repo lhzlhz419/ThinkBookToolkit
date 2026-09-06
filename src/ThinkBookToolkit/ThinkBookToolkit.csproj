@@ -20,6 +20,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="ThinkBookToolkit.UiSmokeTests" />
     <InternalsVisibleTo Include="ThinkBookToolkit.UiPreview" />
+    <InternalsVisibleTo Include="ThinkBookToolkit.GpuWorker" />
 
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Contracts\ThinkBookToolkit.FanBackend.Contracts.csproj" />
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Wmi\ThinkBookToolkit.FanBackend.Wmi.csproj" />

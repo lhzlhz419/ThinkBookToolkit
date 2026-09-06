@@ -7,6 +7,37 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-09-06
+
+### Added
+
+- Added a dedicated non-UIAccess GPU worker executable for isolated NVIDIA
+  telemetry, GPU overclock operations and GPU application management.
+- Added a Log level setting with `INFO`, `WARN`, `ERROR` and `NONE` options;
+  the default is `ERROR`.
+- Added a Restart discrete GPU action for supported Hybrid, Hybrid iGPU and
+  Hybrid Auto modes.
+
+### Changed
+
+- GPU activity now distinguishes an absent adapter from a powered-off adapter.
+  Hybrid GPU monitoring can recover after the adapter returns, while NVAPI
+  capability probing is deferred until an active NVIDIA GPU is available.
+- NVAPI power settings and independent per-mode locks survive temporary dGPU
+  disappearance and are reapplied after recovery. GPU workers restart after
+  adapter changes or an explicit GPU restart.
+- Public release packaging now publishes and signs the isolated GPU worker and
+  rejects proprietary Lenovo dependencies in public packages.
+
+### Fixed
+
+- Fixed GPU worker startup and named-pipe lifecycle so the UIAccess main
+  executable is not used as a child process for GPU telemetry.
+- Fixed inactive/off/missing dGPU status and restart-button visibility in the
+  Performance page.
+- Fixed warranty-date extraction from the Lenovo `智询常伴` service entry and
+  invalidated older warranty caches with schema version 4.
+
 ## [1.0.3] - 2026-09-06
 
 ### Added

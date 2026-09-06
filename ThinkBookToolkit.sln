@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NvAPIWrapper", "external\Nv
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ThinkBookToolkit.Guardian", "src\ThinkBookToolkit.Guardian\ThinkBookToolkit.Guardian.csproj", "{FF1D6F95-12F6-4464-9B1A-F37D3D47D9C9}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ThinkBookToolkit.GpuWorker", "src\ThinkBookToolkit.GpuWorker\ThinkBookToolkit.GpuWorker.csproj", "{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -117,6 +119,18 @@ Global
 		{FF1D6F95-12F6-4464-9B1A-F37D3D47D9C9}.Release|x64.Build.0 = Release|Any CPU
 		{FF1D6F95-12F6-4464-9B1A-F37D3D47D9C9}.Release|x86.ActiveCfg = Release|Any CPU
 		{FF1D6F95-12F6-4464-9B1A-F37D3D47D9C9}.Release|x86.Build.0 = Release|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Debug|x64.Build.0 = Debug|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Debug|x86.Build.0 = Debug|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Release|x64.ActiveCfg = Release|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Release|x64.Build.0 = Release|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Release|x86.ActiveCfg = Release|Any CPU
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -129,5 +143,6 @@ Global
 		{41BC81B7-3335-4804-AEC4-6F86E799B608} = {6796623B-E5A5-49BA-85DB-B477778D9A13}
 		{7515B063-0838-4338-9481-6C521CF2874F} = {A288BEE0-695A-BEEA-455C-649571D89326}
 		{FF1D6F95-12F6-4464-9B1A-F37D3D47D9C9} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{3B6AF79C-35EF-475A-A75E-E7C70F5E5B8B} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

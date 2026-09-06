@@ -175,7 +175,7 @@ internal static class NvPcfPowerPolicy
                state.IsAvailable(PowerSetting.NvPcfAcMaxGpuLimit);
     }
 
-    private static PowerSettingsState EmptyState() =>
+    internal static PowerSettingsState EmptyState() =>
         new(0, 0, 0, 0, 0, 0, 0, 0)
         {
             AvailableSettings = PowerSettingAvailability.None

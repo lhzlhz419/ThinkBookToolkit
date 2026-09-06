@@ -158,6 +158,10 @@ internal static class GpuOverclockPolicy
 
 internal static class DiscreteGpuStatusFormatter
 {
+    public static bool IsRestartMode(GpuWorkingMode? mode) =>
+        mode is GpuWorkingMode.Hybrid or GpuWorkingMode.IntegratedOnly or
+            GpuWorkingMode.HybridAuto;
+
     public static string Format(
         DiscreteGpuActivityState state,
         string? performanceState,
@@ -170,6 +174,7 @@ internal static class DiscreteGpuStatusFormatter
             DiscreteGpuActivityState.Inactive =>
                 isChinese ? "不活跃" : "Inactive",
             DiscreteGpuActivityState.Off => isChinese ? "关闭" : "Off",
+            DiscreteGpuActivityState.NotPresent => isChinese ? "无" : "None",
             _ => "--"
         };
         return (state is DiscreteGpuActivityState.Active or

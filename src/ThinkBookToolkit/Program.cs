@@ -52,6 +52,7 @@ public static class Program
             {
                 ConfigurationMigrationService.EnsureInitialized();
                 var settings = CurveProfileStore.LoadSettings();
+                ToolkitLog.Configure(settings.LogLevel);
                 CurveProfileStore.ApplyPendingInstallerSettings(settings);
                 HardwareAccelerationManager.ApplyForStartup(settings);
                 if (settings.StartWithWindows)
