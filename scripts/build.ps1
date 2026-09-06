@@ -34,11 +34,10 @@ function Find-SignTool {
     if (Test-Path -LiteralPath $direct) {
         return $direct
     }
-    return Get-ChildItem -LiteralPath $kitsRoot -Directory |
-        Sort-Object Name -Descending |
-        ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
-        Where-Object { Test-Path -LiteralPath $_ } |
-        Select-Object -First 1
+    return Get-ChildItem -LiteralPath $kitsRoot -Recurse -File -Filter "signtool.exe" |
+        Where-Object { $_.FullName -match "[\\/]x64[\\/]signtool\.exe$" } |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
 }
 
 function Sign-ReleaseFile {
