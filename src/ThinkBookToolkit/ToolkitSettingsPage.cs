@@ -16,6 +16,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly ComboBox _language = new() { MinWidth = 150 };
     private readonly ComboBox _theme = new() { MinWidth = 170 };
     private readonly ComboBox _logLevel = new() { MinWidth = 150 };
+    private readonly ComboBox _logRetention = new() { MinWidth = 150 };
+    private readonly Button _folderLocations;
     private readonly ComboBox _hardwareAcceleration = new() { MinWidth = 190 };
     private readonly ComboBox _overviewMode = new() { MinWidth = 150 };
     private readonly ComboBox _startupMode = new() { MinWidth = 170 };
@@ -114,6 +116,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _restartReaders = ActionButton(L("强制刷新读数", "Restart readers"));
         _checkUpdates = ActionButton(L("检查更新", "Check for updates"));
         _downloadUpdate = ActionButton(L("下载更新", "Download update"), primary: true);
+        _folderLocations = ActionButton(L("设置", "Settings"));
+        _folderLocations.Click += (_, _) => new FolderLocationsWindow(Runtime)
+            { Owner = Window.GetWindow(this) }.ShowDialog();
         _downloadUpdate.Visibility = Visibility.Collapsed;
         InitializeControls();
         Content = _sensorIntegrationOnly
@@ -193,6 +198,25 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         WireEvents();
         foreach (var level in new[] { "INFO", "WARN", "ERROR", "NONE" })
             AddChoice(_logLevel, level == "NONE" ? L("无", "None") : level, level);
+        foreach (var days in FileRetentionPolicy.Days)
+            AddChoice(_logRetention, days == 0 ? L("永久", "Forever") : L($"{days} 天", $"{days} days"), days);
+        _logRetention.SelectionChanged += (_, _) =>
+        {
+            if (_syncing) return;
+            var previous = Runtime.Settings.LogRetentionDays;
+            try
+            {
+                Runtime.Settings.LogRetentionDays = Selected<int>(_logRetention);
+                CurveProfileStore.SaveSettings(Runtime.Settings);
+                FileRetentionPolicy.Cleanup(ToolkitStoragePaths.Logs, Runtime.Settings.LogRetentionDays, false, ToolkitLog.CurrentPath);
+            }
+            catch (Exception ex)
+            {
+                Runtime.Settings.LogRetentionDays = previous;
+                Runtime.SetStatus(L("日志保留时间保存失败：", "Log retention could not be saved: ") + ex.Message);
+                SyncControls();
+            }
+        };
         _logLevel.SelectionChanged += (_, _) =>
         {
             if (_syncing) return;
@@ -252,8 +276,14 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             _restartReaders,
             "\uE72C"));
         global.Children.Add(SettingRow(
-            "Log 等级", L("仅记录所选等级及更严重的信息。", "Record the selected severity and above."),
+            L("日志等级", "Log level"), L("仅记录所选等级及更严重的信息。", "Record the selected severity and above."),
             _logLevel, "\uE9D9"));
+        global.Children.Add(SettingRow(L("日志保留时间", "Log retention"),
+            L("自动清理过期的历史日志，不删除当前正在写入的日志。", "Remove expired historical logs; active log files are always kept."),
+            _logRetention, "\uE823"));
+        global.Children.Add(SettingRow(L("自定义文件夹位置", "Custom folder locations"),
+            L("设置依赖、配置、日志、下载缓存和传感器记录的存放位置。", "Choose locations for dependencies, configuration, logs, downloads and recordings."),
+            _folderLocations, "\uE8B7"));
         global.Children.Add(SettingRow(
             L("背景图像", "Background image"),
             L(
@@ -1123,6 +1153,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         Select(_language, settings.Language);
         Select(_theme, settings.Theme);
         Select(_logLevel, settings.LogLevel);
+        Select(_logRetention, settings.LogRetentionDays);
         Select(
             _hardwareAcceleration,
             settings.HardwareAccelerationMode);

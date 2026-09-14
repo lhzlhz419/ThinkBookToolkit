@@ -55,9 +55,7 @@ internal static class ToolkitLog
             {
                 if (_writer is not null)
                     return;
-                var directory = Path.Combine(
-                    Path.GetDirectoryName(CurveProfileStore.SettingsPath)!,
-                    "log");
+                var directory = ToolkitStoragePaths.Logs;
                 Directory.CreateDirectory(directory);
                 CurrentPath = Path.Combine(
                     directory,

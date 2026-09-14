@@ -1,4 +1,7 @@
-param([Parameter(Mandatory = $true)][string]$Executable)
+param(
+    [Parameter(Mandatory = $true)][string]$Executable,
+    [switch]$NvPcf
+)
 
 $ErrorActionPreference = "Stop"
 $workerExecutable = (Resolve-Path -LiteralPath $Executable).Path
@@ -20,13 +23,21 @@ $pipe = [IO.Pipes.NamedPipeServerStreamAcl]::Create(
     [IO.Pipes.PipeAccessRights]0)
 $workerProcess = $null
 try {
-    $start = [Diagnostics.ProcessStartInfo]::new($workerExecutable, "--gpu-worker " + $pipeName)
+    $workerArgument = if ($NvPcf) { "--nvpcf-worker " } else { "--gpu-worker " }
+    $start = [Diagnostics.ProcessStartInfo]::new($workerExecutable, $workerArgument + $pipeName)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardError = $true
     $workerProcess = [Diagnostics.Process]::Start($start)
     if (-not $pipe.WaitForConnectionAsync().Wait(10000)) {
         throw "GPU worker did not connect. PID: $($workerProcess.Id)"
+    }
+    if ($NvPcf) {
+        $reader = [IO.StreamReader]::new($pipe)
+        $ready = $reader.ReadLineAsync()
+        if (-not $ready.Wait(10000) -or $ready.Result -ne "NVPCF_READY_1") {
+            throw "NVPCF worker protocol handshake failed."
+        }
     }
     # EXIT does not initialize NVAPI/LHM or read or change GPU hardware.
     $writer = [IO.StreamWriter]::new($pipe)

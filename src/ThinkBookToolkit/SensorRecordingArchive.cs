@@ -21,6 +21,7 @@ internal static class SensorRecordingArchive
             : sourcePath + Extension;
         var temporaryArchive = archivePath + ".tmp-" +
                                Guid.NewGuid().ToString("N");
+        var completedUtc = File.GetLastWriteTimeUtc(sourcePath);
         try
         {
             using (var source = new FileStream(
@@ -45,6 +46,7 @@ internal static class SensorRecordingArchive
                 source.CopyTo(gzip, 128 * 1024);
             }
             File.Move(temporaryArchive, archivePath, overwrite: true);
+            File.SetLastWriteTimeUtc(archivePath, completedUtc);
             File.Delete(sourcePath);
             return archivePath;
         }

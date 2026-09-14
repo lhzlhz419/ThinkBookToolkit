@@ -16,6 +16,7 @@ internal static class LenovoVantageAddinLocator
         string fileName)
     {
         var roots = new List<string>();
+        roots.Add(Path.Combine(ToolkitStoragePaths.Dependency, LocalAddinsDirectory, addinName));
         var customRoot = LenovoDependencyDirectory.GetEnabledRoot();
         if (customRoot is not null)
         {

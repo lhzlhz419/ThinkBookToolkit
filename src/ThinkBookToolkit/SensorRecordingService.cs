@@ -159,6 +159,8 @@ internal sealed class SensorRecordingService : IDisposable
 
     public void Sync()
     {
+        FileRetentionPolicy.Cleanup(CurveProfileStore.SensorRecordingDirectory,
+            _runtime.Settings.SensorRecording.RetentionDays, true, CurrentPath);
         if (_runtime.IsSystemSessionEnding)
         {
             Stop();
@@ -193,7 +195,7 @@ internal sealed class SensorRecordingService : IDisposable
             CurrentPath,
             FileMode.CreateNew,
             FileAccess.Write,
-            FileShare.ReadWrite | FileShare.Delete,
+            FileShare.Read,
             64 * 1024,
             FileOptions.SequentialScan);
         _writer = new StreamWriter(

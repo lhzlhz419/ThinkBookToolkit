@@ -8,7 +8,8 @@ internal static class WorkerProgram
     private static int Main(string[] args)
     {
         if (args.Length != 2 ||
-            !string.Equals(args[0], "--gpu-worker", System.StringComparison.OrdinalIgnoreCase))
+            !(string.Equals(args[0], "--gpu-worker", System.StringComparison.OrdinalIgnoreCase) ||
+              string.Equals(args[0], "--nvpcf-worker", System.StringComparison.OrdinalIgnoreCase)))
             return 2;
 
         // This host must enter the isolated protocol directly. Calling the

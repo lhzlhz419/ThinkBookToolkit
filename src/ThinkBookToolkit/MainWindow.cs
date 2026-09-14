@@ -3625,11 +3625,12 @@ public sealed class MainWindow : Window
                 if (!_itsModeDetector.IsModeSwitchSupported())
                     return ItsModeSwitchResult.Unsupported;
 
-                ItsModeController.SetMode(requestedMode);
+                var path = _itsModeDetector.GetControlPath();
+                ItsModeController.SetMode(requestedMode, path);
                 var deadline = DateTimeOffset.UtcNow.AddSeconds(3);
                 while (DateTimeOffset.UtcNow < deadline)
                 {
-                    if (_itsModeDetector.ReadMode() == requestedMode)
+                    if (_itsModeDetector.ReadMode(path) == requestedMode)
                         return ItsModeSwitchResult.Confirmed;
                     Thread.Sleep(200);
                 }

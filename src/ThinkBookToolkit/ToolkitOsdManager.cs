@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -71,13 +72,27 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
     private Brush _criticalBrush = Brushes.Red;
     private bool _sessionLocked;
     private bool _restoreAfterUnlock;
+    private bool _dragging;
+    private bool _layoutBusy;
+    private bool _layoutQueued;
+    private bool _placementReady;
+    private bool _closed;
+    private bool _suspended;
+    private bool _waitingForMonitor;
+    private bool _showRequested;
+    private readonly DispatcherTimer _monitorRetry = new() { Interval = TimeSpan.FromSeconds(1) };
+    internal Func<IReadOnlyList<OsdMonitor>> MonitorProvider { get; set; } = OsdMonitorPolicy.Capture;
+    internal Action DragWindow { get; set; }
 
     public ToolkitOsdWindow(ToolkitRuntimeService runtime)
     {
         _runtime = runtime;
+        DragWindow = DragMove;
         _latestFps = runtime.CurrentFps;
         _runtime.FpsTelemetryUpdated += OnFpsTelemetryUpdated;
         SystemEvents.SessionSwitch += OnSessionSwitch;
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
         _latestSnapshot = runtime.Snapshot;
         Title = "ThinkBook Toolkit OSD";
         AllowsTransparency = true;
@@ -86,27 +101,42 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
         ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
         Topmost = true;
-        SizeToContent = SizeToContent.WidthAndHeight;
+        SizeToContent = SizeToContent.Manual;
+        Width = Height = 1;
+        UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
         FontFamily = UiTypography.FontFamilyFor(runtime.Settings.Language);
         FontSize = runtime.Settings.Osd.FontSize;
-        MouseLeftButtonDown += OnMouseLeftButtonDown;
-        LocationChanged += (_, _) => CapturePosition();
+        // ScrollViewer handles bubbling mouse-down events in its content.
+        // Start dragging in the preview phase, before it captures the click.
+        PreviewMouseDown += OnPreviewMouseDown;
+        LocationChanged += (_, _) =>
+        {
+            if (!_settingPosition) QueueLayout();
+        };
+        SizeChanged += (_, _) => QueueLayout();
+        DpiChanged += (_, _) => Dispatcher.BeginInvoke(new Action(QueueLayout));
         Loaded += (_, _) =>
         {
-            UpdateLayout();
-            RestoreOrSetDefaultPosition();
+            _showRequested = true;
             RefreshValues();
+            RestoreOrSetDefaultPosition();
             SyncFpsMonitoring(_runtime.Settings.Osd);
-            _timer.Start();
+            if (IsVisible) _timer.Start();
         };
         Closed += (_, _) =>
         {
+            _closed = true;
             _timer.Stop();
+            _monitorRetry.Stop();
             _runtime.SetFpsMonitoringConsumer("osd", false);
             _runtime.FpsTelemetryUpdated -= OnFpsTelemetryUpdated;
             SystemEvents.SessionSwitch -= OnSessionSwitch;
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         };
         _timer.Tick += async (_, _) => await RefreshFromRuntimeAsync();
+        _monitorRetry.Tick += (_, _) => ShowIfSessionUnlocked();
     }
 
     private void OnFpsTelemetryUpdated(
@@ -115,8 +145,18 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
 
     internal void ShowIfSessionUnlocked()
     {
-        if (_sessionLocked)
+        _showRequested = true;
+        if (_closed || _sessionLocked || _suspended)
             return;
+        if (PreferredMonitor is { } preferred && OsdMonitorPolicy.Find(preferred, MonitorProvider()) is null)
+        {
+            WaitForMonitor();
+            return;
+        }
+        _waitingForMonitor = false;
+        _monitorRetry.Stop();
+        UpdateOsdLayout();
+        if (_waitingForMonitor) return;
         if (!IsVisible)
             Show();
         SyncFpsMonitoring(_runtime.Settings.Osd);
@@ -137,7 +177,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
         if (args.Reason == SessionSwitchReason.SessionLock)
         {
             _sessionLocked = true;
-            _restoreAfterUnlock = IsVisible;
+            _restoreAfterUnlock = IsVisible || _showRequested;
             _timer.Stop();
             _runtime.SetFpsMonitoringConsumer("osd", false);
             if (IsVisible)
@@ -149,14 +189,56 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
             if (_restoreAfterUnlock && _runtime.Settings.OsdEnabled)
             {
                 _restoreAfterUnlock = false;
-                Show();
                 ApplySettings();
+                ShowIfSessionUnlocked();
                 SyncFpsMonitoring(_runtime.Settings.Osd);
-                _timer.Start();
+                if (IsVisible) _timer.Start();
                 _ = RefreshFromRuntimeAsync();
                 EscalateZOrder();
             }
         }
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs args)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => OnPowerModeChanged(sender, args)));
+            return;
+        }
+        if (_closed) return;
+        if (args.Mode == PowerModes.Suspend)
+        {
+            _suspended = true;
+            _showRequested |= IsVisible;
+            _timer.Stop();
+            _runtime.SetFpsMonitoringConsumer("osd", false);
+            if (IsVisible) Hide();
+        }
+        else if (args.Mode == PowerModes.Resume)
+        {
+            _suspended = false;
+            if (_showRequested) ShowIfSessionUnlocked();
+        }
+    }
+
+    private OsdMonitorPlacement? PreferredMonitor
+    {
+        get => _orientation == OsdOrientation.Horizontal ? _runtime.Settings.Osd.HorizontalMonitor : _runtime.Settings.Osd.VerticalMonitor;
+        set
+        {
+            if (_orientation == OsdOrientation.Horizontal) _runtime.Settings.Osd.HorizontalMonitor = value;
+            else _runtime.Settings.Osd.VerticalMonitor = value;
+        }
+    }
+
+    private void WaitForMonitor()
+    {
+        _waitingForMonitor = true;
+        _monitorRetry.Start();
+        _timer.Stop();
+        _runtime.SetFpsMonitoringConsumer("osd", false);
+        if (IsVisible) Hide();
     }
 
     public void ApplySettings()
@@ -227,7 +309,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
         _warningBrush = Brush(settings.WarningColor);
         _criticalBrush = Brush(settings.CriticalColor);
         var palette = ToolkitPalette.For(isDark: true);
-        var content = new StackPanel
+        var content = new WrapPanel
         {
             Orientation = settings.Orientation == OsdOrientation.Horizontal
                 ? Orientation.Horizontal
@@ -239,7 +321,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
             var sensors = group.Sensors.Where(selected.Contains).ToArray();
             if (sensors.Length == 0)
                 continue;
-            var groupPanel = new StackPanel
+            var groupPanel = new WrapPanel
             {
                 Orientation = settings.Orientation == OsdOrientation.Horizontal
                     ? Orientation.Horizontal
@@ -300,26 +382,36 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
             Padding = settings.Orientation == OsdOrientation.Horizontal
                 ? new Thickness(12, 7, 2, 7)
                 : new Thickness(12, 11, 12, 3),
-            Child = content
+            Child = new ScrollViewer
+            {
+                Content = content,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Padding = new Thickness(0), BorderThickness = new Thickness(0)
+            }
         };
-        return _background;
+        return new Viewbox
+        {
+            Stretch = Stretch.None,
+            StretchDirection = StretchDirection.DownOnly,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Child = _background
+        };
     }
 
     private SensorVisual HorizontalSensor(
         OsdSensor sensor,
         ToolkitOsdSettings settings)
     {
-        var row = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(0, 0, 8, 0)
-        };
+        var row = new Border { Margin = new Thickness(0, 0, 8, 0) };
         var value = new TextBlock
         {
             Foreground = Brush(settings.ValueColor),
-            FontWeight = FontWeights.SemiBold
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap
         };
-        row.Children.Add(value);
+        row.Child = value;
         return new(row, value);
     }
 
@@ -404,6 +496,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
                 : Visibility.Collapsed;
         }
         _empty.Visibility = any ? Visibility.Collapsed : Visibility.Visible;
+        UpdateOsdLayout();
     }
 
     private async System.Threading.Tasks.Task RefreshFromRuntimeAsync()
@@ -426,15 +519,32 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
         }
     }
 
-    private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs args)
+    internal bool CanStartDrag(DependencyObject? source, MouseButton button)
     {
-        if (_runtime.Settings.Osd.FixedPosition ||
-            args.ChangedButton != MouseButton.Left)
-            return;
-        DragMove();
+        if (_runtime.Settings.Osd.FixedPosition || button != MouseButton.Left) return false;
+        for (var current = source; current is not null;)
+        {
+            if (current is ScrollBar or Thumb) return false;
+            current = current is ContentElement content
+                ? ContentOperations.GetParent(content) ?? (content as FrameworkContentElement)?.Parent
+                : current is Visual ? VisualTreeHelper.GetParent(current) : LogicalTreeHelper.GetParent(current);
+        }
+        return true;
+    }
+
+    private void OnPreviewMouseDown(object sender, MouseButtonEventArgs args)
+    {
+        if (!CanStartDrag(args.OriginalSource as DependencyObject, args.ChangedButton)) return;
+        args.Handled = true;
+        _dragging = true;
+        SetAnchors(OsdSnapAnchor.None, OsdSnapAnchor.None);
+        try { DragWindow(); }
+        finally { _dragging = false; }
+        CapturePosition(); // Only an explicit drag is allowed to choose another monitor.
+        UpdateOsdLayout();
         SnapToCurrentScreen();
         CapturePosition();
-        _runtime.SaveOsdPosition();
+        if (IsLoaded) _runtime.SaveOsdPosition();
     }
 
     private void SnapToCurrentScreen()
@@ -443,51 +553,132 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
             _runtime.Settings.Osd.SnapThreshold,
             0,
             100);
-        if (threshold <= 0)
-            return;
+        if (!TryGetScreen(out var work, out var window)) return;
+        SetAnchors(
+            OsdPlacementPolicy.Snap(window.Left, window.Width, work.Left, work.Right, threshold),
+            OsdPlacementPolicy.Snap(window.Top, window.Height, work.Top, work.Bottom, threshold));
+        UpdateOsdLayout();
+    }
 
-        var handle = new WindowInteropHelper(this).Handle;
-        if (handle == IntPtr.Zero || !GetWindowRect(handle, out var window))
-            return;
-        var monitor = MonitorFromWindow(handle, MonitorDefaultToNearest);
-        var info = new MonitorInfo
+    private (OsdSnapAnchor X, OsdSnapAnchor Y) Anchors => _orientation == OsdOrientation.Horizontal
+        ? (_runtime.Settings.Osd.HorizontalXAnchor, _runtime.Settings.Osd.HorizontalYAnchor)
+        : (_runtime.Settings.Osd.VerticalXAnchor, _runtime.Settings.Osd.VerticalYAnchor);
+
+    private void SetAnchors(OsdSnapAnchor x, OsdSnapAnchor y)
+    {
+        var settings = _runtime.Settings.Osd;
+        if (_orientation == OsdOrientation.Horizontal)
         {
-            Size = Marshal.SizeOf<MonitorInfo>()
-        };
-        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info))
-            return;
+            settings.HorizontalXAnchor = x;
+            settings.HorizontalYAnchor = y;
+        }
+        else
+        {
+            settings.VerticalXAnchor = x;
+            settings.VerticalYAnchor = y;
+        }
+    }
 
-        var width = window.Right - window.Left;
-        var height = window.Bottom - window.Top;
-        var left = window.Left;
-        var top = window.Top;
-        var work = info.WorkArea;
+    private void OnDisplaySettingsChanged(object? sender, EventArgs args) =>
+        Dispatcher.BeginInvoke(new Action(QueueLayout));
 
-        if (Math.Abs(left - work.Left) < threshold)
-            left = work.Left;
-        else if (Math.Abs(work.Right - (left + width)) < threshold)
-            left = work.Right - width;
-        if (Math.Abs(top - work.Top) < threshold)
-            top = work.Top;
-        else if (Math.Abs(work.Bottom - (top + height)) < threshold)
-            top = work.Bottom - height;
+    private void QueueLayout()
+    {
+        if (_closed || _layoutBusy || _layoutQueued || _dragging || !IsLoaded) return;
+        _layoutQueued = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(() =>
+        {
+            _layoutQueued = false;
+            UpdateOsdLayout();
+        }));
+    }
 
-        left = Math.Clamp(left, work.Left, Math.Max(work.Left, work.Right - width));
-        top = Math.Clamp(top, work.Top, Math.Max(work.Top, work.Bottom - height));
-        _ = SetWindowPos(
-            handle,
-            IntPtr.Zero,
-            left,
-            top,
-            0,
-            0,
-            SwpNoSize | SwpNoZOrder | SwpNoActivate);
+    private bool TryGetScreen(out Rect work, out Rect window)
+    {
+        work = window = Rect.Empty;
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero || !GetWindowRect(handle, out var bounds)) return false;
+        var monitor = MonitorFromWindow(handle, MonitorDefaultToNearest);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info)) return false;
+        work = new Rect(info.WorkArea.Left, info.WorkArea.Top,
+            info.WorkArea.Right - info.WorkArea.Left, info.WorkArea.Bottom - info.WorkArea.Top);
+        window = new Rect(bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top);
+        return work.Width > 0 && work.Height > 0;
+    }
+
+    private void UpdateOsdLayout()
+    {
+        if (_closed || _sessionLocked || _suspended || _layoutBusy || _dragging || !_placementReady || !IsLoaded ||
+            !TryGetScreen(out var actualWork, out _)) return;
+        var preferred = PreferredMonitor;
+        var target = preferred is null ? null : OsdMonitorPolicy.Find(preferred, MonitorProvider());
+        if (preferred is not null && target is null) { WaitForMonitor(); return; }
+        var work = target?.WorkArea ?? actualWork;
+        _waitingForMonitor = false;
+        _monitorRetry.Stop();
+        _layoutBusy = _settingPosition = true;
+        try
+        {
+            if (target is not null && actualWork != work)
+            {
+                // Windows may relocate the HWND to the primary screen while
+                // an external display sleeps. Return to the remembered
+                // monitor before measuring with the window's current DPI.
+                _ = SetWindowPos(new WindowInteropHelper(this).Handle, IntPtr.Zero,
+                    (int)work.Left, (int)work.Top, 0, 0,
+                    SwpNoSize | SwpNoZOrder | SwpNoActivate);
+            }
+            var dpi = VisualTreeHelper.GetDpi(this);
+            var available = new Size(work.Width / dpi.DpiScaleX, work.Height / dpi.DpiScaleY);
+            ResizeContent(available, dpi);
+            if (!TryGetScreen(out _, out var window)) return;
+            var anchors = Anchors;
+            var desiredLeft = preferred is null ? window.Left : work.Left + preferred.OffsetX * dpi.DpiScaleX;
+            var desiredTop = preferred is null ? window.Top : work.Top + preferred.OffsetY * dpi.DpiScaleY;
+            var left = OsdPlacementPolicy.Position(desiredLeft, window.Width, work.Left, work.Right, anchors.X);
+            var top = OsdPlacementPolicy.Position(desiredTop, window.Height, work.Top, work.Bottom, anchors.Y);
+            _ = SetWindowPos(new WindowInteropHelper(this).Handle, IntPtr.Zero,
+                (int)Math.Round(left), (int)Math.Round(top), 0, 0,
+                SwpNoSize | SwpNoZOrder | SwpNoActivate);
+            _background.InvalidateVisual();
+        }
+        finally { _layoutBusy = _settingPosition = false; }
+        if (PreferredMonitor is null) CapturePosition();
+        if (_showRequested && !IsVisible && !_sessionLocked && !_suspended)
+        {
+            Show();
+            SyncFpsMonitoring(_runtime.Settings.Osd);
+            _timer.Start();
+        }
+    }
+
+    internal void ResizeContent(Size available, DpiScale dpi)
+    {
+        _background.MaxWidth = Math.Max(1, available.Width);
+        _background.MaxHeight = Math.Max(1, available.Height);
+        _background.Measure(available);
+        var size = OsdPlacementPolicy.Fit(_background.DesiredSize, available, dpi);
+        SizeToContent = SizeToContent.Manual;
+        Width = Math.Max(1, size.Width);
+        Height = Math.Max(1, size.Height);
+        UpdateLayout();
     }
 
     private void CapturePosition()
     {
         if (_settingPosition || !IsLoaded)
             return;
+        if (TryGetScreen(out var work, out var window))
+        {
+            var monitor = MonitorProvider().FirstOrDefault(m => m.WorkArea == work);
+            if (monitor is not null)
+            {
+                var dpi = VisualTreeHelper.GetDpi(this);
+                PreferredMonitor = new(monitor.DeviceName, monitor.DeviceId,
+                    (window.Left - work.Left) / dpi.DpiScaleX, (window.Top - work.Top) / dpi.DpiScaleY);
+            }
+        }
         var settings = _runtime.Settings.Osd;
         if (_orientation == OsdOrientation.Horizontal)
         {
@@ -503,6 +694,12 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
 
     private void RestoreOrSetDefaultPosition()
     {
+        if (PreferredMonitor is not null)
+        {
+            _placementReady = true;
+            UpdateOsdLayout();
+            return;
+        }
         var settings = _runtime.Settings.Osd;
         var x = _orientation == OsdOrientation.Horizontal
             ? settings.HorizontalX
@@ -523,11 +720,13 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
                 var work = SystemParameters.WorkArea;
                 if (_orientation == OsdOrientation.Horizontal)
                 {
+                    SetAnchors(OsdSnapAnchor.Center, OsdSnapAnchor.None);
                     Left = work.Left + (work.Width - ActualWidth) / 2;
                     Top = work.Top + 10;
                 }
                 else
                 {
+                    SetAnchors(OsdSnapAnchor.None, OsdSnapAnchor.Center);
                     Left = work.Left + 10;
                     Top = work.Top + (work.Height - ActualHeight) / 2;
                 }
@@ -537,6 +736,8 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
         {
             _settingPosition = false;
         }
+        _placementReady = true;
+        UpdateOsdLayout();
     }
 
     private static bool IsOnScreen(double x, double y)

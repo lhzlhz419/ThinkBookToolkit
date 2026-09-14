@@ -32,10 +32,8 @@ internal sealed class FanWatchdogClient
             var marker = new WatchdogMarker(
                 current.Id,
                 startTicks,
-                Path.Combine(
-                    Path.GetDirectoryName(CurveProfileStore.SettingsPath)!,
-                    "log"),
-                backendIdentity);
+                ToolkitStoragePaths.Logs,
+                backendIdentity, CurveProfileStore.SettingsPath);
             File.WriteAllText(
                 temporaryPath,
                 JsonSerializer.Serialize(marker));
@@ -106,5 +104,6 @@ internal sealed class FanWatchdogClient
         int ProcessId,
         long ProcessStartUtcTicks,
         string LogDirectory,
-        string BackendIdentity);
+        string BackendIdentity,
+        string? SettingsPath = null);
 }

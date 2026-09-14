@@ -115,6 +115,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private int _systemSessionEnding;
     private ItsMode _lastFanLinkedPerformanceMode = ItsMode.Unknown;
     private ItsMode? _confirmedPerformanceModeDuringRefresh;
+    private readonly SemaphoreSlim _itsModeSwitchGate = new(1, 1);
+    private bool _switchingPerformanceMode;
+    private int _itsModeReadGeneration;
+    private ItsMode _lastConfirmedItsMode = ItsMode.Unknown;
     private string _lastPowerSettingsLockError = string.Empty;
     private bool _disposed;
     private bool _systemThemeSubscribed;
@@ -2310,6 +2314,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         ItsMode? modeToLink = null;
         int? modeToLinkGeneration = null;
         _polling = true;
+        var itsReadGeneration = Volatile.Read(ref _itsModeReadGeneration);
         try
         {
             await RefreshHybridGpuProtectionAsync(forceGpuModeRefresh: force);
@@ -2318,9 +2323,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 await _fanRuntime.RuntimeRefreshAsync();
 
             var performance = _fanRuntime?.RuntimeSnapshot();
-            var itsMode = _confirmedPerformanceModeDuringRefresh ?? performance?.ItsMode ?? ItsMode.Unknown;
-            if (Report?.IsAvailable(FeatureIds.PerformanceMode) == true && itsMode == ItsMode.Unknown)
+            var itsMode = _confirmedPerformanceModeDuringRefresh ??
+                (_switchingPerformanceMode ? Snapshot.ItsMode : performance?.ItsMode ?? ItsMode.Unknown);
+            if (!_switchingPerformanceMode && Report?.IsAvailable(FeatureIds.PerformanceMode) == true && itsMode == ItsMode.Unknown)
                 itsMode = await Task.Run(() => new ItsModeDetector().ReadMode());
+            itsMode = ResolveItsModeForRefresh(itsMode, itsReadGeneration);
             // Backend handoff must select locks for the newly observed mode.
             Snapshot = Snapshot with { ItsMode = itsMode };
             var temperatures = performance?.Temperatures;
@@ -2427,6 +2434,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 _lastAutomationGamesRunning = null;
             }
 
+            itsMode = ResolveItsModeForRefresh(itsMode, itsReadGeneration);
             Snapshot = new(
                 temperatures,
                 fans,
@@ -2639,7 +2647,30 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    private ItsMode ResolveItsModeForRefresh(ItsMode observed, int readGeneration)
+    {
+        if (readGeneration != Volatile.Read(ref _itsModeReadGeneration))
+            return _lastConfirmedItsMode;
+        return _switchingPerformanceMode
+            ? _confirmedPerformanceModeDuringRefresh ?? Snapshot.ItsMode : observed;
+    }
+
     public async Task<string?> SetItsModeAsync(ItsMode mode)
+    {
+        await _itsModeSwitchGate.WaitAsync();
+        try
+        {
+            _switchingPerformanceMode = true;
+            return await SetItsModeCoreAsync(mode);
+        }
+        finally
+        {
+            _switchingPerformanceMode = false;
+            _itsModeSwitchGate.Release();
+        }
+    }
+
+    private async Task<string?> SetItsModeCoreAsync(ItsMode mode)
     {
         var detector = new ItsModeDetector();
         var controlPath = detector.GetControlPath();
@@ -2670,14 +2701,14 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         try
         {
-            await Task.Run(() => ItsModeController.SetMode(mode));
+            await Task.Run(() => ItsModeController.SetMode(mode, controlPath));
             var deadline = DateTimeOffset.UtcNow.AddSeconds(
                 controlPath == ItsModeControlPath.LegacyLitssvc ? 10 : 3);
             var confirmed = false;
             var lastReadMode = ItsMode.Unknown;
             while (DateTimeOffset.UtcNow < deadline)
             {
-                lastReadMode = await Task.Run(detector.ReadMode);
+                lastReadMode = await Task.Run(() => detector.ReadMode(controlPath));
                 if (lastReadMode == mode)
                 {
                     confirmed = true;
@@ -2699,7 +2730,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 deadline = DateTimeOffset.UtcNow.AddSeconds(10);
                 while (DateTimeOffset.UtcNow < deadline)
                 {
-                    lastReadMode = await Task.Run(detector.ReadMode);
+                    lastReadMode = await Task.Run(() => detector.ReadMode(controlPath));
                     if (lastReadMode == mode)
                     {
                         confirmed = true;
@@ -2708,21 +2739,16 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     await Task.Delay(200);
                 }
             }
-            if (!confirmed && controlPath != ItsModeControlPath.LegacyLitssvc)
+            if (!confirmed)
             {
+                ToolkitLog.Warning($"ITS mode not confirmed on {controlPath}: target={mode}; lastRead={lastReadMode}.");
                 return L(
                     "固件未确认新的性能模式",
                     "Firmware did not confirm the new mode");
             }
-            if (!confirmed)
-            {
-                ToolkitLog.Warning(
-                    "Legacy LITSSVC accepted all service controls, but its " +
-                    "registry state did not confirm the target within 10 " +
-                    $"seconds; accepting the verified native write. target={mode}; " +
-                    $"lastRead={lastReadMode}.");
-            }
 
+            _lastConfirmedItsMode = mode;
+            Interlocked.Increment(ref _itsModeReadGeneration);
             Snapshot = Snapshot with { ItsMode = mode };
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             _confirmedPerformanceModeDuringRefresh = mode;

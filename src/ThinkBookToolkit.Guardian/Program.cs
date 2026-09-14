@@ -7,6 +7,11 @@ internal static class GuardianEntryPoint
 {
     public static bool TryRun(string[] args)
     {
+        if (args.Length == 2 && string.Equals(args[0], "--nvpcf-worker", StringComparison.OrdinalIgnoreCase))
+        {
+            Environment.ExitCode = NvPcfWorker.Run(args[1]);
+            return true;
+        }
         if (args.Length > 0 &&
             string.Equals(args[0], "--gpu-worker", StringComparison.OrdinalIgnoreCase))
         {

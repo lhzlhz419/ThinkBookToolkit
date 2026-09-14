@@ -42,8 +42,7 @@ public static class CurveProfileStore
     {
         get
         {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return Path.Combine(home, ".thinkbook_toolkit", "fan_curve_profiles.csharp.json");
+            return Path.Combine(ToolkitStoragePaths.Configuration, "fan_curve_profiles.csharp.json");
         }
     }
 
@@ -51,8 +50,7 @@ public static class CurveProfileStore
     {
         get
         {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return Path.Combine(home, ".thinkbook_toolkit", "app_settings.csharp.json");
+            return Path.Combine(ToolkitStoragePaths.Configuration, "app_settings.csharp.json");
         }
     }
 
@@ -60,9 +58,7 @@ public static class CurveProfileStore
         Path.GetDirectoryName(SettingsPath)!,
         "pending_installer_settings.json");
 
-    public static string SensorRecordingDirectory => Path.Combine(
-        Path.GetDirectoryName(SettingsPath)!,
-        "sensor-recordings");
+    public static string SensorRecordingDirectory => ToolkitStoragePaths.Recordings;
 
     public static string DefaultProfilePath =>
         Path.Combine(AppContext.BaseDirectory, "default_fan_curve_profiles.json");
@@ -130,6 +126,7 @@ public static class CurveProfileStore
                 return defaults;
 
             defaults.ConfigurationVersion = CurrentConfigurationVersion;
+            defaults.LogRetentionDays = FileRetentionPolicy.Normalize(loaded.LogRetentionDays, 7);
             defaults.LogLevel = loaded.LogLevel is "INFO" or "WARN" or "ERROR" or "NONE"
                 ? loaded.LogLevel : "ERROR";
             defaults.Language = loaded.Language is "en-US" or "zh-CN" ? loaded.Language : defaults.Language;
@@ -1066,6 +1063,12 @@ public static class CurveProfileStore
             BatteryOutputPowerCritical = batteryOutput.Critical,
             Sensors = sensors.Distinct().ToList(),
             HorizontalX = value.HorizontalX,
+            HorizontalMonitor = OsdMonitorPolicy.Normalize(value.HorizontalMonitor),
+            VerticalMonitor = OsdMonitorPolicy.Normalize(value.VerticalMonitor),
+            HorizontalXAnchor = Enum.IsDefined(value.HorizontalXAnchor) ? value.HorizontalXAnchor : OsdSnapAnchor.None,
+            HorizontalYAnchor = Enum.IsDefined(value.HorizontalYAnchor) ? value.HorizontalYAnchor : OsdSnapAnchor.None,
+            VerticalXAnchor = Enum.IsDefined(value.VerticalXAnchor) ? value.VerticalXAnchor : OsdSnapAnchor.None,
+            VerticalYAnchor = Enum.IsDefined(value.VerticalYAnchor) ? value.VerticalYAnchor : OsdSnapAnchor.None,
             HorizontalY = value.HorizontalY,
             VerticalX = value.VerticalX,
             VerticalY = value.VerticalY
@@ -1086,6 +1089,7 @@ public static class CurveProfileStore
         }).Sensors;
         return new SensorRecordingSettings
         {
+            RetentionDays = FileRetentionPolicy.Normalize(value.RetentionDays, 0),
             IntervalSeconds = interval,
             MaximumPlotPoints = Math.Clamp(
                 value.MaximumPlotPoints,

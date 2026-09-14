@@ -185,6 +185,28 @@ internal static class NvPcfPowerPolicy
 internal static class NvPcfPowerController
 {
     private static readonly object Sync = new();
+    private static bool _nativeWorker;
+    private static readonly NvPcfWorkerClient Worker = new();
+
+    internal static void EnableNativeWorker() => _nativeWorker = true;
+
+    private static NvPcfPowerSnapshot ReadRemote(NvPcfRequest request)
+    {
+        try
+        {
+            var snapshot = Worker.Execute(request).Snapshot!;
+            _cachedSliderBounds = (snapshot.SliderMinimumW, snapshot.SliderMaximumW);
+            CachedTemperatureBounds = snapshot.GpuTemperatureMinimumC is { } minimum &&
+                snapshot.GpuTemperatureMaximumC is { } maximum ? (minimum, maximum) : null;
+            return snapshot;
+        }
+        catch
+        {
+            _cachedSliderBounds = null;
+            CachedTemperatureBounds = null;
+            throw;
+        }
+    }
     private static PcfPowerController? _controller;
     private static (int MinimumW, int MaximumW)? _cachedSliderBounds;
     private static bool _dynamicBoostUnsupported;
@@ -217,6 +239,7 @@ internal static class NvPcfPowerController
     {
         lock (Sync)
         {
+            if (!_nativeWorker) return ReadRemote(new("READ"));
             try
             {
                 var controller = GetController();
@@ -245,6 +268,7 @@ internal static class NvPcfPowerController
                 nameof(state));
         lock (Sync)
         {
+            if (!_nativeWorker) return ReadRemote(new("WRITE", state, selection));
             try
             {
                 var controller = GetController();
@@ -297,6 +321,12 @@ internal static class NvPcfPowerController
     {
         lock (Sync)
         {
+            if (!_nativeWorker)
+            {
+                try { Worker.Execute(new("RESET")); }
+                finally { _cachedSliderBounds = null; CachedTemperatureBounds = null; }
+                return;
+            }
             try
             {
                 GetController().ResetAllOverrides();
@@ -328,6 +358,12 @@ internal static class NvPcfPowerController
     {
         lock (Sync)
         {
+            if (!_nativeWorker)
+            {
+                try { Worker.Execute(new("RESET_POWER")); }
+                finally { _cachedSliderBounds = null; CachedTemperatureBounds = null; }
+                return;
+            }
             try
             {
                 GetController().ResetAllOverrides();
@@ -367,6 +403,13 @@ internal static class NvPcfPowerController
     {
         lock (Sync)
         {
+            if (!_nativeWorker)
+            {
+                Worker.Shutdown();
+                _cachedSliderBounds = null;
+                CachedTemperatureBounds = null;
+                return;
+            }
             CloseController();
             _dynamicBoostUnsupported = false;
             _thermalCapabilityChecked = false;
@@ -734,6 +777,8 @@ internal static class NvPcfPowerController
 
     private static PcfPowerController GetController()
     {
+        if (!_nativeWorker)
+            throw new InvalidOperationException("Native NVPCF access is restricted to the isolated worker.");
         if (_controller is not null)
             return _controller;
         _controller = new PcfPowerController();

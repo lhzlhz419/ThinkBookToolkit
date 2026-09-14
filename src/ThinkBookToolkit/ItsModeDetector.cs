@@ -17,7 +17,7 @@ public sealed class ItsModeDetector
     private const string LegacyPath = @"SYSTEM\CurrentControlSet\Services\LITSSVC\LNBITS\IC\MMC";
     private const string LegacyBasePath = @"SYSTEM\CurrentControlSet\Services\LITSSVC\LNBITS\IC";
     private const int DispatcherVersion3 = 8192;
-    private static int _preferLegacyPath;
+    private static int _selectedPath;
 
     public bool IsModeSwitchSupported()
     {
@@ -39,11 +39,10 @@ public sealed class ItsModeDetector
             LegacyPath,
             writable: false);
         var legacyAvailable = legacyBase is not null && legacy is not null;
-        if (Volatile.Read(ref _preferLegacyPath) != 0 && legacyAvailable)
-            return ItsModeControlPath.LegacyLitssvc;
         return ResolveControlPath(
             version,
-            legacyAvailable);
+            legacyAvailable,
+            (ItsModeControlPath)Volatile.Read(ref _selectedPath));
     }
 
     internal bool IsLegacyPathAvailable()
@@ -58,15 +57,21 @@ public sealed class ItsModeDetector
     }
 
     internal static void PreferLegacyPathForCurrentProcess() =>
-        Volatile.Write(ref _preferLegacyPath, 1);
+        SelectControlPathForCurrentProcess(ItsModeControlPath.LegacyLitssvc);
+
+    internal static void SelectControlPathForCurrentProcess(ItsModeControlPath path) =>
+        Volatile.Write(ref _selectedPath, (int)path);
 
     internal bool IsModeSupported(ItsMode mode) =>
         IsModeSupported(mode, GetControlPath());
 
     internal static ItsModeControlPath ResolveControlPath(
         int dispatcherVersion,
-        bool legacyAvailable) =>
-        dispatcherVersion >= DispatcherVersion3
+        bool legacyAvailable,
+        ItsModeControlPath selectedPath = ItsModeControlPath.Unavailable) =>
+        selectedPath == ItsModeControlPath.LegacyLitssvc && legacyAvailable
+            ? ItsModeControlPath.LegacyLitssvc
+            : dispatcherVersion >= DispatcherVersion3
             ? ItsModeControlPath.ModernDispatcher
             : legacyAvailable
                 ? ItsModeControlPath.LegacyLitssvc
@@ -86,19 +91,21 @@ public sealed class ItsModeDetector
 
     public ItsMode ReadMode()
     {
-        if (Volatile.Read(ref _preferLegacyPath) != 0)
-        {
-            var preferredLegacy = ReadLegacyMode();
-            if (preferredLegacy != ItsMode.Unknown)
-                return preferredLegacy;
-        }
-        var modern = ReadModernMode();
-        if (modern != ItsMode.Unknown)
-            return modern;
-
-        var legacy = ReadLegacyMode();
-        return legacy;
+        return ReadMode(GetControlPath());
     }
+
+    internal ItsMode ReadMode(ItsModeControlPath path) =>
+        ReadModeUsingPath(path, ReadModernMode, () => ReadLegacyMode(includeGeekOverlay: true));
+
+    internal static ItsMode ReadModeUsingPath(ItsModeControlPath path,
+        Func<ItsMode> readModern, Func<ItsMode> readLegacy) => path switch
+        {
+            ItsModeControlPath.ModernDispatcher => readModern(),
+            ItsModeControlPath.LegacyLitssvc => readLegacy(),
+            _ => ItsMode.Unknown
+        };
+
+    internal static ItsMode ReadLegacyBaseMode() => ReadLegacyMode(includeGeekOverlay: false);
 
     private static ItsMode ReadModernMode()
     {
@@ -120,7 +127,7 @@ public sealed class ItsModeDetector
         };
     }
 
-    private static ItsMode ReadLegacyMode()
+    private static ItsMode ReadLegacyMode(bool includeGeekOverlay)
     {
         using var baseKey = Registry.LocalMachine.OpenSubKey(LegacyBasePath, writable: false);
         using var key = Registry.LocalMachine.OpenSubKey(LegacyPath, writable: false);
@@ -133,7 +140,7 @@ public sealed class ItsModeDetector
         return ResolveLegacyMode(
             auto,
             current,
-            ItsModeController.LegacyGeekOverlayActive);
+            includeGeekOverlay && ItsModeController.LegacyGeekOverlayActive);
     }
 
     internal static ItsMode ResolveLegacyMode(

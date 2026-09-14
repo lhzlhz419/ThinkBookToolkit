@@ -43,7 +43,7 @@ internal sealed class FanWatchdogService : ServiceBase
         {
             var markerPath = ResolveMarkerPath(args);
             var marker = ReadMarker(markerPath);
-            log = new GuardianLog(marker.LogDirectory);
+            log = new GuardianLog(marker.LogDirectory, settingsPath: marker.SettingsPath);
             log.Info(
                 $"Guardian started for Toolkit PID {marker.ProcessId}; backend {marker.BackendIdentity}; marker {Path.GetFileName(markerPath)}.");
 

@@ -50,6 +50,14 @@ public static class Program
                 return;
             using (singleInstance)
             {
+                ToolkitLog.Shutdown();
+                try { ToolkitStoragePaths.ApplyPendingAtStartup(); }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("文件夹位置未切换，继续使用原目录。原文件未删除。\nFolder migration was not completed; the original locations remain active.\n\n" +
+                        ex.Message, "ThinkBook Toolkit", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                finally { ToolkitLog.Initialize(); }
                 ConfigurationMigrationService.EnsureInitialized();
                 var settings = CurveProfileStore.LoadSettings();
                 ToolkitLog.Configure(settings.LogLevel);
@@ -86,6 +94,7 @@ public static class Program
                 using var runtime = new ToolkitRuntimeService(
                     settings,
                     launchedAtStartup);
+                using var storageMaintenance = new StorageMaintenanceService(settings, () => runtime.CurrentSensorRecordingPath);
                 SessionEndingCancelEventHandler sessionEnding = (_, eventArgs) =>
                 {
                     try
@@ -144,8 +153,8 @@ public static class Program
         var error = exception.GetBaseException();
         return
             $"{error.GetType().Name}: {error.Message}\r\n\r\n" +
-            "详细诊断信息已写入配置文件夹下的 log 文件夹。\r\n" +
-            "Diagnostic details were written to the log folder beside the configuration file.";
+            "详细诊断信息已写入日志文件夹，可在设置中的“自定义文件夹位置”打开。\r\n" +
+            "Diagnostic details were written to the log folder; open it through Custom folder locations in Settings.";
     }
 
     private static bool TryApplyInstallerConfiguration(

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
 
@@ -15,13 +14,22 @@ internal static class ItsModeController
     private const uint LegacyFullSpeedDisable = 0x000F100B;
     private const uint LegacyFullSpeedEnable = 0x001F100B;
     private static int _legacyGeekOverlayActive;
+    private static readonly object ModeSwitchSync = new();
 
     internal static bool LegacyGeekOverlayActive =>
         System.Threading.Volatile.Read(ref _legacyGeekOverlayActive) != 0;
 
-    public static void SetMode(ItsMode mode)
+    public static void SetMode(ItsMode mode) =>
+        SetMode(mode, new ItsModeDetector().GetControlPath());
+
+    internal static void SetMode(ItsMode mode, ItsModeControlPath path)
     {
-        var path = new ItsModeDetector().GetControlPath();
+        lock (ModeSwitchSync)
+            SetModeCore(mode, path);
+    }
+
+    private static void SetModeCore(ItsMode mode, ItsModeControlPath path)
+    {
         if (path == ItsModeControlPath.Unavailable)
             throw new NotSupportedException(
                 "No supported Lenovo ITS control service was detected.");
@@ -39,6 +47,7 @@ internal static class ItsModeController
             $"mode={mode}; command={command}; path={path}.");
         using var service = new ServiceController(serviceName);
         service.ExecuteCommand(command);
+        ItsModeDetector.SelectControlPathForCurrentProcess(path);
     }
 
     internal static bool IsModeSupported(ItsMode mode) =>
@@ -92,29 +101,58 @@ internal static class ItsModeController
 
     internal static void SetLegacyMode(ItsMode mode)
     {
-        var serviceCommands = LegacyServiceCommandsForMode(mode);
-        if (mode != ItsMode.Geek)
-            TryDisableLegacyGeekOverlay();
+        lock (ModeSwitchSync)
+        {
+            ExecuteLegacyTransition(mode, ItsModeDetector.ReadLegacyBaseMode,
+                command =>
+                {
+                    SendLegacyServiceControl(command);
+                    ItsModeDetector.PreferLegacyPathForCurrentProcess();
+                }, enabled =>
+                {
+                    if (!enabled) { TryDisableLegacyGeekOverlay(); return; }
+                    using var energy = new LenovoEnergyDriver();
+                    var output = energy.Call(LegacyEnergyIoctl, LegacyFullSpeedEnable);
+                    ItsModeDetector.PreferLegacyPathForCurrentProcess();
+                    System.Threading.Volatile.Write(ref _legacyGeekOverlayActive, 1);
+                    ToolkitLog.Info($"Legacy Geek overlay enabled: output=0x{output:X8}.");
+                }, () => WaitForLegacyPerformance(ItsModeDetector.ReadLegacyBaseMode,
+                    System.Threading.Thread.Sleep));
+            ItsModeDetector.PreferLegacyPathForCurrentProcess();
+            ToolkitLog.Info($"Legacy ITS mode applied: mode={mode}.");
+        }
+    }
 
-        foreach (var command in serviceCommands)
-            SendLegacyServiceControl((uint)command);
-
-        uint? energyOutput = null;
+    internal static void ExecuteLegacyTransition(ItsMode mode, Func<ItsMode> readBaseMode,
+        Action<uint> sendService, Action<bool> setOverlay, Action waitForPerformance)
+    {
+        var commands = LegacyServiceCommandsForMode(mode);
         if (mode == ItsMode.Geek)
         {
-            using var energy = new LenovoEnergyDriver();
-            energyOutput = energy.Call(
-                LegacyEnergyIoctl,
-                LegacyFullSpeedEnable);
-            System.Threading.Volatile.Write(
-                ref _legacyGeekOverlayActive,
-                1);
+            if (readBaseMode() is not (ItsMode.Performance or ItsMode.Geek))
+            {
+                foreach (var command in commands) sendService((uint)command);
+                waitForPerformance();
+            }
+            // Both modes share legacy CurrentSetting=3. Reissuing LITSSVC's
+            // performance command here can asynchronously undo the overlay.
+            setOverlay(true);
+            return;
         }
+        setOverlay(false);
+        foreach (var command in commands) sendService((uint)command);
+    }
 
-        ToolkitLog.Info(
-            "Legacy ITS mode applied: " +
-            $"mode={mode}; LITSSVC=[{string.Join(", ", serviceCommands.Select(command => $"0x{command:X2}"))}]; " +
-            $"EnergyDrv={(mode == ItsMode.Geek ? $"0x{LegacyFullSpeedEnable:X8}; output=0x{energyOutput:X8}" : $"0x{LegacyFullSpeedDisable:X8} (best effort)")}.");
+    internal static void WaitForLegacyPerformance(Func<ItsMode> readBaseMode, Action<int> delay)
+    {
+        var consecutive = 0;
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            consecutive = readBaseMode() is ItsMode.Performance or ItsMode.Geek ? consecutive + 1 : 0;
+            if (consecutive >= 2) return;
+            delay(100);
+        }
+        throw new System.TimeoutException("旧版接口未确认性能基础模式，未启用极客扩展。 / Legacy performance base mode was not confirmed; Geek overlay was not enabled.");
     }
 
     private static void TryDisableLegacyGeekOverlay()

@@ -27,6 +27,7 @@ internal sealed class SensorRecordingSettingsWindow : Window
         VerticalContentAlignment = VerticalAlignment.Center
     };
     private readonly TextBlock _status = new();
+    private readonly ComboBox _retentionDays = new() { MinWidth = 170 };
     private SensorRecordingSettings _draft;
     private bool _syncing;
 
@@ -80,6 +81,21 @@ internal sealed class SensorRecordingSettingsWindow : Window
         });
 
         var content = new StackPanel { Margin = new Thickness(0, 4, 8, 8) };
+        foreach (var days in FileRetentionPolicy.Days)
+            _retentionDays.Items.Add(new ComboBoxItem
+            {
+                Content = days == 0 ? _runtime.L("不删除", "Do not delete") : _runtime.L($"{days} 天前", $"Older than {days} days"),
+                Tag = days
+            });
+        _retentionDays.SelectionChanged += (_, _) =>
+        {
+            if (_syncing || _retentionDays.SelectedItem is not ComboBoxItem { Tag: int days }) return;
+            _draft.RetentionDays = days;
+            Save();
+        };
+        content.Children.Add(Row(_runtime.L("自动删除一段时间前的记录数据", "Automatically delete old recordings"),
+            _runtime.L("仅删除已结束的过期记录，不删除正在写入的记录。", "Delete only expired completed recordings, never the active recording."),
+            _retentionDays));
         content.Children.Add(Row(
             _runtime.L("刷新间隔", "Refresh interval"),
             _runtime.L(
@@ -242,6 +258,8 @@ internal sealed class SensorRecordingSettingsWindow : Window
     private void SyncControls()
     {
         _syncing = true;
+        _retentionDays.SelectedItem = _retentionDays.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(item => Equals(item.Tag, _draft.RetentionDays));
         _interval.SelectedItem = _interval.Items.OfType<ComboBoxItem>()
             .FirstOrDefault(item => Equals(item.Tag, _draft.IntervalSeconds));
         _maximumPoints.Value = _draft.MaximumPlotPoints;
@@ -329,6 +347,7 @@ internal sealed class SensorRecordingSettingsWindow : Window
         {
             IntervalSeconds = source.IntervalSeconds,
             MaximumPlotPoints = source.MaximumPlotPoints,
+            RetentionDays = source.RetentionDays,
             Sensors = source.Sensors.ToList()
         };
 

@@ -347,8 +347,8 @@ internal sealed partial class OsdSettingsWindow : Window
         content.Children.Add(Row(
             _runtime.L("吸附阈值", "Snapping threshold"),
             _runtime.L(
-                "拖动到屏幕工作区边缘时，在此距离内自动贴边。",
-                "Snap to the screen work-area edge within this distance."),
+                "拖近屏幕工作区边缘或中线时自动吸附；内容尺寸变化后保持贴边或居中。",
+                "Snap near work-area edges or center lines; retain alignment when the content size changes."),
             snapping));
         content.Children.Add(Row(
             _runtime.L("固定位置", "Lock position"),
@@ -727,6 +727,12 @@ internal sealed partial class OsdSettingsWindow : Window
         BatteryOutputPowerCritical = source.BatteryOutputPowerCritical,
         Sensors = source.Sensors.ToList(),
         HorizontalX = source.HorizontalX,
+        HorizontalMonitor = source.HorizontalMonitor,
+        VerticalMonitor = source.VerticalMonitor,
+        HorizontalXAnchor = source.HorizontalXAnchor,
+        HorizontalYAnchor = source.HorizontalYAnchor,
+        VerticalXAnchor = source.VerticalXAnchor,
+        VerticalYAnchor = source.VerticalYAnchor,
         HorizontalY = source.HorizontalY,
         VerticalX = source.VerticalX,
         VerticalY = source.VerticalY

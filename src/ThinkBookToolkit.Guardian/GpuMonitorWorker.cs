@@ -50,11 +50,7 @@ internal static class GpuMonitorWorker
     public static int Run(string pipeName)
     {
         using var log = new GuardianLog(
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".thinkbook_toolkit",
-                "log"),
-            "gpu-worker");
+            ToolkitStoragePaths.Logs, "gpu-worker", CurveProfileStore.SettingsPath);
         Computer? computer = null;
         GuardianNvidiaTelemetryReader? privateTelemetry = null;
         GuardianNvidiaStateReader? stateReader = null;

@@ -44,8 +44,8 @@ internal static class AmdZenStatesPowerController
     public static BetaCpuPowerKind? CachedKind { get; private set; }
     internal static void SetCachedKindForTesting(BetaCpuPowerKind? kind) =>
         CachedKind = kind;
-    private static string HelperPath => Path.Combine(
-        AppContext.BaseDirectory, "AmdPowerHelper", "ThinkBookToolkit.AmdPowerHelper.exe");
+    private static string HelperPath => ToolkitStoragePaths.ResolveDependency(
+        Path.Combine("AmdPowerHelper", "ThinkBookToolkit.AmdPowerHelper.exe"));
     public static BetaCpuPowerSnapshot Read() => Run("read");
     public static BetaCpuPowerSnapshot Write(string name, int value) =>
         Run("set", name, value.ToString());
@@ -82,6 +82,12 @@ internal static class AmdZenStatesPowerController
 
 internal static class IntelMmioPowerController
 {
+    static IntelMmioPowerController()
+    {
+        NativeLibrary.SetDllImportResolver(typeof(IntelMmioPowerController).Assembly,
+            (name, _, _) => string.Equals(name, "InpOutx64.dll", StringComparison.OrdinalIgnoreCase)
+                ? NativeLibrary.Load(ToolkitStoragePaths.ResolveDependency("InpOutx64.dll")) : IntPtr.Zero);
+    }
     private const ulong LimitOffset = 0x59A0;
     public static BetaCpuPowerSnapshot Read()
     {
@@ -100,12 +106,11 @@ internal static class IntelMmioPowerController
     }
     private static IDisposable Open(out Mmio mmio, out ulong unit)
     {
-        var root = AppContext.BaseDirectory;
-        var msr = new Pawn(Path.Combine(root, "IntelMSR.bin"));
+        var msr = new Pawn(ToolkitStoragePaths.ResolveDependency("IntelMSR.bin"));
         try
         {
             unit = msr.Execute("ioctl_read_msr", [0x606], 1)[0];
-            var mch = new Pawn(Path.Combine(root, "IntelMCHBAR.bin"));
+            var mch = new Pawn(ToolkitStoragePaths.ResolveDependency("IntelMCHBAR.bin"));
             var baseAddress = mch.Execute("ioctl_get_mchbar_addr", [], 1)[0];
             var reference = mch.Execute("ioctl_read_qword", [LimitOffset], 1)[0];
             mmio = new Mmio(baseAddress + LimitOffset);

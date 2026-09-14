@@ -304,6 +304,7 @@ public sealed class AppSettings
     public string Language { get; set; } = "zh-CN";
     public string Theme { get; set; } = "light";
     public string LogLevel { get; set; } = "ERROR";
+    public int LogRetentionDays { get; set; } = 7;
     public string BackgroundImagePath { get; set; } = "";
     public double BackgroundImageScalePercent { get; set; } = 100;
     public double BackgroundImageOpacityPercent { get; set; } = 30;
@@ -510,8 +511,17 @@ public enum OsdMemoryDisplayMode
     All
 }
 
+public enum OsdSnapAnchor { None, Start, Center, End }
+public sealed record OsdMonitorPlacement(string DeviceName, string DeviceId, double OffsetX, double OffsetY);
+
 public sealed class ToolkitOsdSettings
 {
+    public OsdMonitorPlacement? HorizontalMonitor { get; set; }
+    public OsdMonitorPlacement? VerticalMonitor { get; set; }
+    public OsdSnapAnchor HorizontalXAnchor { get; set; }
+    public OsdSnapAnchor HorizontalYAnchor { get; set; }
+    public OsdSnapAnchor VerticalXAnchor { get; set; }
+    public OsdSnapAnchor VerticalYAnchor { get; set; }
     public OsdOrientation Orientation { get; set; } = OsdOrientation.Vertical;
     public double RefreshIntervalSeconds { get; set; } = 1;
     public bool FixedPosition { get; set; }
@@ -595,6 +605,7 @@ public sealed class ToolkitOsdSettings
 
 public sealed class SensorRecordingSettings
 {
+    public int RetentionDays { get; set; }
     public double IntervalSeconds { get; set; } = 1;
     public int MaximumPlotPoints { get; set; } = 300;
     public List<OsdSensor> Sensors { get; set; } =

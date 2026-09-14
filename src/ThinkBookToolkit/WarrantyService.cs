@@ -127,11 +127,7 @@ internal static class WarrantyService
     {
         get
         {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return Path.Combine(
-                home,
-                ".thinkbook_toolkit",
-                "warranty_cache.csharp.json");
+            return Path.Combine(ToolkitStoragePaths.Configuration, "warranty_cache.csharp.json");
         }
     }
 

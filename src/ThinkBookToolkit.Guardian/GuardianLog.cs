@@ -10,11 +10,13 @@ internal sealed class GuardianLog : IDisposable
     private StreamWriter? _writer;
     private readonly string? _directory;
     private readonly string _component;
+    private readonly string? _settingsPath;
 
-    public GuardianLog(string? directory, string component = "watchdog")
+    public GuardianLog(string? directory, string component = "watchdog", string? settingsPath = null)
     {
         _directory = directory;
         _component = component;
+        _settingsPath = settingsPath;
     }
 
     private void OpenWriter()
@@ -65,7 +67,7 @@ internal sealed class GuardianLog : IDisposable
                 var configured = "ERROR";
                 try
                 {
-                    var path = Path.Combine(Path.GetDirectoryName(_directory!)!, "app_settings.csharp.json");
+                    var path = _settingsPath ?? Path.Combine(Path.GetDirectoryName(_directory!)!, "app_settings.csharp.json");
                     using var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
                     if (json.RootElement.TryGetProperty("LogLevel", out var value))
                         configured = value.GetString() ?? "ERROR";

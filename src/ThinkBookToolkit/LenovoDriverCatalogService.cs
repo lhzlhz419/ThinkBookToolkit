@@ -854,9 +854,7 @@ internal static class LenovoDriverCatalogService
         return machineType.Length == 4 && machineType.All(char.IsLetterOrDigit);
     }
 
-    private static string CacheDirectory() => Path.Combine(
-        Path.GetDirectoryName(CurveProfileStore.SettingsPath)!,
-        "driver_update_cache");
+    private static string CacheDirectory() => ToolkitStoragePaths.Downloads;
 
     private static Uri ValidateLenovoUri(Uri uri)
     {

@@ -22,8 +22,20 @@ namespace ThinkBookToolkit.UiSmokeTests;
 internal static class Program
 {
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--nvpcf-test-worker")
+            return NvPcfIsolationTests.RunFakeWorker(args[1]);
+        if (args.Length == 1 && args[0] == "--test-nvpcf-isolation")
+        {
+            try
+            {
+                NvPcfIsolationTests.Run();
+                Console.WriteLine("NVPCF process isolation tests passed.");
+                return 0;
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+        }
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         try
         {
@@ -44,6 +56,8 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        StoragePolicyTests.Run();
+        ItsModeTransitionTests.Run();
         var gpuFeatures = new FeatureAvailabilityReport([
             new(FeatureIds.DiscreteGpuManagement, "性能", "状态", false, "missing"),
             new(FeatureIds.GpuOverclock, "性能", "超频", true, "keep"),
@@ -5848,6 +5862,7 @@ internal static class Program
             Assert(GetPrivateField<Border>(osd, "_background")
                        .BorderThickness == new Thickness(0),
                 "The OSD still renders a bright outer border.");
+            OsdLayoutTests.Run(runtime, osd);
             runtime.SetSnapshotForTesting(ToolkitRuntimeSnapshot.Empty);
             osd.SetFpsForTesting(FpsTelemetrySnapshot.Empty);
             osd.RefreshForTesting();
