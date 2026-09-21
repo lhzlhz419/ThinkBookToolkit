@@ -326,7 +326,26 @@ internal sealed class SensorRecordingViewerWindow : Window
             samples = AverageResample(samples, maximumPoints);
             _charts.Children.Clear();
             var any = false;
-            foreach (var definition in Definitions)
+            var customCategories = _runtime.Plugins.Installations.SelectMany(p => p.Manifest.SensorCategories)
+                .OrderBy(c => c.Order).ThenBy(c => c.Id, StringComparer.Ordinal).ToArray();
+            var pluginKeys = samples.SelectMany(sample => sample.Values.Keys).Where(key => key.StartsWith("plugin:", StringComparison.Ordinal)).Distinct().ToArray();
+            var pluginCharts = pluginKeys.Select(key =>
+            {
+                var descriptor = _runtime.Plugins.Installations.SelectMany(p => p.Manifest.Sensors).FirstOrDefault(s => "plugin:" + s.Id == key);
+                var label = descriptor?.Name.Resolve(_runtime.IsChinese) ?? key["plugin:".Length..];
+                var group = PluginSensorPlacement.HistoryGroup(descriptor?.Category) ??
+                    customCategories.FirstOrDefault(c => c.Id == descriptor?.Category)?.Id;
+                return (Group: group, Chart: B(label, label, S(key, label)));
+            }).ToArray();
+            var grouped = Definitions.Concat(customCategories.Select(c =>
+                new ChartGroupDefinition(c.Title.Chinese, c.Title.English, [], c.Id))).Select(definition => definition with
+            {
+                Charts = definition.Charts.Concat(pluginCharts.Where(p => p.Group == (definition.Id ?? definition.English)).Select(p => p.Chart)).ToArray()
+            });
+            // Old recordings outlive their plugin manifests; never discard data
+            // or guess a hardware category when its metadata is unavailable.
+            var unclassified = pluginCharts.Where(p => p.Group is null).Select(p => p.Chart).ToArray();
+            foreach (var definition in grouped.Concat(unclassified.Length == 0 ? [] : new[] { new ChartGroupDefinition("其他记录", "Other recordings", unclassified) }))
             {
                 var charts = definition.Charts
                     .Where(chart => chart.Series.Any(series => samples.Any(sample =>
@@ -351,7 +370,7 @@ internal sealed class SensorRecordingViewerWindow : Window
                 };
                 foreach (var chart in charts)
                 {
-                    var chartKey = definition.English + "|" + chart.English;
+                    var chartKey = (definition.Id ?? definition.English) + "|" + chart.English + "|" + string.Join(",", chart.Series.Select(s => s.Key));
                     if (!_hiddenSeriesByChart.TryGetValue(chartKey, out var hidden))
                     {
                         hidden = new HashSet<string>(StringComparer.Ordinal);
@@ -674,7 +693,8 @@ internal sealed class SensorRecordingViewerWindow : Window
     private sealed record ChartGroupDefinition(
         string Chinese,
         string English,
-        IReadOnlyList<ChartDefinition> Charts);
+        IReadOnlyList<ChartDefinition> Charts,
+        string? Id = null);
     private sealed record ChartDefinition(
         string Chinese,
         string English,

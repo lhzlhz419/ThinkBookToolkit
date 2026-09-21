@@ -105,7 +105,12 @@ Invoke-RestMethod http://127.0.0.1:2975/performance-mode `
 
 ## Replaceable fan backend
 
-Toolkit loads `ThinkBookToolkit.FanBackend.dll` from the application directory.
+Toolkit loads `ThinkBookToolkit.FanBackend.dll` from the application directory
+unless an approved, enabled plugin supplies a fan backend. A plugin backend takes
+priority over both the bundled DLL and a manually replaced DLL; enabling or
+disabling it takes effect after restart and never overwrites that DLL. Plugins
+can supply pages, settings and sensors alongside the backend. See
+[the plugin contract and lifecycle](docs/plugin-system.md#风扇后端插件).
 This repository contains the WMI implementation. Replacing that one file changes
 how fan telemetry and control are performed; Toolkit does not choose or reject a
 backend based on the device model.

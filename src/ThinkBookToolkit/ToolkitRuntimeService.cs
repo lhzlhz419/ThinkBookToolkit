@@ -51,6 +51,7 @@ internal sealed record ToolkitRuntimeSnapshot(
     public string PendingGpuModeSource { get; init; } = string.Empty;
     public PowerSettingsState? PowerSettings { get; init; }
     public WarrantySnapshot? Warranty { get; init; }
+    public IReadOnlyList<PublishedPluginSensor> PluginSensors { get; init; } = [];
 
     public static ToolkitRuntimeSnapshot Empty { get; } = new(
         null,
@@ -122,6 +123,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private string _lastPowerSettingsLockError = string.Empty;
     private bool _disposed;
     private bool _systemThemeSubscribed;
+    private bool _lastSystemThemeDark;
     private bool _powerModeSubscribed;
     private FnKeyNotificationWindow? _fnKeyNotification;
     private bool _fnDiscoveryOwnsListener;
@@ -130,7 +132,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public ToolkitRuntimeService(
         AppSettings settings,
         bool launchedAtStartup = false,
-        bool persistSystemSessionState = true)
+        bool persistSystemSessionState = true,
+        PluginManagerOptions? pluginOptions = null)
     {
         Settings = settings;
         Settings.GpuOverclock = GpuOverclockPolicy.Normalize(
@@ -150,6 +153,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _bootSessionId = GpuModeRestartState.CurrentBootSessionId;
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
+        Plugins = new ToolkitPluginManager(this, pluginOptions);
         _dataSharing = new LocalDataSharingService(
             () => Snapshot,
             () => Settings.SoftwareIntegrationMode,
@@ -184,6 +188,29 @@ internal sealed class ToolkitRuntimeService : IDisposable
     }
 
     public AppSettings Settings { get; }
+    internal ToolkitPluginManager Plugins { get; }
+    public bool TrySetLogLevel(string level, out string? error)
+    {
+        error = null;
+        if (level is not ("INFO" or "WARN" or "ERROR" or "NONE")) { error = "Invalid log level."; return false; }
+        var previous = Settings.LogLevel;
+        try { Settings.LogLevel = level; CurveProfileStore.SaveSettings(Settings); ToolkitLog.Configure(level); return true; }
+        catch (Exception ex) { Settings.LogLevel = previous; error = ex.Message; return false; }
+    }
+    public bool TrySetLogRetentionDays(int days, out string? error)
+    {
+        error = null;
+        if (!FileRetentionPolicy.Days.Contains(days)) { error = "Invalid retention days."; return false; }
+        var previous = Settings.LogRetentionDays;
+        try { Settings.LogRetentionDays = days; CurveProfileStore.SaveSettings(Settings); return true; }
+        catch (Exception ex) { Settings.LogRetentionDays = previous; error = ex.Message; return false; }
+    }
+    internal void PublishPluginSensors(IReadOnlyList<PublishedPluginSensor> sensors)
+    {
+        if (_disposed) return;
+        Snapshot = Snapshot with { PluginSensors = sensors };
+        SnapshotChanged?.Invoke(this, EventArgs.Empty);
+    }
 
     internal static TimeSpan PerformanceFanStrategyApplyDelay { get; } =
         TimeSpan.FromSeconds(2);
@@ -236,7 +263,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private bool _gpuRestartBusy;
 
     internal static FeatureAvailabilityReport RestoreConnectedGpuFeatures(
-        FeatureAvailabilityReport report, bool connected) => !connected ? report :
+        FeatureAvailabilityReport report, bool connected) => !connected || !report.Items.Any(item => !item.Available &&
+            item.Id is FeatureIds.DiscreteGpuManagement or FeatureIds.GpuOverclock) ? report :
         new(report.Items.Select(item => !item.Available &&
             item.Id is FeatureIds.DiscreteGpuManagement or FeatureIds.GpuOverclock
                 ? item with { Available = true, PartiallyAvailable = false,
@@ -250,9 +278,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
             (!report.IsAvailable(FeatureIds.DiscreteGpuManagement) ||
              !report.IsAvailable(FeatureIds.GpuOverclock)))
         {
-            Report = RestoreConnectedGpuFeatures(report, connected: true);
-            FeatureAvailabilityCache.Current = Report;
-            AvailabilityChanged?.Invoke(this, EventArgs.Empty);
+            var restored = RestoreConnectedGpuFeatures(report, connected: true);
+            if (!ReferenceEquals(restored, report))
+            {
+                Report = restored;
+                FeatureAvailabilityCache.Current = Report;
+                AvailabilityChanged?.Invoke(this, EventArgs.Empty);
+            }
         }
         if (presence.Reliable && !presence.IsPresent)
             return (temperatures ?? new TemperatureSnapshot(null, null, null, null, null, "", "", ""))
@@ -878,6 +910,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 "The keyboard macro listener could not be started: " +
                 macroHookError);
         }
+        await Plugins.PrepareFanBackendAsync(Environment.GetCommandLineArgs().Contains("--disable-plugins"));
+        LogStage("plugin fan backend selection");
         Report = await FeatureAvailabilityService.DetectAsync();
         ToolkitLog.Info(
             $"Feature detection completed: {Report.Items.Count(item => item.Usable)}/{Report.Items.Count} usable.");
@@ -2452,6 +2486,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             {
                 PendingGpuModeSource = Settings.PendingGpuModeSource,
                 PowerSettings = _cachedPowerSettings,
+                PluginSensors = Plugins.Sensors,
                 Warranty = _cachedWarranty
             };
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
@@ -4585,6 +4620,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     private void SyncSystemThemeSubscription()
     {
+        _lastSystemThemeDark = IsDark;
         var shouldSubscribe = Settings.Theme == "system";
         if (shouldSubscribe == _systemThemeSubscribed)
             return;
@@ -4801,8 +4837,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
         object sender,
         UserPreferenceChangedEventArgs args)
     {
-        if (Settings.Theme != "system")
+        if (_disposed || Settings.Theme != "system")
             return;
+        var dark = IsDark;
+        if (dark == _lastSystemThemeDark) return;
+        _lastSystemThemeDark = dark;
         RaiseAppearanceChanged();
     }
 
@@ -4977,6 +5016,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         _fnKeyManager.Dispose();
         _macroService.Dispose();
         _dataSharing.Dispose();
+        Plugins.Dispose();
         _sensorRecording.Dispose();
         _fpsMonitor.Dispose();
         _osdManager.Dispose();

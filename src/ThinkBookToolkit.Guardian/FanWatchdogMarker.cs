@@ -5,4 +5,6 @@ internal sealed record FanWatchdogMarker(
     long ProcessStartUtcTicks,
     string LogDirectory,
     string BackendIdentity,
-    string? SettingsPath = null);
+    string? SettingsPath = null,
+    ThinkBookToolkit.FanBackend.PluginFanBackendSelection? PluginBackend = null,
+    int DeclaredFanCount = 2);

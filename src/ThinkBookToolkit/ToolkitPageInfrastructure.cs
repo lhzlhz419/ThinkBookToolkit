@@ -162,8 +162,14 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         string title,
         string description,
         UIElement control,
-        string? glyph = null)
+        string? glyph = null,
+        string? pluginSlot = null)
     {
+        if (pluginSlot is not null && Runtime.Plugins.Setting(pluginSlot) is { } contribution)
+        {
+            title = contribution.Setting.Title.Resolve(Runtime.IsChinese);
+            control = PluginSettingControl.Create(Runtime, contribution.Plugin, contribution.Setting);
+        }
         var row = new Grid { MinHeight = 62 };
         row.RowDefinitions.Add(new RowDefinition
         {
@@ -307,7 +313,8 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
     protected AdaptiveUniformPanel HardwareMonitorCards(
         bool includeBattery = true,
         OverviewLayoutSettings? layout = null,
-        bool includeOverviewExtras = true)
+        bool includeOverviewExtras = true,
+        bool overviewPlugins = false)
     {
         var panel = new AdaptiveUniformPanel
         {
@@ -352,17 +359,17 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                 new(L("功耗", "Power"), nameof(HardwareMonitorViewModel.GpuPower), ItemId: "power")
             ])), layout);
         if (includeBattery)
-        Add(OverviewCardIds.Battery, HardwareMonitorCard(
-            L("电池", "Battery"),
-            null,
-            new MonitorSection(null,
-            [
-                new(L("当前状态", "Status"), nameof(HardwareMonitorViewModel.BatteryState), ItemId: "status"),
-                new(L("电量", "Charge"), nameof(HardwareMonitorViewModel.BatteryCharge), ItemId: "charge"),
-                new(L("电池容量", "Capacity"), nameof(HardwareMonitorViewModel.BatteryCapacity), ItemId: "capacity"),
-                new(L("健康度", "Health"), nameof(HardwareMonitorViewModel.BatteryHealth), ItemId: "health"),
-                new(L("功率", "Power"), nameof(HardwareMonitorViewModel.BatteryPower), ItemId: "power")
-            ])), layout);
+            Add(OverviewCardIds.Battery, HardwareMonitorCard(
+                L("电池", "Battery"),
+                null,
+                new MonitorSection(null,
+                [
+                    new(L("当前状态", "Status"), nameof(HardwareMonitorViewModel.BatteryState), ItemId: "status"),
+                    new(L("电量", "Charge"), nameof(HardwareMonitorViewModel.BatteryCharge), ItemId: "charge"),
+                    new(L("电池容量", "Capacity"), nameof(HardwareMonitorViewModel.BatteryCapacity), ItemId: "capacity"),
+                    new(L("健康度", "Health"), nameof(HardwareMonitorViewModel.BatteryHealth), ItemId: "health"),
+                    new(L("功率", "Power"), nameof(HardwareMonitorViewModel.BatteryPower), ItemId: "power")
+                ])), layout);
         Add(OverviewCardIds.MemoryStorage, HardwareMonitorCard(
             L("内存与硬盘", "Memory and storage"),
             null,
@@ -392,13 +399,15 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             fanTargetRows[0] = new(L("风扇1目标", "Fan 1 target"), nameof(HardwareMonitorViewModel.Fan1Target), ItemId: "fan1-target");
             fanTargetRows.Add(new(L("风扇2目标", "Fan 2 target"), nameof(HardwareMonitorViewModel.Fan2Target), ItemId: "fan2-target"));
         }
-        Add(OverviewCardIds.Fans, HardwareMonitorCard(
+        var fansCard = HardwareMonitorCard(
             L("风扇", "Fans"),
             null,
             new MonitorSection(L("风扇转速", "Fan speed"),
                 fanSpeedRows),
             new MonitorSection(L("转速目标", "Speed target"),
-                fanTargetRows)), layout);
+                fanTargetRows));
+        ((StackPanel)fansCard.Child).Children.Insert(2 + fanSpeedRows.Count, new PluginSensorPanel(Runtime, "fans"));
+        Add(OverviewCardIds.Fans, fansCard, layout);
         if (layout is not null && includeOverviewExtras)
         {
             Add(OverviewCardIds.Power, HardwareMonitorCard(
@@ -473,6 +482,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                     new(L("已用保修期", "Warranty elapsed"), nameof(HardwareMonitorViewModel.WarrantyProgress), ItemId: "progress")
                 ])), layout);
         }
+        foreach (var custom in PluginCategoryCards()) panel.Children.Add(custom);
         return panel;
 
         void Add(string cardId, Border card, OverviewLayoutSettings? settings)
@@ -480,9 +490,29 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             if (settings is null || OverviewLayoutDefaults.IsCardEnabled(settings, cardId))
             {
                 card.Tag = cardId;
+                if (overviewPlugins) ApplyOverviewContributions(card, cardId);
                 ApplyMonitorLayout(card, cardId, settings);
+                // Fans already have a panel within the speed section, before
+                // the target section. All other readings join their own card.
+                if (cardId != OverviewCardIds.Fans)
+                    ((StackPanel)card.Child).Children.Add(new PluginSensorPanel(Runtime, cardId));
                 panel.Children.Add(card);
             }
+        }
+    }
+
+    protected IEnumerable<Border> PluginCategoryCards(bool compact = false)
+    {
+        foreach (var (plugin, category) in Runtime.Plugins.SensorCategories)
+        {
+            var readings = new PluginSensorPanel(Runtime, pluginId: plugin.Manifest.Id, category: category.Id)
+                { Margin = new Thickness(0, 8, 0, 0) };
+            var card = HardwareMonitorCard(category.Title.Resolve(Runtime.IsChinese), null);
+            card.Tag = category.Id;
+            if (compact) card.MinHeight = 126;
+            ((StackPanel)card.Child).Children.Add(readings);
+            card.SetBinding(VisibilityProperty, new Binding(nameof(Visibility)) { Source = readings });
+            yield return card;
         }
     }
 
@@ -614,10 +644,8 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         {
             if (element.Tag is string dynamicItem)
             {
-                element.Visibility = OverviewLayoutDefaults.IsItemEnabled(
-                    layout, cardId, dynamicItem)
-                    ? Visibility.Visible
-                    : Visibility.Collapsed;
+                if (!OverviewLayoutDefaults.IsItemEnabled(layout, cardId, dynamicItem))
+                    element.Visibility = Visibility.Collapsed;
                 continue;
             }
             if (element.Tag is not MonitorRow row ||
@@ -628,16 +656,15 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             if (string.IsNullOrWhiteSpace(row.SecondaryItemId) ||
                 element is not Grid pair || pair.Children.Count < 2)
             {
-                element.Visibility = primary ? Visibility.Visible : Visibility.Collapsed;
+                // An enabled layout slot must retain its hardware-availability
+                // binding, not force unsupported fields visible.
+                if (!primary) element.Visibility = Visibility.Collapsed;
                 continue;
             }
             var secondary = OverviewLayoutDefaults.IsItemEnabled(
                 layout, cardId, row.SecondaryItemId);
-            element.Visibility = primary || secondary
-                ? Visibility.Visible
-                : Visibility.Collapsed;
-            pair.Children[0].Visibility = primary ? Visibility.Visible : Visibility.Collapsed;
-            pair.Children[1].Visibility = secondary ? Visibility.Visible : Visibility.Collapsed;
+            if (!primary) pair.Children[0].Visibility = Visibility.Collapsed;
+            if (!secondary) pair.Children[1].Visibility = Visibility.Collapsed;
             if (primary != secondary)
             {
                 if (secondary)
@@ -649,6 +676,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
 
     private FrameworkElement HardwareMonitorRow(MonitorRow row)
     {
+        row = row with { ItemId = row.ItemId ?? PowerItemId(row.Property), SecondaryItemId = row.SecondaryItemId ?? PowerItemId(row.SecondaryProperty) };
         if (!string.IsNullOrWhiteSpace(row.SecondaryProperty))
             return HardwareMonitorPairRow(row);
 
@@ -663,7 +691,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             TextWrapping = row.WideValue ? TextWrapping.Wrap : TextWrapping.NoWrap,
             TextTrimming = row.WideValue ? TextTrimming.None : TextTrimming.CharacterEllipsis
         };
-        value.SetBinding(TextBlock.TextProperty, new Binding(row.Property));
+        value.SetBinding(TextBlock.TextProperty, PluginSensorBinding.Create(Runtime.Plugins, row.Property));
         if (row.WideValue)
         {
             value.Margin = new Thickness(0, 2, 0, 0);
@@ -696,6 +724,120 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         BindVisibility(grid, row.VisibilityProperty);
         return grid;
     }
+
+    private static string? PowerItemId(string? property) => property switch
+    {
+        nameof(HardwareMonitorViewModel.PowerCpuPl1) => "cpu-pl1",
+        nameof(HardwareMonitorViewModel.PowerCpuPl2) => "cpu-pl2",
+        nameof(HardwareMonitorViewModel.PowerCpuTemperature) => "cpu-temperature",
+        nameof(HardwareMonitorViewModel.PowerTurboTime) => "turbo-time",
+        nameof(HardwareMonitorViewModel.PowerGpuBoost) => "gpu-boost",
+        nameof(HardwareMonitorViewModel.PowerGpuTgp) => "gpu-tgp",
+        nameof(HardwareMonitorViewModel.PowerGpuTemperature) => "gpu-temperature",
+        nameof(HardwareMonitorViewModel.PowerGpuToCpu) => "gpu-to-cpu",
+        nameof(HardwareMonitorViewModel.PowerAtpp) => "atpp",
+        nameof(HardwareMonitorViewModel.PowerNvTargetTpp) => "nv-target-tpp",
+        nameof(HardwareMonitorViewModel.PowerNvDefaultGpu) => "nv-default-gpu",
+        nameof(HardwareMonitorViewModel.PowerNvMinGpu) => "nv-min-gpu",
+        nameof(HardwareMonitorViewModel.PowerNvMaxGpu) => "nv-max-gpu",
+        nameof(HardwareMonitorViewModel.PowerNvGpuTemperature) => "nv-gpu-temperature",
+        nameof(HardwareMonitorViewModel.PowerNvDynamicBoost) => "nv-dynamic-boost",
+        _ => null
+    };
+
+    protected void ApplyOverviewContributions(Border card, string cardId, bool includeAdditions = true)
+    {
+        if (card.Child is not StackPanel content) return;
+        var contributions = Runtime.Plugins.OverviewItems(cardId)
+            .Where(x => includeAdditions || x.Item.Action != "add").ToArray();
+        if (contributions.Length == 0) return;
+        var overrides = contributions.Where(x => x.Item.Action != "add").ToDictionary(x => x.Item.Target!);
+        foreach (var element in content.Children.OfType<FrameworkElement>().ToArray())
+        {
+            if (element.Tag is MonitorRow row && row.SecondaryProperty is not null &&
+                (overrides.ContainsKey(row.ItemId ?? "") || overrides.ContainsKey(row.SecondaryItemId ?? "")))
+            {
+                // Keep the untouched half and its own binding; never replace both
+                // values just because they originally shared a visual row.
+                var index = content.Children.IndexOf(element);
+                content.Children.RemoveAt(index);
+                foreach (var single in new[]
+                {
+                    row with { SecondaryProperty = null, SecondaryLabel = null, SecondaryItemId = null, SecondaryVisibilityProperty = null },
+                    new MonitorRow(row.SecondaryLabel ?? "", row.SecondaryProperty, ItemId: row.SecondaryItemId, VisibilityProperty: row.SecondaryVisibilityProperty)
+                })
+                {
+                    if (Transform(single.ItemId, () => HardwareMonitorRow(single)) is { } replacement)
+                        content.Children.Insert(index++, replacement);
+                }
+            }
+            else
+            {
+                var id = element.Tag is MonitorRow single ? single.ItemId : element.Tag as string;
+                if (id is null || !overrides.ContainsKey(id)) continue;
+                var index = content.Children.IndexOf(element);
+                content.Children.RemoveAt(index);
+                if (Transform(id, () => element) is { } replacement) content.Children.Insert(index, replacement);
+            }
+        }
+        foreach (var (plugin, item) in contributions.Where(x => x.Item.Action == "add"))
+            content.Children.Add(CreatePluginRow(plugin, item));
+
+        FrameworkElement? Transform(string? id, Func<FrameworkElement> original)
+        {
+            if (id is null || !overrides.TryGetValue(id, out var value)) return original();
+            return value.Item.Action == "remove" ? null : CreatePluginRow(value.Plugin, value.Item);
+        }
+    }
+
+    private FrameworkElement CreatePluginRow(PluginInstallation plugin, ThinkBookToolkit.PluginApi.PluginOverviewItem item)
+    {
+        var row = new Grid { Margin = new Thickness(0, 2, 0, 2), ToolTip = plugin.Manifest.Name + " · " + item.Id };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.Children.Add(new TextBlock { Text = item.Label!.Resolve(Runtime.IsChinese), FontSize = 12,
+            Foreground = Brush(Palette.Muted), Margin = new Thickness(0, 0, 8, 0), TextTrimming = TextTrimming.CharacterEllipsis });
+        var value = new TextBlock { FontSize = 12, Foreground = Brush(Palette.Text), TextAlignment = TextAlignment.Right,
+            TextTrimming = TextTrimming.CharacterEllipsis };
+        value.SetBinding(TextBlock.TextProperty, PluginOverviewBinding.Create(Runtime.Plugins, plugin, item));
+        value.SetBinding(ToolTipProperty, PluginOverviewBinding.Create(Runtime.Plugins, plugin, item));
+        Grid.SetColumn(value, 1); row.Children.Add(value);
+        // Replacement respects the user's existing slot visibility. New items
+        // are not fed into the built-in layout settings or persisted over them.
+        row.Tag = item.Action == "replace" ? item.Target : null;
+        return row;
+    }
+
+    protected Border CompactOverviewPluginCard(string cardId, string title, string[] items)
+    {
+        var rows = items.Select(id => (Id: id, Info: CompactItem(cardId, id)))
+            .Select(x => new MonitorRow(x.Info.Label, x.Info.Property, ItemId: x.Id)).ToArray();
+        var card = HardwareMonitorCard(title, null, new MonitorSection(null, rows));
+        card.MinHeight = 126;
+        card.Tag = cardId;
+        ApplyOverviewContributions(card, cardId, includeAdditions: false);
+        ApplyMonitorLayout(card, cardId, Runtime.Settings.OverviewLayout);
+        return card;
+    }
+
+    private (string Label, string Property) CompactItem(string card, string id) => (card, id) switch
+    {
+        ("cpu", "temperature") => (L("温度", "Temperature"), nameof(HardwareMonitorViewModel.CpuTemperature)),
+        ("cpu", "power") => (L("功耗", "Power"), nameof(HardwareMonitorViewModel.CpuPower)),
+        ("gpu", "core-temperature") => (L("温度", "Temperature"), nameof(HardwareMonitorViewModel.GpuCoreTemperature)),
+        ("gpu", "power") => (L("功耗", "Power"), nameof(HardwareMonitorViewModel.GpuPower)),
+        ("battery", "charge") => (L("电量", "Charge"), nameof(HardwareMonitorViewModel.BatteryCharge)),
+        ("battery", "capacity") => (L("容量", "Capacity"), nameof(HardwareMonitorViewModel.BatteryCapacity)),
+        ("battery", "health") => (L("健康度", "Health"), nameof(HardwareMonitorViewModel.BatteryHealth)),
+        ("battery", "power") => (L("功率", "Power"), nameof(HardwareMonitorViewModel.BatteryPower)),
+        ("memory-storage", "utilization") => (L("利用率", "Utilization"), nameof(HardwareMonitorViewModel.MemoryUtilization)),
+        ("memory-storage", "average-temperature") => (L("温度", "Temperature"), nameof(HardwareMonitorViewModel.MemoryAverageTemperature)),
+        ("fans", "fan1-speed") => (L("风扇1转速", "Fan 1 speed"), nameof(HardwareMonitorViewModel.Fan1Speed)),
+        ("fans", "fan2-speed") => (L("风扇2转速", "Fan 2 speed"), nameof(HardwareMonitorViewModel.Fan2Speed)),
+        ("warranty", "status") => (L("保修状态", "Warranty status"), nameof(HardwareMonitorViewModel.WarrantyStatus)),
+        ("warranty", "remaining-days") => (L("剩余天数", "Days remaining"), nameof(HardwareMonitorViewModel.WarrantyRemainingDays)),
+        _ => throw new InvalidOperationException("Unknown compact overview item.")
+    };
 
     private FrameworkElement HardwareMonitorPairRow(MonitorRow row)
     {
@@ -735,17 +877,10 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         }
         left.IsVisibleChanged += (_, _) => UpdateColumns();
         right.IsVisibleChanged += (_, _) => UpdateColumns();
-        if (!string.IsNullOrWhiteSpace(row.VisibilityProperty) &&
-            !string.IsNullOrWhiteSpace(row.SecondaryVisibilityProperty))
-        {
-            var visibility = new MultiBinding
-            {
-                Converter = AnyTrueToVisibilityConverter.Instance
-            };
-            visibility.Bindings.Add(new Binding(row.VisibilityProperty));
-            visibility.Bindings.Add(new Binding(row.SecondaryVisibilityProperty));
-            grid.SetBinding(UIElement.VisibilityProperty, visibility);
-        }
+        var visibility = new MultiBinding { Converter = AnyVisibleToVisibilityConverter.Instance };
+        visibility.Bindings.Add(new Binding(nameof(Visibility)) { Source = left });
+        visibility.Bindings.Add(new Binding(nameof(Visibility)) { Source = right });
+        grid.SetBinding(UIElement.VisibilityProperty, visibility);
         UpdateColumns();
         return grid;
     }
@@ -781,7 +916,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             HorizontalAlignment = HorizontalAlignment.Right,
             TextWrapping = TextWrapping.NoWrap
         };
-        value.SetBinding(TextBlock.TextProperty, new Binding(property));
+        value.SetBinding(TextBlock.TextProperty, PluginSensorBinding.Create(Runtime.Plugins, property));
         Grid.SetColumn(value, 1);
         grid.Children.Add(value);
         BindVisibility(grid, visibilityProperty);
@@ -934,12 +1069,12 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             CultureInfo culture) => throw new NotSupportedException();
     }
 
-    private sealed class AnyTrueToVisibilityConverter : IMultiValueConverter
+    private sealed class AnyVisibleToVisibilityConverter : IMultiValueConverter
     {
-        public static AnyTrueToVisibilityConverter Instance { get; } = new();
+        public static AnyVisibleToVisibilityConverter Instance { get; } = new();
 
         public object Convert(object[] values, Type targetType, object parameter,
-            CultureInfo culture) => values.Any(value => value is true)
+            CultureInfo culture) => values.Any(value => value is Visibility.Visible)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
 

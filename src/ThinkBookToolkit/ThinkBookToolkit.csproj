@@ -23,6 +23,8 @@
     <InternalsVisibleTo Include="ThinkBookToolkit.GpuWorker" />
 
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Contracts\ThinkBookToolkit.FanBackend.Contracts.csproj" />
+    <ProjectReference Include="..\ThinkBookToolkit.PluginApi\ThinkBookToolkit.PluginApi.csproj" />
+    <ProjectReference Include="..\ThinkBookToolkit.PluginHost\ThinkBookToolkit.PluginHost.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Wmi\ThinkBookToolkit.FanBackend.Wmi.csproj" />
     <ProjectReference Include="..\..\external\NvAPIWrapper\NvAPIWrapper\NvAPIWrapper.csproj"
                       AdditionalProperties="Configuration=$(Configuration);Platform=AnyCPU;NoWarn=1591;NuGetAudit=false" />
@@ -94,4 +96,19 @@
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
 
   </ItemGroup>
+  <Target Name="StagePlugins" AfterTargets="Build">
+    <ItemGroup>
+      <PluginHostFiles Include="$(MSBuildProjectDirectory)\..\ThinkBookToolkit.PluginHost\bin\$(Configuration)\net9.0-windows\win-x64\ThinkBookToolkit.PluginHost.exe;$(MSBuildProjectDirectory)\..\ThinkBookToolkit.PluginHost\bin\$(Configuration)\net9.0-windows\win-x64\ThinkBookToolkit.PluginHost.dll;$(MSBuildProjectDirectory)\..\ThinkBookToolkit.PluginHost\bin\$(Configuration)\net9.0-windows\win-x64\ThinkBookToolkit.PluginHost.runtimeconfig.json;$(MSBuildProjectDirectory)\..\ThinkBookToolkit.PluginHost\bin\$(Configuration)\net9.0-windows\win-x64\ThinkBookToolkit.PluginHost.deps.json;$(MSBuildProjectDirectory)\..\ThinkBookToolkit.PluginHost\bin\$(Configuration)\net9.0-windows\win-x64\ThinkBookToolkit.PluginApi.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PluginHostFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="PublishPlugins" AfterTargets="ComputeFilesToPublish" DependsOnTargets="StagePlugins">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.Filename)' == 'ThinkBookToolkit.PluginHost' Or '%(ResolvedFileToPublish.Filename)' == 'ThinkBookToolkit.PluginHost.deps' Or '%(ResolvedFileToPublish.Filename)' == 'ThinkBookToolkit.PluginHost.runtimeconfig' Or '%(ResolvedFileToPublish.Filename)' == 'ThinkBookToolkit.PluginTest' Or ('%(ResolvedFileToPublish.Filename)' == 'plugin' And '%(ResolvedFileToPublish.Extension)' == '.json')" />
+      <ResolvedFileToPublish Include="$(TargetDir)ThinkBookToolkit.PluginHost.exe" RelativePath="ThinkBookToolkit.PluginHost.exe" CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="$(TargetDir)ThinkBookToolkit.PluginHost.dll" RelativePath="ThinkBookToolkit.PluginHost.dll" CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="$(TargetDir)ThinkBookToolkit.PluginHost.deps.json" RelativePath="ThinkBookToolkit.PluginHost.deps.json" CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="$(TargetDir)ThinkBookToolkit.PluginHost.runtimeconfig.json" RelativePath="ThinkBookToolkit.PluginHost.runtimeconfig.json" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 </Project>

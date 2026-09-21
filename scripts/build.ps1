@@ -259,6 +259,12 @@ if ($Publish -or $Installer) {
         -Force
 
     Write-Host "AMD Power Helper output: $amdHelperDestination"
+    $testPluginFiles = @(Get-ChildItem -LiteralPath $output -Recurse -File |
+        Where-Object { $_.Name -like "ThinkBookToolkit.PluginTest.*" -or
+            $_.FullName -match '[\\/]Plugins[\\/]PluginTest[\\/]' })
+    if ($testPluginFiles.Count -gt 0) {
+        throw "Test plugin files were found in the release output. Packaging was stopped. Build the sample separately."
+    }
     if (-not $IncludeLocalProprietaryDependencies) {
         $lenovoContent = Get-ChildItem -LiteralPath $output -Recurse -File |
             Where-Object { $_.Name -eq "WrapPlugin.dll" -or
@@ -301,6 +307,11 @@ if ($Publish -or $Installer) {
             -Destination (Join-Path $output "ThinkBookToolkit.cer") `
             -Force
         Write-Host "Signed UIAccess executable: $applicationExe"
+        Sign-ReleaseFile `
+            -File (Join-Path $output "ThinkBookToolkit.PluginHost.exe") `
+            -Pfx $resolvedCertificatePath `
+            -Password $CertificatePassword `
+            -SignTool $signTool
         Sign-ReleaseFile `
             -File (Join-Path $output "ThinkBookToolkit.GpuWorker.exe") `
             -Pfx $resolvedCertificatePath `

@@ -55,6 +55,7 @@ internal sealed class ToolkitMainWindow : Window
     private bool _windowHardwareRenderingSuspended;
     private bool _controlStateRefreshRunning;
     private bool _controlStateRefreshPending;
+    private string _availabilitySignature = "";
 
     internal static TimeSpan PageTransitionDuration { get; } =
         TimeSpan.FromMilliseconds(180);
@@ -98,6 +99,7 @@ internal sealed class ToolkitMainWindow : Window
         SnapsToDevicePixels = true;
         ApplyAppearance();
         Content = BuildLayout();
+        _availabilitySignature = AvailabilitySignature();
         ModernTheme.RefreshWindow(this, _runtime.IsDark);
 
         _toastTimer.Tick += (_, _) =>
@@ -108,6 +110,7 @@ internal sealed class ToolkitMainWindow : Window
 
         _runtime.SnapshotChanged += OnSnapshotChanged;
         _runtime.AvailabilityChanged += OnAvailabilityChanged;
+        _runtime.Plugins.CatalogChanged += OnPluginCatalogChanged;
         _runtime.AppearanceChanged += OnAppearanceChanged;
         _runtime.BackgroundImageChanged += OnBackgroundImageChanged;
         _runtime.OverviewLayoutChanged += OnOverviewLayoutChanged;
@@ -306,6 +309,9 @@ internal sealed class ToolkitMainWindow : Window
         AddNavigationIf(navigationItems, "device", "\uE772", L("设备信息", "Device information"));
         AddNavigationIf(navigationItems, "driver-update", "\uE896", L("驱动更新", "Driver updates"));
         AddNavigationIf(navigationItems, "advanced", "\uE90F", L("高级工具", "Advanced tools"));
+        foreach (var plugin in _runtime.Plugins.Installations.Where(p => p.Enabled && p.Error is null))
+            foreach (var page in plugin.Manifest.Pages.Where(p => p.Replaces is null).OrderBy(p => p.Order))
+                AddNavigation(navigationItems, page.Id, "\uE8A5", page.Title.Resolve(_runtime.IsChinese));
         var navigationScroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -318,6 +324,7 @@ internal sealed class ToolkitMainWindow : Window
 
         var settings = new StackPanel { Margin = new Thickness(0, 7, 0, 0) };
         AddNavigation(settings, "settings", "\uE713", L("设置", "Settings"));
+        AddNavigation(settings, "plugins", "\uEA86", L("插件", "Plugins"));
         Grid.SetRow(settings, 2);
         shell.Children.Add(settings);
         UpdateNavigationSelection();
@@ -520,15 +527,16 @@ internal sealed class ToolkitMainWindow : Window
         RenderPage();
     }
 
-    private void RenderPage()
+    private void RenderPage(bool animate = true, bool preserveScroll = false)
     {
+        var offset = _mainScroll.VerticalOffset;
         var descriptor = PageDescriptor(_selectedPage);
         _pageTitle.Text = descriptor.Title;
         _pageSubtitle.Text = descriptor.Subtitle;
         _pageGlyph.Text = descriptor.Glyph;
         if (_runtime.Report is null &&
             _enableHardwareDetection &&
-            _selectedPage is not "overview" and not "settings")
+            _selectedPage is not "overview" and not "settings" and not "plugins")
         {
             _pageHost.Content = LoadingPage();
             return;
@@ -539,8 +547,9 @@ internal sealed class ToolkitMainWindow : Window
             _pages[_selectedPage] = page;
         }
         _pageHost.Content = page;
-        _mainScroll.ScrollToTop();
-        AnimatePageTransition();
+        if (preserveScroll) _mainScroll.ScrollToVerticalOffset(offset);
+        else _mainScroll.ScrollToTop();
+        if (animate) AnimatePageTransition();
     }
 
     private void AnimatePageTransition()
@@ -590,8 +599,31 @@ internal sealed class ToolkitMainWindow : Window
         transform.Y = 0;
     }
 
-    private ToolkitPageBase CreatePage(string page) => page switch
+    private ToolkitPageBase CreatePage(string page)
     {
+        var view = _runtime.Plugins.Page(page) is { } contribution
+            ? new ToolkitPluginPage(_runtime, contribution.Plugin, contribution.Page) : CreateBuiltinPage(page);
+        var extra = _runtime.Plugins.Installations.Where(p => p.Enabled && p.Error is null &&
+                (page != "overview" || _runtime.Settings.OverviewPageMode != OverviewPageMode.Compact))
+            .SelectMany(p => p.Manifest.Settings.Where(s => s.PageId == page && s.Replaces is null).Select(s => (p, s))).ToArray();
+        if (extra.Length > 0 && ToolkitPluginManager.BuiltinPages.Contains(page))
+        {
+            var root = new StackPanel();
+            var original = view.Content as UIElement; view.Content = null;
+            if (original is not null) root.Children.Add(original);
+            foreach (var (plugin, setting) in extra)
+            {
+                root.Children.Add(new TextBlock { Text = setting.Title.Resolve(_runtime.IsChinese), Margin = new Thickness(0, 12, 0, 8) });
+                root.Children.Add(PluginSettingControl.Create(_runtime, plugin, setting));
+            }
+            view.Content = root;
+        }
+        return view;
+    }
+
+    private ToolkitPageBase CreateBuiltinPage(string page) => page switch
+    {
+        "plugins" => new ToolkitPluginsPage(_runtime),
         "performance" => new ToolkitPerformancePage(_runtime),
         "cooling" => new ToolkitPerformancePage(_runtime, coolingOnly: true),
         "battery" => new ToolkitBatteryPage(_runtime),
@@ -611,8 +643,16 @@ internal sealed class ToolkitMainWindow : Window
 
     private ToolkitPageBase LoadingPage() => new LoadingToolkitPage(_runtime);
 
-    private (string Title, string Subtitle, string Glyph) PageDescriptor(string page) => page switch
+    private (string Title, string Subtitle, string Glyph) PageDescriptor(string page)
     {
+        if (_runtime.Plugins.Page(page) is { } contribution)
+            return (contribution.Page.Title.Resolve(_runtime.IsChinese), contribution.Plugin.Manifest.Name, "\uE8A5");
+        return BuiltinPageDescriptor(page);
+    }
+
+    private (string Title, string Subtitle, string Glyph) BuiltinPageDescriptor(string page) => page switch
+    {
+        "plugins" => (L("插件", "Plugins"), L("插件管理与权限", "Plugin management and permissions"), "\uEA86"),
         "performance" => (L("性能", "Performance"), L("性能模式、GPU 和功耗", "Performance modes, GPU, and power limits"), "\uE945"),
         "cooling" => (L("散热", "Cooling"), L("风扇策略、曲线和转速控制", "Fan strategies, curves, and RPM control"), "\uE9D9"),
         "battery" => (L("电池与电源", "Battery and power"), L("充电、供电与电池健康", "Charging, power delivery, and battery health"), "\uE850"),
@@ -633,6 +673,8 @@ internal sealed class ToolkitMainWindow : Window
 
     private bool PageAvailable(string page)
     {
+        if (page == "plugins" || _runtime.Plugins.Page(page) is not null) return true;
+        if (page.Contains('.')) return false;
         var report = _runtime.Report;
         if (report is null) return true;
         return page switch
@@ -710,6 +752,7 @@ internal sealed class ToolkitMainWindow : Window
                 () => { },
                 DispatcherPriority.ContextIdle);
             await _runtime.InitializeAsync();
+            await _runtime.Plugins.InitializeAsync(Environment.GetCommandLineArgs().Contains("--disable-plugins"));
             _backgroundLoadingEnabled = true;
             ShowFanBackendStartupNotice();
             MediaMemoryCleanup.CollectAndTrim(
@@ -787,8 +830,48 @@ internal sealed class ToolkitMainWindow : Window
             Dispatcher.BeginInvoke(new Action(() => OnAvailabilityChanged(sender, args)));
             return;
         }
+        var signature = AvailabilitySignature();
+        if (signature == _availabilitySignature) return;
+        _availabilitySignature = signature;
+        RefreshCatalog(pluginChanged: false);
+    }
+
+    private string AvailabilitySignature() => (_runtime.Report is null ? "loading" : string.Join(";",
+        _runtime.Report.Items.OrderBy(x => x.Id, StringComparer.Ordinal).Select(x => $"{x.Id}:{x.Available}:{x.PartiallyAvailable}"))) +
+        $"|nv:{_runtime.NvApiGpuPowerVisible}";
+
+    private void OnPluginCatalogChanged(object? sender, EventArgs args)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => OnPluginCatalogChanged(sender, args)));
+            return;
+        }
+        RefreshCatalog(pluginChanged: true);
+    }
+
+    private void RefreshCatalog(bool pluginChanged)
+    {
+        // Capability probes are not navigation. Preserve the shell, background
+        // player and scroll host; never replay the fade-in for a data refresh.
         if (!PageAvailable(_selectedPage)) _selectedPage = "overview";
-        RebuildShell(disposePages: true);
+        foreach (var pair in _pages.ToArray())
+        {
+            if (!pluginChanged && pair.Key is "overview" or "settings" or "plugins") continue;
+            _pages.Remove(pair.Key);
+            pair.Value.Dispose();
+        }
+        if (Content is Grid root && _navigationSurface is { } old)
+        {
+            root.Children.Remove(old);
+            _navigation.Clear(); _indicators.Clear(); _navigationLabels.Clear();
+            _navigationSurface = BuildNavigation();
+            Grid.SetColumn(_navigationSurface, 0); Panel.SetZIndex(_navigationSurface, 3);
+            root.Children.Add(_navigationSurface);
+            UpdateResponsiveLayout(ActualWidth);
+        }
+        RenderPage(animate: false, preserveScroll: true);
+        OnControlStateChanged(this, EventArgs.Empty);
     }
 
     private void OnAppearanceChanged(object? sender, EventArgs args)
@@ -923,7 +1006,7 @@ internal sealed class ToolkitMainWindow : Window
                 page.Dispose();
         }
         if (_selectedPage is "overview" or "performance" or "cooling")
-            RenderPage();
+            RenderPage(animate: false, preserveScroll: true);
     }
 
     private async void OnControlStateChanged(object? sender, EventArgs args)
@@ -1183,6 +1266,7 @@ internal sealed class ToolkitMainWindow : Window
         DisposePages();
         _runtime.SnapshotChanged -= OnSnapshotChanged;
         _runtime.AvailabilityChanged -= OnAvailabilityChanged;
+        _runtime.Plugins.CatalogChanged -= OnPluginCatalogChanged;
         _runtime.AppearanceChanged -= OnAppearanceChanged;
         _runtime.BackgroundImageChanged -= OnBackgroundImageChanged;
         _runtime.OverviewLayoutChanged -= OnOverviewLayoutChanged;

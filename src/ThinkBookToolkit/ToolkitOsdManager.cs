@@ -63,6 +63,8 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
     private readonly Dictionary<string, GroupVisual> _groups = [];
     private Border _background = new();
     private TextBlock _empty = new();
+    private readonly Dictionary<string, SensorVisual> _pluginVisuals = [];
+    private string _pluginLayoutSignature = string.Empty;
     private bool _settingPosition;
     private OsdOrientation _orientation;
     private ToolkitRuntimeSnapshot _latestSnapshot;
@@ -90,6 +92,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
         DragWindow = DragMove;
         _latestFps = runtime.CurrentFps;
         _runtime.FpsTelemetryUpdated += OnFpsTelemetryUpdated;
+        _runtime.Plugins.ValuesChanged += OnPluginValuesChanged;
         SystemEvents.SessionSwitch += OnSessionSwitch;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
@@ -131,6 +134,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
             _monitorRetry.Stop();
             _runtime.SetFpsMonitoringConsumer("osd", false);
             _runtime.FpsTelemetryUpdated -= OnFpsTelemetryUpdated;
+            _runtime.Plugins.ValuesChanged -= OnPluginValuesChanged;
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
@@ -142,6 +146,29 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
     private void OnFpsTelemetryUpdated(
         object? sender,
         FpsTelemetrySnapshot value) => _latestFps = value;
+
+    private void OnPluginValuesChanged(object? sender, EventArgs args)
+    {
+        if (_closed || Content is null) return;
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => OnPluginValuesChanged(sender, args)));
+            return;
+        }
+        RefreshValues();
+    }
+
+    private string PluginLayoutSignature() => string.Join(";", _runtime.Plugins.Sensors.Where(s => s.Replaces is null)
+        .Select(s => s.Id + "|" + s.Category + "|" + s.Name + "|" + s.EnglishName));
+
+    private string? PluginCategory(PublishedPluginSensor sensor) =>
+        PluginSensorPlacement.OsdGroup(sensor.Category) ??
+        (_runtime.Plugins.SensorCategories.Any(x => x.Category.Id == sensor.Category && x.Plugin.Manifest.Id == sensor.PluginId) ? sensor.Category : null);
+
+    internal static string FormatPluginValue(PublishedPluginSensor sensor, bool chinese) => sensor.Value is { } value
+        ? value.ToString("0.##", CultureInfo.CurrentCulture) + (string.IsNullOrWhiteSpace(sensor.Unit) ? "" :
+            " " + (chinese && sensor.Unit.Equals("RPM", StringComparison.OrdinalIgnoreCase) ? "转" : sensor.Unit))
+        : "--";
 
     internal void ShowIfSessionUnlocked()
     {
@@ -305,6 +332,8 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
     {
         _visuals.Clear();
         _groups.Clear();
+        _pluginVisuals.Clear();
+        _pluginLayoutSignature = PluginLayoutSignature();
         _valueBrush = Brush(settings.ValueColor);
         _warningBrush = Brush(settings.WarningColor);
         _criticalBrush = Brush(settings.CriticalColor);
@@ -316,10 +345,13 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
                 : Orientation.Vertical
         };
         var selected = new HashSet<OsdSensor>(settings.Sensors ?? []);
-        foreach (var group in OsdSensorCatalog.Groups)
+        var pluginSensors = _runtime.Plugins.Sensors.Where(s => s.Replaces is null).ToArray();
+        foreach (var group in OsdSensorCatalog.Groups.Concat(_runtime.Plugins.SensorCategories.Select(x =>
+            new OsdSensorCatalog.Group(x.Category.Id, x.Category.Title.Chinese, x.Category.Title.English, []))))
         {
             var sensors = group.Sensors.Where(selected.Contains).ToArray();
-            if (sensors.Length == 0)
+            var extras = pluginSensors.Where(sensor => PluginCategory(sensor) == group.Id).ToArray();
+            if (sensors.Length == 0 && extras.Length == 0)
                 continue;
             var groupPanel = new WrapPanel
             {
@@ -347,6 +379,16 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
                 groupPanel.Children.Add(visual.Row);
                 rows.Add(visual.Row);
                 _visuals[sensor] = visual;
+            }
+            foreach (var sensor in extras)
+            {
+                var label = _runtime.IsChinese ? sensor.Name : sensor.EnglishName;
+                var visual = settings.Orientation == OsdOrientation.Horizontal
+                    ? HorizontalPluginSensor(label, settings) : VerticalSensor(label, settings);
+                visual.Row.ToolTip = label + " · " + sensor.PluginId;
+                groupPanel.Children.Add(visual.Row);
+                rows.Add(visual.Row);
+                _pluginVisuals[sensor.Id] = visual;
             }
             var wrapper = new Border
             {
@@ -417,7 +459,28 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
 
     private SensorVisual VerticalSensor(
         OsdSensor sensor,
-        ToolkitOsdSettings settings)
+        ToolkitOsdSettings settings) => VerticalSensor(_runtime.L(
+            OsdSensorCatalog.Chinese(sensor, DeviceModelDetector.HasSecondFan()),
+            OsdSensorCatalog.English(sensor, DeviceModelDetector.HasSecondFan())), settings);
+
+    private SensorVisual HorizontalPluginSensor(string label, ToolkitOsdSettings settings)
+    {
+        var visual = HorizontalSensor(default, settings);
+        var row = (Border)visual.Row;
+        row.Child = null;
+        var content = new WrapPanel { Orientation = Orientation.Horizontal };
+        content.Children.Add(new TextBlock
+        {
+            Text = label, Foreground = Brush(settings.LabelColor),
+            Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap
+        });
+        content.Children.Add(visual.Value);
+        row.Child = content;
+        return visual;
+    }
+
+    private SensorVisual VerticalSensor(string label, ToolkitOsdSettings settings)
     {
         var row = new Grid { MinWidth = 205, Margin = new Thickness(0, 2, 0, 2) };
         row.ColumnDefinitions.Add(new ColumnDefinition
@@ -427,13 +490,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.Children.Add(new TextBlock
         {
-            Text = _runtime.L(
-                OsdSensorCatalog.Chinese(
-                    sensor,
-                    DeviceModelDetector.HasSecondFan()),
-                OsdSensorCatalog.English(
-                    sensor,
-                    DeviceModelDetector.HasSecondFan())),
+            Text = label,
             Foreground = Brush(settings.LabelColor),
             Margin = new Thickness(0, 0, 14, 0)
         });
@@ -457,6 +514,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
             ? _latestFps
             : FpsTelemetrySnapshot.Empty;
         var settings = _runtime.Settings.Osd;
+        if (_pluginLayoutSignature != PluginLayoutSignature()) Content = BuildContent(settings);
         var any = false;
         foreach (var (sensor, visual) in _visuals)
         {
@@ -468,6 +526,8 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
                 settings.MemoryDisplayMode,
                 _runtime.IsChinese,
                 fps);
+            if (PluginHostBridge.MetricKey(sensor) is { } metric)
+                value = _runtime.Plugins.OverrideText("toolkit.sensor." + metric, value ?? string.Empty);
             visual.Row.Visibility = string.IsNullOrWhiteSpace(value)
                 ? Visibility.Collapsed
                 : Visibility.Visible;
@@ -487,6 +547,14 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
                     };
                 any = true;
             }
+        }
+        foreach (var sensor in _runtime.Plugins.Sensors.Where(s => s.Replaces is null))
+        {
+            if (!_pluginVisuals.TryGetValue(sensor.Id, out var visual)) continue;
+            visual.Value.Text = FormatPluginValue(sensor, _runtime.IsChinese);
+            visual.Value.Foreground = _valueBrush;
+            visual.Row.Visibility = Visibility.Visible;
+            any = true;
         }
         foreach (var group in _groups.Values)
         {

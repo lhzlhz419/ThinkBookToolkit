@@ -100,7 +100,7 @@ english.UiAccessPathNote=Installing elsewhere may prevent the OSD from appearing
 chinesesimplified.UiAccessPathWarning=所选路径不在 Program Files 受保护目录中。安装在其它位置可能导致 OSD 在全屏游戏中不可用。%n%n是否仍要使用此路径？
 english.UiAccessPathWarning=The selected path is outside the protected Program Files folders. Installing elsewhere may prevent the OSD from appearing over full-screen games.%n%nUse this path anyway?
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "ThinkBookToolkit.PluginTest.*,\Plugins\PluginTest,\Plugins\PluginTest\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\*"; Check: ShouldCleanInstallDirectory

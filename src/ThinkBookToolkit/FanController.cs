@@ -17,13 +17,15 @@ public sealed class FanController
 {
     public const string BackendFileName = "ThinkBookToolkit.FanBackend.dll";
     private readonly IFanBackend _backend;
+    internal static PluginFanBackendSelection? SelectedPlugin { get; set; }
+    internal static string? PluginPreparationError { get; set; }
 
     public FanController()
     {
         FanBackendRuntimeContext.DeclaredFanCount =
             DeviceModelDetector.HasSecondFan() ? 2 : 1;
         _backend = LoadBackend();
-        BackendIdentity = ComputeBackendIdentity(_backend);
+        BackendIdentity = SelectedPlugin?.Identity ?? ComputeBackendIdentity(_backend);
     }
 
     public string BackendName => _backend.Name;
@@ -107,6 +109,11 @@ public sealed class FanController
 
     private static IFanBackend LoadBackend()
     {
+        if (SelectedPlugin is { } plugin)
+        {
+            if (PluginPreparationError is { } error) throw new InvalidOperationException(error);
+            return PluginFanBackendPackage.Load(plugin);
+        }
         var path = Path.Combine(AppContext.BaseDirectory, BackendFileName);
         if (!File.Exists(path))
         {

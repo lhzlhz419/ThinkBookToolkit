@@ -249,22 +249,22 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("状态刷新间隔", "Status refresh interval"),
             L("设置设备状态和概览信息多久更新一次。", "Choose how often device status and overview information update."),
             _refresh,
-            "\uE823"));
+            "\uE823", "toolkit.setting.IntervalSeconds"));
         global.Children.Add(SettingRow(
             L("界面语言", "Interface language"),
             L("选择后立即应用到当前窗口。", "Applied to the current window immediately."),
             _language,
-            "\uE775"));
+            "\uE775", "toolkit.setting.Language"));
         global.Children.Add(SettingRow(
             L("主题", "Theme"),
             L("浅色、深色或跟随 Windows。", "Light, dark, or follow Windows."),
             _theme,
-            "\uE790"));
+            "\uE790", "toolkit.setting.Theme"));
         global.Children.Add(SettingRow(
             L("概览页模式选择", "Overview mode"),
             L("在简洁读数卡片和完整硬件信息之间切换。", "Switch between compact reading cards and full hardware details."),
             _overviewMode,
-            "\uECA5"));
+            "\uECA5", "toolkit.setting.OverviewPageMode"));
         global.Children.Add(SettingRow(
             L("概览页内容", "Overview contents"),
             L("选择概览页显示的卡片和数据项。", "Choose the cards and readings shown on the overview page."),
@@ -277,10 +277,10 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             "\uE72C"));
         global.Children.Add(SettingRow(
             L("日志等级", "Log level"), L("仅记录所选等级及更严重的信息。", "Record the selected severity and above."),
-            _logLevel, "\uE9D9"));
+            _logLevel, "\uE9D9", "toolkit.setting.LogLevel"));
         global.Children.Add(SettingRow(L("日志保留时间", "Log retention"),
             L("自动清理过期的历史日志，不删除当前正在写入的日志。", "Remove expired historical logs; active log files are always kept."),
-            _logRetention, "\uE823"));
+            _logRetention, "\uE823", "toolkit.setting.LogRetentionDays"));
         global.Children.Add(SettingRow(L("自定义文件夹位置", "Custom folder locations"),
             L("设置依赖、配置、日志、下载缓存和传感器记录的存放位置。", "Choose locations for dependencies, configuration, logs, downloads and recordings."),
             _folderLocations, "\uE8B7"));

@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net9.0-windows</TargetFramework><RuntimeIdentifier>win-x64</RuntimeIdentifier><RollForward>LatestMajor</RollForward><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><ApplicationManifest>host.manifest</ApplicationManifest></PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\ThinkBookToolkit.PluginApi\ThinkBookToolkit.PluginApi.csproj" /></ItemGroup>
+</Project>

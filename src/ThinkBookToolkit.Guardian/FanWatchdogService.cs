@@ -58,7 +58,7 @@ internal sealed class FanWatchdogService : ServiceBase
             }
 
             log.Info("Toolkit disappeared while watchdog remained armed; restoring firmware automatic fan control.");
-            await RestoreWithRetryAsync(log, cancellationToken);
+            await RestoreWithRetryAsync(log, marker, cancellationToken);
             File.Delete(markerPath);
             log.Info("Firmware automatic fan control was restored; watchdog is stopping.");
         }
@@ -128,14 +128,14 @@ internal sealed class FanWatchdogService : ServiceBase
     {
         var marker = JsonSerializer.Deserialize<FanWatchdogMarker>(
             File.ReadAllText(path));
-        if (marker is null || marker.ProcessId <= 0 || marker.ProcessStartUtcTicks <= 0)
+        if (marker is null || marker.ProcessId <= 0 || marker.ProcessStartUtcTicks <= 0 || marker.DeclaredFanCount is not (1 or 2))
             throw new InvalidDataException("The watchdog marker is invalid.");
         return marker;
     }
 
-    private static void RestoreFirmwareAutomatic(GuardianLog log)
+    private static void RestoreFirmwareAutomatic(GuardianLog log, FanWatchdogMarker marker)
     {
-        var backend = LoadBackend();
+        var backend = LoadBackend(marker);
         try
         {
             backend.SetFullSpeed(false);
@@ -150,6 +150,7 @@ internal sealed class FanWatchdogService : ServiceBase
 
     private static async Task RestoreWithRetryAsync(
         GuardianLog log,
+        FanWatchdogMarker marker,
         CancellationToken cancellationToken)
     {
         Exception? lastFailure = null;
@@ -157,7 +158,7 @@ internal sealed class FanWatchdogService : ServiceBase
         {
             try
             {
-                RestoreFirmwareAutomatic(log);
+                RestoreFirmwareAutomatic(log, marker);
                 return;
             }
             catch (Exception ex)
@@ -176,8 +177,17 @@ internal sealed class FanWatchdogService : ServiceBase
             lastFailure);
     }
 
-    private static IFanBackend LoadBackend()
+    internal static IFanBackend LoadBackend(FanWatchdogMarker marker)
     {
+        FanBackendRuntimeContext.DeclaredFanCount = marker.DeclaredFanCount;
+        if (marker.PluginBackend is { } plugin)
+        {
+            if (marker.BackendIdentity != plugin.Identity)
+                throw new InvalidDataException("Watchdog fan backend identity does not match its selection.");
+            return PluginFanBackendPackage.Load(plugin);
+        }
+        if (marker.BackendIdentity.StartsWith("plugin:", StringComparison.Ordinal))
+            throw new InvalidDataException("Watchdog plugin fan backend selection is missing.");
         var path = Path.Combine(
             AppContext.BaseDirectory,
             "ThinkBookToolkit.FanBackend.dll");

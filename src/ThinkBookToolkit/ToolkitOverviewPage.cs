@@ -43,7 +43,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         else
         {
             var metrics = HardwareMonitorCards(
-                layout: Runtime.Settings.OverviewLayout);
+                layout: Runtime.Settings.OverviewLayout, overviewPlugins: true);
             metrics.Margin = new Thickness(0, 0, 0, 12);
             root.Children.Add(metrics);
         }
@@ -187,15 +187,23 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
                 return;
             }
             var value = new TextBlock();
+            if (Runtime.Plugins.OverviewItems(cardId).Any(x => x.Item.Action != "add" && items.Contains(x.Item.Target)))
+            {
+                var extended = CompactOverviewPluginCard(cardId, title, items);
+                metrics.Children.Add(extended);
+                return;
+            }
             value.SetBinding(TextBlock.TextProperty, new Binding(property));
-            metrics.Children.Add(MetricCard(
+            var card = MetricCard(
                 title,
                 value,
                 detail,
                 glyph,
                 accent,
                 20,
-                true));
+                true);
+            card.Tag = cardId;
+            metrics.Children.Add(card);
         }
     }
 

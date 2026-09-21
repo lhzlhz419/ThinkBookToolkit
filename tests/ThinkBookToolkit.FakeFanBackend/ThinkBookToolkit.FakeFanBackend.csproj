@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Deliberately collides with the legacy backend's assembly name. -->
+    <AssemblyName>ThinkBookToolkit.FanBackend</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ThinkBookToolkit.FanBackend.Contracts\ThinkBookToolkit.FanBackend.Contracts.csproj" />
+  </ItemGroup>
+</Project>

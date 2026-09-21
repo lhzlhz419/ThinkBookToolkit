@@ -102,16 +102,17 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
     public string Fan2Target => FanTarget(2);
 
     public string CompactCpu => CompactValues(
-        (Show(OverviewCardIds.Cpu, "temperature"), CpuTemperature),
-        (Show(OverviewCardIds.Cpu, "power"), CpuPower));
+        (Show(OverviewCardIds.Cpu, "temperature"), PluginSensorBinding.Format(Runtime.Plugins, nameof(CpuTemperature), CpuTemperature)),
+        (Show(OverviewCardIds.Cpu, "power"), PluginSensorBinding.Format(Runtime.Plugins, nameof(CpuPower), CpuPower)));
     public string CompactGpu => CompactValues(
-        (Show(OverviewCardIds.Gpu, "core-temperature"), GpuCoreTemperature),
-        (Show(OverviewCardIds.Gpu, "power"), GpuPower));
+        (Show(OverviewCardIds.Gpu, "core-temperature"), PluginSensorBinding.Format(Runtime.Plugins, nameof(GpuCoreTemperature), GpuCoreTemperature)),
+        (Show(OverviewCardIds.Gpu, "power"), PluginSensorBinding.Format(Runtime.Plugins, nameof(GpuPower), GpuPower)));
     public string CompactBattery => CompactValues(
         (Show(OverviewCardIds.Battery, "charge"), BatteryCharge),
         (Show(OverviewCardIds.Battery, "capacity"), BatteryCapacity),
         (Show(OverviewCardIds.Battery, "health"), BatteryHealth),
-        (Show(OverviewCardIds.Battery, "power"), BatteryPower));
+        (Show(OverviewCardIds.Battery, "power"),
+            PluginSensorBinding.Format(Runtime.Plugins, nameof(BatteryPower), BatteryPower)));
     public string CompactMemory => CompactValues(
         (Show(OverviewCardIds.MemoryStorage, "utilization"), MemoryUtilization),
         (Show(OverviewCardIds.MemoryStorage, "average-temperature"), MemoryAverageTemperature));
@@ -126,6 +127,12 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
                          && DeviceModelDetector.HasSecondFan()
                 ? _snapshot.Fans?.Fan2Rpm
                 : null;
+            if (Runtime.Plugins.Sensors.Any(s => s.Replaces is "toolkit.sensor.fan1Rpm" or "toolkit.sensor.fan2Rpm"))
+            {
+                var left = Show(OverviewCardIds.Fans, "fan1-speed") ? PluginSensorBinding.Format(Runtime.Plugins, nameof(Fan1Speed), Fan1Speed) : null;
+                var right = Show(OverviewCardIds.Fans, "fan2-speed") && DeviceModelDetector.HasSecondFan() ? PluginSensorBinding.Format(Runtime.Plugins, nameof(Fan2Speed), Fan2Speed) : null;
+                return left is null ? right ?? "--" : right is null ? left : WithoutRpmSuffix(left) + " / " + right;
+            }
             return RpmPair(first, second);
         }
     }

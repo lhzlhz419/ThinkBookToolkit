@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Text.Json;
 using System.Threading;
@@ -13,7 +14,10 @@ internal sealed record SharedHardwareSnapshot(
     double? GpuPowerW,
     int? Fan1Rpm,
     int? Fan2Rpm,
-    string? PerformanceMode);
+    string? PerformanceMode)
+{
+    public IReadOnlyList<PublishedPluginSensor> PluginSensors { get; init; } = [];
+}
 
 internal sealed record IntegrationControlResult(bool Success, string? Error);
 
@@ -115,7 +119,7 @@ internal sealed class LocalDataSharingService : IDisposable
                 : null,
             snapshot.ItsMode == ItsMode.Unknown
                 ? null
-                : snapshot.ItsMode.ToString());
+                : snapshot.ItsMode.ToString()) { PluginSensors = snapshot.PluginSensors };
     }
 
     private async Task ListenAsync(

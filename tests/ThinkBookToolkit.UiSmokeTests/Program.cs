@@ -39,6 +39,10 @@ internal static class Program
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         try
         {
+            if (args.Contains("--test-plugins"))
+            {
+                PluginSystemTests.Run(args.Length > 1 ? args[1] : null); Console.WriteLine("Plugin system tests passed."); return 0;
+            }
             RunSmokeTests();
             Console.WriteLine("UI smoke tests passed.");
             return 0;
@@ -56,6 +60,8 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        PluginManagerLayoutTests.Run();
+        FanBackendPluginTests.Run();
         StoragePolicyTests.Run();
         ItsModeTransitionTests.Run();
         var gpuFeatures = new FeatureAvailabilityReport([
@@ -1536,7 +1542,7 @@ internal static class Program
                     .Where(button => button.Tag is string)
                     .Select(button => button.Tag?.ToString())
                     .All(id => id is "overview" or "sensors-integration" or
-                        "automation" or "settings"),
+                        "automation" or "settings" or "plugins"),
             "Startup does not render Overview first or creates hardware pages before detection.");
         startupWindow.Close();
 

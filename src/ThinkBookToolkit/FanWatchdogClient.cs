@@ -29,11 +29,12 @@ internal sealed class FanWatchdogClient
             var markerName = $"{current.Id}-{startTicks}{MarkerExtension}";
             var markerPath = Path.Combine(markerDirectory, markerName);
             var temporaryPath = markerPath + ".tmp";
-            var marker = new WatchdogMarker(
+            var marker = new Guardian.FanWatchdogMarker(
                 current.Id,
                 startTicks,
                 ToolkitStoragePaths.Logs,
-                backendIdentity, CurveProfileStore.SettingsPath);
+                backendIdentity, CurveProfileStore.SettingsPath, FanController.SelectedPlugin,
+                FanBackend.FanBackendRuntimeContext.DeclaredFanCount);
             File.WriteAllText(
                 temporaryPath,
                 JsonSerializer.Serialize(marker));
@@ -100,10 +101,4 @@ internal sealed class FanWatchdogClient
         "ThinkBookToolkit",
         "watchdog");
 
-    private sealed record WatchdogMarker(
-        int ProcessId,
-        long ProcessStartUtcTicks,
-        string LogDirectory,
-        string BackendIdentity,
-        string? SettingsPath = null);
 }

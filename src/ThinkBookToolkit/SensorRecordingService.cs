@@ -35,12 +35,13 @@ internal static class SensorRecordingFormat
 
     internal static IReadOnlyList<string> OrderKeys(IEnumerable<string> keys) =>
         keys.Distinct(StringComparer.Ordinal)
-            .Where(MetricIds.ContainsKey)
-            .OrderBy(key => MetricIds[key])
+            .Where(key => MetricIds.ContainsKey(key) || key.StartsWith("plugin:", StringComparison.Ordinal))
+            .OrderBy(key => MetricIds.GetValueOrDefault(key, int.MaxValue)).ThenBy(key => key, StringComparer.Ordinal)
             .ToArray();
 
     internal static string Header(IReadOnlyList<string> keys) =>
-        "[2" + string.Concat(keys.Select(key => "," + MetricIds[key])) + "]";
+        keys.All(MetricIds.ContainsKey) ? "[2" + string.Concat(keys.Select(key => "," + MetricIds[key])) + "]"
+            : System.Text.Json.JsonSerializer.Serialize(new object[] { 3 }.Concat(keys.Cast<object>()));
 
     internal static string Batch(
         IReadOnlyList<SensorRecordingSample> samples,
@@ -76,11 +77,17 @@ internal static class SensorRecordingFormat
             using var document = System.Text.Json.JsonDocument.Parse(line);
             var values = document.RootElement;
             if (values.ValueKind != System.Text.Json.JsonValueKind.Array ||
-                values.GetArrayLength() < 1 || values[0].GetInt32() != 2)
+                values.GetArrayLength() < 1 || values[0].GetInt32() is not (2 or 3))
                 return false;
             var result = new List<string>();
             for (var index = 1; index < values.GetArrayLength(); index++)
             {
+                if (values[0].GetInt32() == 3)
+                {
+                    var key = values[index].GetString();
+                    if (key is null || key.Length > 256 || !(MetricIds.ContainsKey(key) || key.StartsWith("plugin:", StringComparison.Ordinal))) return false;
+                    result.Add(key); continue;
+                }
                 var id = values[index].GetInt32();
                 if (id >= 0 && id < MetricKeys.Count)
                     result.Add(MetricKeys[id]);
@@ -170,6 +177,7 @@ internal sealed class SensorRecordingService : IDisposable
         {
             var desiredKeys = KeysForSelectedSensors(
                 _runtime.Settings.SensorRecording.Sensors);
+            desiredKeys = SensorRecordingFormat.OrderKeys(desiredKeys.Concat(_runtime.Plugins.Sensors.Where(s => s.Replaces is null).Select(s => "plugin:" + s.Id)));
             if (_writer is null || !_metricKeys.SequenceEqual(desiredKeys))
                 StartNewFile();
             _timer.Interval = TimeSpan.FromSeconds(
@@ -204,6 +212,7 @@ internal sealed class SensorRecordingService : IDisposable
             64 * 1024);
         _metricKeys = KeysForSelectedSensors(
             _runtime.Settings.SensorRecording.Sensors);
+        _metricKeys = SensorRecordingFormat.OrderKeys(_metricKeys.Concat(_runtime.Plugins.Sensors.Where(s => s.Replaces is null).Select(s => "plugin:" + s.Id)));
         _writer.WriteLine(SensorRecordingFormat.Header(_metricKeys));
         _runtime.Settings.LastSensorRecordingPath = CurrentPath;
         SaveRecordingPath();
@@ -282,10 +291,16 @@ internal sealed class SensorRecordingService : IDisposable
                 snapshot,
                 _runtime.CurrentFps,
                 _runtime.Settings.SensorRecording.Sensors);
+            sample = MergePluginSample(sample, _runtime.Plugins.Sensors);
             if (!_runtime.Settings.SensorRecordingEnabled ||
                 _runtime.IsSystemSessionEnding ||
                 !ReferenceEquals(_writer, recordingWriter))
                 return;
+            var keys = SensorRecordingFormat.OrderKeys(sample.Values.Keys);
+            if (!_metricKeys.SequenceEqual(keys))
+            {
+                Sync();
+            }
             _buffer.Add(sample);
             SampleWritten?.Invoke(this, EventArgs.Empty);
         }
@@ -321,6 +336,21 @@ internal sealed class SensorRecordingService : IDisposable
         {
             ToolkitLog.Error("Buffered sensor data could not be flushed.", ex);
         }
+    }
+
+    internal static SensorRecordingSample MergePluginSample(SensorRecordingSample sample, IReadOnlyList<PublishedPluginSensor> sensors)
+    {
+        var values = new Dictionary<string, double?>(sample.Values);
+        foreach (var sensor in sensors)
+        {
+            if (sensor.Replaces is null) values["plugin:" + sensor.Id] = sensor.Value;
+            else if (sensor.Value.HasValue && sensor.Replaces.StartsWith("toolkit.sensor.", StringComparison.Ordinal))
+            {
+                var key = sensor.Replaces["toolkit.sensor.".Length..];
+                if (values.ContainsKey(key)) values[key] = sensor.Value;
+            }
+        }
+        return sample with { Values = values };
     }
 
     private static IReadOnlyList<string> KeysForSelectedSensors(
