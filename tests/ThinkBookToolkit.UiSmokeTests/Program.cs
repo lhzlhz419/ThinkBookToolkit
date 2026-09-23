@@ -60,6 +60,7 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        ToolkitDialogTests.Run();
         PluginManagerLayoutTests.Run();
         FanBackendPluginTests.Run();
         StoragePolicyTests.Run();
@@ -1270,8 +1271,8 @@ internal static class Program
                SameRow(globalSettings.Children[4], globalSettings.Children[5]) &&
                !ContainsText(globalSettings,
                    "使用 NVAPI 调整 GPU 功耗（Beta）") &&
-               (ContainsText(settingsPage,
-                   "使用 NVAPI 调整 GPU 功耗（Beta）") == runtime.NvApiGpuPowerVisible) &&
+               (((Border)typeof(ToolkitSettingsPage).GetField("_nvApiGpuPowerRow", BindingFlags.Instance | BindingFlags.NonPublic)!
+                   .GetValue(settingsPage)!).Visibility == (runtime.NvApiGpuPowerVisible ? Visibility.Visible : Visibility.Collapsed)) &&
                !SameRow(globalSettings.Children[2], globalSettings.Children[3]),
             "Global settings require too much width for the requested 3+3 layout.");
         Assert(SameRow(startupSettings.Children[0], startupSettings.Children[1]) &&

@@ -216,7 +216,7 @@ internal sealed class PowerSettingsWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 this,
                 string.Format(_t("PowerSettingsReadFailedFormat"), ex.Message),
                 Title,
@@ -249,7 +249,7 @@ internal sealed class PowerSettingsWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 this,
                 string.Format(_t("PowerSettingsWriteFailedFormat"), ex.Message),
                 Title,
@@ -268,7 +268,7 @@ internal sealed class PowerSettingsWindow : Window
         var state = PowerSettingsController.GetDefaultState(_getCurrentMode());
         if (state is null)
         {
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 this,
                 _t("PowerSettingsCurrentModeUnavailable"),
                 Title,
@@ -285,7 +285,7 @@ internal sealed class PowerSettingsWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 this,
                 string.Format(_t("PowerSettingsWriteFailedFormat"), ex.Message),
                 Title,
@@ -328,7 +328,7 @@ internal sealed class PowerSettingsWindow : Window
         if (_cpuTurboTimeLimitCombo.SelectedItem is not string turboText ||
             !int.TryParse(turboText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var cpuTurboTimeLimit))
         {
-            MessageBox.Show(this, _t("PowerSettingsTurboRequired"), Title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            ToolkitMessageBox.Show(this, _t("PowerSettingsTurboRequired"), Title, MessageBoxButton.OK, MessageBoxImage.Warning);
             _cpuTurboTimeLimitCombo.Focus();
             return false;
         }
@@ -361,7 +361,7 @@ internal sealed class PowerSettingsWindow : Window
                 _t(labelKey),
                 editor.Minimum,
                 editor.Maximum);
-        MessageBox.Show(
+        ToolkitMessageBox.Show(
             this,
             message,
             Title,

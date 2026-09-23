@@ -8,8 +8,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
-using Drawing = System.Drawing;
-using Forms = System.Windows.Forms;
 
 namespace ThinkBookToolkit;
 
@@ -623,19 +621,10 @@ internal sealed class BackgroundImageSettingsWindow : Window
     {
         var color = CurveProfileStore.NormalizeBackgroundColor(
             _baseColorValue.Text);
-        var parsed = Convert.ToInt32(color, 16);
-        using var dialog = new Forms.ColorDialog
-        {
-            FullOpen = true,
-            Color = Drawing.Color.FromArgb(
-                (parsed >> 16) & 0xFF,
-                (parsed >> 8) & 0xFF,
-                parsed & 0xFF)
-        };
-        if (dialog.ShowDialog() != Forms.DialogResult.OK)
+        var dialog = new ToolkitColorPickerWindow(color, _runtime.Settings.Language, _runtime.IsDark) { Owner = this };
+        if (dialog.ShowDialog() != true)
             return;
-        _baseColorValue.Text =
-            $"{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}";
+        _baseColorValue.Text = dialog.SelectedHex;
         UpdateBaseColorControls();
         UpdatePreviewValues();
     }

@@ -60,6 +60,7 @@ internal static class PluginHostBridge
     }
     internal static async Task ExecuteAsync(ToolkitRuntimeService runtime, string[] permissions, HostCommand command)
     {
+        if (runtime.Plugins.IsSuspendedForExit) throw new InvalidOperationException("Toolkit is exiting; plugin commands are suspended.");
         if (!permissions.Contains("host.control")) throw new UnauthorizedAccessException("Plugin has no host.control permission.");
         var method = Commands.FirstOrDefault(m => m.Name == command.Id &&
             m.GetParameters().Where(p => !p.IsOut && !p.HasDefaultValue).All(p => command.Arguments.ContainsKey(p.Name!)) &&

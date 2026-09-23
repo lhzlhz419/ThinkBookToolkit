@@ -536,7 +536,7 @@ internal sealed class KeyboardMacroPanel : UserControl, IDisposable
         }
         if (_draft is null)
             return;
-        if (_draft.Events.Count > 0 && MessageBox.Show(
+        if (_draft.Events.Count > 0 && ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 L(
                     "重新录制会清空当前事件，是否继续？",
@@ -622,7 +622,7 @@ internal sealed class KeyboardMacroPanel : UserControl, IDisposable
                     StringComparison.OrdinalIgnoreCase)));
         if (references > 0)
         {
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 L(
                     $"有 {references} 个自动化正在使用这个宏。请先从自动化步骤中移除它。",
@@ -632,7 +632,7 @@ internal sealed class KeyboardMacroPanel : UserControl, IDisposable
                 MessageBoxImage.Information);
             return;
         }
-        if (MessageBox.Show(
+        if (ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 L($"删除宏“{macro.Name}”？", $"Delete macro “{macro.Name}”?"),
                 L("删除宏", "Delete macro"),

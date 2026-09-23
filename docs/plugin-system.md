@@ -3,6 +3,7 @@
 ## 使用
 
 测试插件**不随正式安装包或主程序发布 ZIP 分发**。运行 `scripts/build_test_plugin.ps1` 单独生成 `dist/test-plugins/PluginTest` 文件夹和 `ThinkBookToolkit.PluginTest.zip`，将其中的插件文件夹放到“插件”页打开的目录，重启并审核启用后，导航栏会增加 **插件测试** 页面。
+测试插件 1.1.0 起使用 `ui.custom` 自行绘制 WPF 页面，提供开关、风扇原始转速与平均值预览，适配深浅色、中英文和窄窗口；开关通过 `IPluginPageContext.SetSettingAsync` 保存。包中包含独立的逻辑 DLL 与 `ThinkBookToolkit.PluginTest.Ui.dll`，后台计算不依赖 WPF。也可直接在“导入插件”中选择 ZIP。旧版测试插件已安装时，先退出 Toolkit，再手动替换其文件夹并重启、重新审核权限。
 “显示平均风扇转速”默认关闭。开启后，“平均转速”显示在完整概览的风扇转速区域，并作为插件传感器提供给 OSD、传感器记录和本机数据共享；简洁概览不追加这条读数。
 数值为有效风扇读数的算术平均值：停转的 0 RPM 有效；负数、缺失或过期读数不参与；没有有效读数时显示 `--`。插件不修改风扇控制参数。
 
@@ -12,17 +13,32 @@
 
 导入只解压和检查文件，不运行 DLL；拒绝越界路径、链接、重复路径、缺失入口、不兼容清单及超限压缩包（最多 2048 个文件、解压后 256 MB、清单 1 MB）。原 ZIP 保留，临时解压文件自动清理。相同 ID 已安装或目标目录已存在时拒绝覆盖；更新现有插件请继续使用手动替换文件夹、重启后重新审核的方式。
 
+### 卸载与重启提示
+
+每张插件卡片提供 **卸载** 按钮，确认后移除插件文件，保留 `plugin-settings` 中的插件设置，取消启用授权。卸载不会删除其他插件或程序依赖。
+也可通过“卸载旧版 → 必要时重启 → 导入新版”更新插件；重新导入后仍默认停用，并恢复与新清单类型兼容的保留设置。
+
+- 普通工作进程插件先停止进程、撤回页面与传感器，然后直接移除文件。
+- 当前会话已加载的 WPF 页面、当前选中的风扇后端，或暂时无法删除的文件，会标为“待卸载”，禁止再次启用，并弹出“是否立即重启 Toolkit”。选择“否”可以继续使用，之后手动重启完成。
+- 当前风扇后端不会被热切换，也不会提前删除其守护恢复缓存；它保留到安全退出。缓存不在本次卸载中清理。
+- 下次启动在加载插件前处理待卸载任务，先核对原插件目录、ID 和指纹，再移动到专用临时清理目录后删除。若用户已改变原目录内容，不会自动删除这些新内容，而是报告未完成。
+- 导入的新插件默认停用，不会无意义地要求重启。启用/停用需要重启切换的风扇后端时会弹窗；同 ID 的旧插件还在等待卸载时，导入会提示先重启，完成后再导入。
+
+“重启”仅重启 Toolkit，不重启 Windows。程序先暂停插件宿主操作、恢复自动风扇控制，再退出；如果恢复失败，则取消此次重启。新进程等待旧进程完全结束后才清理已加载的 DLL，并保留 `--disable-plugins` 安全启动模式。选择稍后重启不会自动启动新的进程。
+
 `--disable-plugins` 可跳过全部插件加载，插件管理入口不允许被替换。停用插件会停止其进程并撤回页面、设置和传感器贡献，内置功能恢复。
 
 ## 项目结构
 
 - `src/ThinkBookToolkit.PluginApi`：不依赖 WPF 或主程序内部类的契约，程序集版本固定为 1.0.0.0，协议版本为 1。
+- `src/ThinkBookToolkit.PluginUi`：可选 WPF 自绘页面契约，目标为 `net9.0-windows`，程序集版本固定为 1.0.0.0。
 - `src/ThinkBookToolkit.PluginHost`：独立进程、普通 asInvoker / 非 UIAccess 启动程序。
 - `plugins/ThinkBookToolkit.PluginTest`：可独立编译的平均风扇转速示例。
+- `plugins/ThinkBookToolkit.PluginTest.Ui`：测试插件的自绘 WPF 页面，与逻辑工程分离；单独构建此项目会同时构建逻辑工程。
 - `ToolkitPluginManager`：清单、授权、注册表、配置、进程与故障处理。
 - `PluginHostBridge`：宿主数据及经验证操作的适配层。
 
-普通页面、设置及传感器逻辑由各自的 PluginHost 加载，通过有长度限制的命名管道传递 JSON。宿主复用 `PluginApi` 契约程序集；插件依赖通过独立的 AssemblyLoadContext 和 AssemblyDependencyResolver 加载。风扇后端是例外：沿用现有进程内 `IFanBackend` 契约，具体安全边界和生命周期见下文。
+普通声明式页面、设置及传感器逻辑由各自的 PluginHost 加载，通过有长度限制的命名管道传递 JSON。宿主复用 `PluginApi` 契约程序集；插件依赖通过独立的 AssemblyLoadContext 和 AssemblyDependencyResolver 加载。风扇后端和显式授权的 WPF 自绘页面是例外，会在主程序内执行，具体安全边界和生命周期见下文。
 
 **这是可信插件模型，不是恶意代码沙箱。** 工作进程继承启动者权限；权限声明约束宿主 API，不限制插件自行进行文件、网络或本机 API 调用。只启用审阅过的代码。进程隔离保护主程序免受插件崩溃、卡死影响，不提供操作系统级权限隔离。
 
@@ -94,6 +110,64 @@
 
 ## 数据、权限和执行
 
+### 可选 WPF 自绘页面
+
+旧 `Pages` 声明不变，仍由宿主生成设置/传感器界面。需要自行绘制时，增加 `ui.custom` 权限，并给页面添加 `View`：
+
+```json
+"Permissions": ["ui.custom", "sensors.read"],
+"Pages": [
+  {
+    "Id": "my.plugin.dashboard",
+    "Title": { "Chinese": "自定义仪表盘", "English": "Custom dashboard" },
+    "View": { "Assembly": "MyPlugin.UI.dll", "Type": "MyPlugin.UI.DashboardPage" }
+  }
+]
+```
+
+替换内置页面时再指定 `Replaces`（例如 `performance`），并增加原有 `replace` 权限。插件管理页 `plugins` 仍禁止替换，安全启动 `--disable-plugins` 会跳过插件。一个包可以同时包含声明式页面、自绘页面、传感器和风扇后端。
+
+UI 项目使用 `net9.0-windows`、`UseWPF=true`，引用 `ThinkBookToolkit.PluginUi` 与 `ThinkBookToolkit.PluginApi`，无需引用 Toolkit 主程序集。`View.Type` 是公开、非抽象、具有公开无参构造函数的 `IToolkitPluginPage` 实现。`View.Assembly` 只能是插件文件夹中的 DLL 文件名。示例：
+
+```csharp
+using System.Windows;
+using System.Windows.Controls;
+using ThinkBookToolkit.PluginUi;
+
+namespace MyPlugin.UI;
+
+public sealed class DashboardPage : IToolkitPluginPage
+{
+    private readonly TextBlock reading = new() { FontSize = 24 };
+
+    public FrameworkElement CreateView(IPluginPageContext context)
+    {
+        var panel = new StackPanel();
+        panel.Children.Add(new TextBlock { Text = "My dashboard", FontSize = 28 });
+        panel.Children.Add(reading);
+        return panel; // 也可以返回自定义 UserControl / XAML 页面。
+    }
+
+    public void Update(PluginPageState state)
+    {
+        var sensors = state.Request.Context.Sensors;
+        reading.Text = sensors.TryGetValue("toolkit.sensor.cpuTemperatureC", out var sensor)
+            && sensor.Quality == "valid" && sensor.Value.HasValue
+            ? $"{sensor.Value:0.#} °C" : "--";
+    }
+
+    public void Dispose() { /* 停止自己的定时器、取消后台工作并退订事件 */ }
+}
+```
+
+`CreateView`、首次及后续 `Update`、`Dispose` 均在 UI 线程调用，不要阻塞 UI 或同步等待异步操作。每次进入页面会新建实例；切页、停用、主题/语言重建及退出时释放实例。页面提供的 `FrameworkElement` 应是新建且没有父级的控件，宿主不会再自动往它里面添加该页面的声明式控件。
+
+`IPluginPageContext` 提供插件 ID、页面 ID、插件目录、当前 `State` 和页面生命周期的 `CancellationToken`。`State` 包含深浅色、语言和 `PluginRequest`；原始数据和本体设置仍受 `sensors.read` / `data.read` / `settings.read` 约束。`SetSettingAsync(id, value)` 只能写本插件已声明的设置，经过原有类型及范围校验；`ExecuteAsync(command)` 仍要求已有的 `host.control` 权限。**没有增加修改其他插件设置的接口。** 页面释放后上下文拒绝新写入；插件应自行处理按钮/异步事件中的异常。
+
+普通 `EntryAssembly` / `EntryType` 逻辑入口仍必需。建议将无 UI 的逻辑 DLL 和 WPF UI DLL 分开打包：前者继续在 PluginHost 工作进程中运行，后者按需在主程序中加载；不要让工作进程入口依赖 WPF。仅需要页面时，逻辑入口可返回空 `PluginResult`。两个进程不能通过静态字段共享状态，使用宿主持久化的插件设置传递数据。
+
+**`ui.custom` 是高风险、进程内能力，不是沙箱。** 启用确认框和插件卡片都会明确提示：代码具有主程序权限，可能让整个 Toolkit 卡住或退出。宿主会捕获调用创建、更新和释放接口时的托管异常，并挂起插件、撤回贡献、恢复可用的内置页面；这不能隔离任意事件回调、后台线程、原生异常或死锁。首次载入会校验包指纹，变更文件必须重新审核。WPF 的资源和静态缓存无法保证卸载，因此停用只释放页面，不保证从进程移除代码；更新已加载的 UI DLL 需要重启。
+
 ### 概览卡片的单条内容
 
 清单可选字段 `OverviewItems` 支持在概览的指定卡片中增加、删除或替换一条内容，不需要替换整个页面，也不改变原始硬件数据、OSD 或记录数据。旧插件不声明此字段即可保持原行为。
@@ -130,6 +204,7 @@
 - `host.control`：允许结果中的 `Commands` 调用 `Context.Operations` 列出的宿主操作。
 - `replace`：允许清单接管已注册的设置、传感器或页面目标，启用提示会列出目标。
 - `fan.backend`：允许插件提供风扇控制后端；必须另外声明 `FanBackend`，启用提示会说明进程内加载与重启要求。
+- `ui.custom`：允许插件提供 WPF 自绘页面，在主程序进程内运行；启用时单独列出风险提示。
 
 插件自己的设置始终通过 `PluginRequest.PluginSettings` 提供，由宿主负责类型检查和持久化。
 宿主命令参数使用列出的参数名称与 JSON 值，枚举可使用字符串；操作进入原有 Runtime 方法，保留其验证、串行化及硬件保护。宿主不会通过插件协议暴露私有字段、任意反射或任意方法执行。
@@ -183,4 +258,4 @@ dotnet tests/ThinkBookToolkit.UiSmokeTests/bin/Release/net9.0-windows/win-x64/Th
 
 ## 第一版边界
 
-当前提供声明式设置/页面和数字传感器扩展，不提供任意 WPF 控件进程内加载、热更新或插件市场。传感器替换不用于风扇闭环安全控制。权限模型不是 OS 沙箱。扩展 API 需要保持 v1 的兼容性；不兼容修改应升级协议版本并提供迁移。
+当前提供声明式设置/页面、数字传感器扩展，以及显式授权后的 WPF 自绘页面；不提供可靠程序集卸载、热更新或插件市场。传感器替换不用于风扇闭环安全控制。权限模型不是 OS 沙箱。扩展 API 需要保持 v1 的兼容性；不兼容修改应升级协议版本并提供迁移。

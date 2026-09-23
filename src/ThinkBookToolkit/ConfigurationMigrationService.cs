@@ -31,7 +31,7 @@ internal static class ConfigurationMigrationService
             File.Exists(LegacyProfilePath) ||
             File.Exists(LegacySettingsPath);
         var migrate = hasLegacyConfiguration &&
-                      MessageBox.Show(
+                      ToolkitMessageBox.Show(
                           "检测到 ThinkBook Fan Control 配置，是否迁移到 ThinkBook Toolkit？\n\n" +
                           "选择“否”将使用 Toolkit 默认配置。",
                           "迁移配置",

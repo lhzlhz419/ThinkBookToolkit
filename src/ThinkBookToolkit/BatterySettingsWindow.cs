@@ -234,7 +234,7 @@ internal sealed class BatterySettingsWindow : Window
         {
             if (showError)
             {
-                MessageBox.Show(
+                ToolkitMessageBox.Show(
                     this,
                     string.Format(_t("SettingsReadFailedFormat"), ex.Message),
                     Title,
@@ -306,7 +306,7 @@ internal sealed class BatterySettingsWindow : Window
         {
             if (_state is not null)
                 ApplyState(_state);
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 this,
                 string.Format(_t("SettingWriteFailedFormat"), ex.Message),
                 Title,

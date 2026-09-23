@@ -24,6 +24,7 @@ internal sealed class PluginInstallation(string directory, PluginManifest manife
     public PluginManifest Manifest { get; } = manifest;
     public string Fingerprint { get; } = fingerprint;
     public bool Enabled { get; set; }
+    public bool PendingUninstall { get; set; }
     public string? Error { get; set; }
     internal PluginProcessClient? Client;
     internal Dictionary<string, JsonElement> Settings = new();
@@ -49,6 +50,11 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
     private bool _discovered;
     private Task? _discoveryTask;
     private bool _fanBackendPrepared;
+    private bool _exitSuspended;
+    internal bool IsSuspendedForExit => _exitSuspended;
+    private List<PendingPluginRemoval> _pendingRemovals = [];
+    private PluginRemovalStore Removals => new(Root, _options.BundledRoot ?? Path.Combine(AppContext.BaseDirectory, "Plugins"), StateRoot);
+    internal bool HasPendingUninstalls => _pendingRemovals.Count > 0;
     internal PluginFanBackendSelection? ActiveFanBackend { get; private set; }
     private readonly PluginManagerOptions _options;
     public int Revision { get; private set; }
@@ -87,6 +93,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
     {
         if (_discovered) return;
         _discovered = true;
+        ProcessPendingRemovals();
         if (safeMode) return;
         try { _preferences = JsonSerializer.Deserialize<Dictionary<string, PluginPreference>>(File.ReadAllText(Path.Combine(StateRoot, "enabled.json"))) ?? new(); } catch { }
         foreach (var root in new[] { _options.BundledRoot ?? Path.Combine(AppContext.BaseDirectory, "Plugins"), Root }.Distinct(StringComparer.OrdinalIgnoreCase))
@@ -105,17 +112,11 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
                     if (_plugins.Any(p => p.Manifest.Id == manifest.Id)) throw new InvalidDataException("Duplicate plugin ID: " + manifest.Id);
                     var fingerprint = await Task.Run(() => Fingerprint(directory));
                     var plugin = new PluginInstallation(directory, manifest, fingerprint);
-                    foreach (var setting in manifest.Settings) plugin.Settings[setting.Id] = setting.DefaultValue.Clone();
-                    try
-                    {
-                        var saved = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(SettingsPath(plugin)));
-                        foreach (var pair in saved ?? [])
-                            if (manifest.Settings.FirstOrDefault(s => s.Id == pair.Key) is { } descriptor && ValidSetting(descriptor, pair.Value))
-                                plugin.Settings[pair.Key] = pair.Value.Clone();
-                    }
-                    catch { }
+                    LoadPluginSettings(plugin);
                     plugin.Enabled = _preferences.TryGetValue(manifest.Id, out var pref)
                         && pref.Enabled && pref.Fingerprint == fingerprint;
+                    plugin.PendingUninstall = _pendingRemovals.Any(r => r.PluginId == manifest.Id && Removals.Matches(r, directory));
+                    if (plugin.PendingUninstall) plugin.Enabled = false;
                     _plugins.Add(plugin);
                     if (plugin.Enabled && FindConflict(plugin) is { } conflict) { plugin.Enabled = false; plugin.Error = conflict; }
                 }
@@ -138,6 +139,8 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         try
         {
             _stop.Token.ThrowIfCancellationRequested();
+            if (_pendingRemovals.Any(r => r.PluginId == package.Manifest.Id))
+                throw new PluginRestartRequiredException("此插件尚未完成卸载，请重启 Toolkit 后再次导入。 / Restart Toolkit to finish uninstalling this plugin, then import it again.");
             if (_plugins.Any(p => p.Manifest.Id == package.Manifest.Id) || HasInstalledId(package.Manifest.Id))
                 throw new InvalidOperationException("相同 ID 的插件已安装，本次不会覆盖。 / A plugin with this ID is already installed; no files were replaced.");
             var destination = Path.GetFullPath(Path.Combine(Root, package.Manifest.Id));
@@ -145,7 +148,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
             if (Directory.Exists(destination) || File.Exists(destination))
                 throw new IOException("目标文件夹已存在，本次不会覆盖。 / The destination already exists; no files were replaced.");
             plugin = new PluginInstallation(destination, package.Manifest, package.Fingerprint);
-            foreach (var setting in plugin.Manifest.Settings) plugin.Settings[setting.Id] = setting.DefaultValue.Clone();
+            LoadPluginSettings(plugin);
             var preferencePath = Path.Combine(StateRoot, "enabled.json");
             // Safe startup intentionally skips discovery/preferences. Preserve
             // other approvals even when importing from that mode.
@@ -190,6 +193,73 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         return false;
     }
 
+    private void ProcessPendingRemovals()
+    {
+        try { _pendingRemovals = Removals.Read(); }
+        catch (Exception ex) { _discoveryErrors.Add("无法读取待卸载任务 / Cannot read pending uninstalls: " + ex.Message); return; }
+        foreach (var pending in _pendingRemovals.ToArray())
+        {
+            try { Removals.Remove(pending); _pendingRemovals.Remove(pending); }
+            catch (Exception ex) { _discoveryErrors.Add(pending.PluginId + " 卸载尚未完成 / Uninstall pending: " + ex.Message); }
+        }
+        try { if (File.Exists(Path.Combine(StateRoot, "pending-uninstall.json"))) Removals.Save(_pendingRemovals); }
+        catch (Exception ex) { _discoveryErrors.Add("Cannot update uninstall journal: " + ex.Message); }
+    }
+
+    internal bool RequiresRestart(PluginInstallation plugin) => plugin.PendingUninstall ||
+        plugin.Manifest.FanBackend is not null && plugin.Enabled != (ActiveFanBackend?.PluginId == plugin.Manifest.Id);
+
+    internal async Task<bool> UninstallAsync(PluginInstallation plugin, bool? loadedForTesting = null)
+    {
+        await _gate.WaitAsync(_stop.Token);
+        PendingPluginRemoval record;
+        bool restart;
+        try
+        {
+            if (!_plugins.Contains(plugin)) throw new InvalidOperationException("Plugin is not installed.");
+            if (plugin.PendingUninstall) return true;
+            record = Removals.Plan(plugin);
+            restart = loadedForTesting ?? (PluginUiLoader.IsLoaded(plugin.Directory) || ActiveFanBackend?.PluginId == plugin.Manifest.Id);
+            var previous = new Dictionary<string, PluginPreference>(_preferences);
+            var next = new Dictionary<string, PluginPreference>(previous) { [plugin.Manifest.Id] = new(false, plugin.Fingerprint) };
+            SaveJson(Path.Combine(StateRoot, "enabled.json"), next);
+            try { Removals.Save(_pendingRemovals.Append(record).ToArray()); }
+            catch { SaveJson(Path.Combine(StateRoot, "enabled.json"), previous); throw; }
+            _preferences = next; _pendingRemovals.Add(record);
+            plugin.Enabled = false; plugin.PendingUninstall = true; plugin.Error = null;
+            plugin.Client?.Dispose(); plugin.Client = null; plugin.Values = [];
+            plugin.OverviewValues = new Dictionary<string, string?>();
+        }
+        finally { _gate.Release(); }
+        // Dispose visible custom views and withdraw registrations before file removal.
+        Publish(); CatalogChanged?.Invoke(this, EventArgs.Empty);
+        if (restart) return true;
+        try { await Task.Run(() => Removals.Remove(record)); }
+        catch (Exception ex)
+        {
+            plugin.Error = "文件仍被占用或无法删除，请重启后重试。 / Files could not be removed; restart to retry. " + ex.Message;
+            CatalogChanged?.Invoke(this, EventArgs.Empty); return true;
+        }
+        await _gate.WaitAsync();
+        try
+        {
+            var remaining = _pendingRemovals.Where(r => r != record).ToList();
+            Removals.Save(remaining); _pendingRemovals = remaining; _plugins.Remove(plugin);
+        }
+        finally { _gate.Release(); }
+        CatalogChanged?.Invoke(this, EventArgs.Empty);
+        return false;
+    }
+
+    internal async Task SuspendForExitAsync()
+    {
+        _timer.Stop(); _exitSuspended = true;
+        await _gate.WaitAsync();
+        try { foreach (var plugin in _plugins) { plugin.Client?.Dispose(); plugin.Client = null; } }
+        finally { _gate.Release(); }
+    }
+    internal void ResumeAfterCancelledExit() { if (!_disposed) { _exitSuspended = false; if (_initialized) _timer.Start(); } }
+
     internal async Task PrepareFanBackendAsync(bool safeMode = false, Action<string, PluginFanBackendSelection>? stageForTesting = null)
     {
         if (_fanBackendPrepared) return;
@@ -231,7 +301,16 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
             manifest.Pages.Any(p => p.Id.Length > 180 || p.Title.Chinese.Length > 160 || p.Title.English.Length > 160) ||
             manifest.Settings.Any(s => string.IsNullOrWhiteSpace(s.Id) || s.Id.Length > 100 || s.Title.Chinese.Length > 160 || s.Title.English.Length > 160) ||
             manifest.Sensors.Any(s => s.Name.Chinese.Length > 160 || s.Name.English.Length > 160 || s.Unit.Length > 32)) throw new InvalidDataException("Invalid metadata length.");
-        if (manifest.Permissions.Except(new[] { "sensors.read", "data.read", "settings.read", "host.control", "replace", "fan.backend" }).Any()) throw new InvalidDataException("Unknown permission.");
+        if (manifest.Permissions.Except(new[] { "sensors.read", "data.read", "settings.read", "host.control", "replace", "fan.backend", "ui.custom" }).Any()) throw new InvalidDataException("Unknown permission.");
+        foreach (var page in manifest.Pages.Where(p => p.View is not null))
+        {
+            var view = page.View!;
+            if (!manifest.Permissions.Contains("ui.custom") || string.IsNullOrWhiteSpace(view.Assembly) ||
+                view.Assembly.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || Path.GetFileName(view.Assembly) != view.Assembly ||
+                !view.Assembly.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) || !File.Exists(Path.Combine(directory, view.Assembly)) ||
+                string.IsNullOrWhiteSpace(view.Type) || view.Type.Length > 256)
+                throw new InvalidDataException("Custom pages require ui.custom, a local DLL, and an entry type.");
+        }
         if (manifest.FanBackend is { } backend)
         {
             PluginFanBackendPackage.ValidateSelection(new(manifest.Id, new string('0', 64), backend.Assembly, backend.Type));
@@ -320,6 +399,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         await _gate.WaitAsync();
         try
         {
+            if (plugin.PendingUninstall || !_plugins.Contains(plugin)) throw new InvalidOperationException("插件待卸载或已移除，无法启用。 / Plugin is pending uninstall or has been removed.");
             if (enabled && FindConflict(plugin) is { } conflict) throw new InvalidOperationException(conflict);
             if (enabled && Fingerprint(plugin.Directory) != plugin.Fingerprint) throw new InvalidOperationException("插件文件已改变，请重启后重新授权。 / Plugin files changed; restart and review permissions again.");
             _preferences[plugin.Manifest.Id] = new(enabled, plugin.Fingerprint);
@@ -338,6 +418,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         await _gate.WaitAsync();
         try
         {
+            if (_exitSuspended || !plugin.Enabled || plugin.PendingUninstall || !_plugins.Contains(plugin)) throw new InvalidOperationException("Plugin is no longer active.");
             if (setting.Replaces is { } slot) await PluginBuiltinSettings.ApplyAsync(_runtime, slot, value);
             else
             {
@@ -367,7 +448,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
 
     internal async Task RefreshAsync()
     {
-        if (_disposed || _busy) return;
+        if (_disposed || _busy || _exitSuspended) return;
         _busy = true;
         await _gate.WaitAsync();
         var catalogChanged = false;
@@ -381,6 +462,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
                     var context = PluginHostBridge.Context(_runtime, plugin.Manifest.Permissions);
                     var settings = plugin.Manifest.Settings.ToDictionary(s => s.Id, s => SettingValue(plugin, s));
                     var result = await plugin.Client.EvaluateAsync(new("refresh", context, settings), _stop.Token);
+                    if (_exitSuspended || !plugin.Enabled || plugin.Error is not null) continue;
                     plugin.Values = ValidateResult(plugin, result, context.Timestamp);
                     plugin.OverviewValues = result.OverviewValues ?? new Dictionary<string, string?>();
                     plugin.LastResultAt = context.Timestamp;
@@ -389,7 +471,8 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
                 }
                 catch (Exception ex)
                 {
-                    plugin.Error = ex.GetBaseException().Message; plugin.Values = [];
+                    if (_exitSuspended) continue;
+                    plugin.Error ??= ex.GetBaseException().Message; plugin.Values = [];
                     plugin.OverviewValues = new Dictionary<string, string?>();
                     plugin.Client?.Dispose(); plugin.Client = null; catalogChanged = true;
                     ToolkitLog.Error("Plugin suspended: " + plugin.Manifest.Id, ex);
@@ -422,7 +505,35 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         ValuesChanged?.Invoke(this, EventArgs.Empty);
         _runtime.PublishPluginSensors(Sensors);
     }
+    internal void ReportUiFailure(PluginInstallation plugin, Exception error)
+    {
+        if (_disposed || plugin.Error is not null) return;
+        plugin.Error = "自绘页面异常 / Custom page failed: " + error.GetBaseException().Message;
+        plugin.Client?.Dispose(); plugin.Client = null; plugin.Values = [];
+        plugin.OverviewValues = new Dictionary<string, string?>();
+        ToolkitLog.Error(plugin.Error, error);
+        // Do not tear down navigation in the middle of CreatePage/Update/Dispose.
+        if (_timer.Dispatcher.HasShutdownStarted || _timer.Dispatcher.HasShutdownFinished) return;
+        _timer.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_disposed) return;
+            Publish(); CatalogChanged?.Invoke(this, EventArgs.Empty);
+            _runtime.SetStatus(plugin.Error ?? "");
+        }));
+    }
     private string SettingsPath(PluginInstallation plugin) => Path.Combine(StateRoot, plugin.Manifest.Id + ".json");
+    private void LoadPluginSettings(PluginInstallation plugin)
+    {
+        foreach (var setting in plugin.Manifest.Settings) plugin.Settings[setting.Id] = setting.DefaultValue.Clone();
+        try
+        {
+            var saved = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(SettingsPath(plugin)));
+            foreach (var pair in saved ?? [])
+                if (plugin.Manifest.Settings.FirstOrDefault(s => s.Id == pair.Key) is { } descriptor && ValidSetting(descriptor, pair.Value))
+                    plugin.Settings[pair.Key] = pair.Value.Clone();
+        }
+        catch { }
+    }
     private static void SaveJson<T>(string path, T value)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

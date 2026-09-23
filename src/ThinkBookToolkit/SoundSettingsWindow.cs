@@ -412,7 +412,7 @@ internal sealed class SoundSettingsWindow : Window
 
         if (noiseState.HasVoiceId)
         {
-            var result = MessageBox.Show(
+            var result = ToolkitMessageBox.Show(
                 this,
                 _t("ReplaceVoiceIdWarning"),
                 _t("RecordMyVoice"),
@@ -646,7 +646,7 @@ internal sealed class SoundSettingsWindow : Window
 
     private void ShowWriteError(Exception exception)
     {
-        MessageBox.Show(
+        ToolkitMessageBox.Show(
             this,
             string.Format(_t("SettingWriteFailedFormat"), exception.Message),
             Title,

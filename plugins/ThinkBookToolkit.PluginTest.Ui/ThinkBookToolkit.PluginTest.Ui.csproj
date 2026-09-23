@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <VersionPrefix>1.1.0</VersionPrefix>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ThinkBookToolkit.PluginUi\ThinkBookToolkit.PluginUi.csproj" />
+    <ProjectReference Include="..\ThinkBookToolkit.PluginTest\ThinkBookToolkit.PluginTest.csproj" />
+  </ItemGroup>
+</Project>

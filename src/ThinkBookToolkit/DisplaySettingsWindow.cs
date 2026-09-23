@@ -1026,7 +1026,7 @@ internal sealed class DisplaySettingsWindow : Window
 
     private void ShowWriteError(Exception exception)
     {
-        MessageBox.Show(
+        ToolkitMessageBox.Show(
             this,
             string.Format(_t("SettingWriteFailedFormat"), exception.Message),
             Title,

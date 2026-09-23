@@ -67,7 +67,7 @@ internal sealed class ToolkitSoundPage : ToolkitPageBase,
         _recordVoice.Click += async (_, _) =>
         {
             if (_viewModel.State?.MicrophoneNoise.HasVoiceId == true &&
-                MessageBox.Show(
+                ToolkitMessageBox.Show(
                     L("已有声纹。要重新录制并替换它吗？", "A voice ID already exists. Replace it?"),
                     "ThinkBook Toolkit",
                     MessageBoxButton.YesNo,

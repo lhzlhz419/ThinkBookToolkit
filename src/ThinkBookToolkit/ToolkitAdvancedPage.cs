@@ -287,7 +287,7 @@ internal sealed class ToolkitAdvancedPage : ToolkitPageBase
         var warning = function == BiosBootFunction.SecureWipe
             ? L("安全擦除可能永久删除存储设备上的数据。是否继续？", "Secure wipe may permanently delete storage data. Continue?")
             : L($"是否把下一次启动设置为{name}？", $"Set the next boot to {name}?");
-        if (MessageBox.Show(
+        if (ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 warning,
                 "ThinkBook Toolkit",
@@ -297,7 +297,7 @@ internal sealed class ToolkitAdvancedPage : ToolkitPageBase
         {
             return;
         }
-        if (MessageBox.Show(
+        if (ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 L("操作完成后计算机会立即重启。现在执行吗？", "The computer will restart immediately after this is set. Continue now?"),
                 "ThinkBook Toolkit",

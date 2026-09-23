@@ -328,10 +328,10 @@ internal sealed class OtherSettingsWindow : Window
     }
 
     private bool Confirm(string message, MessageBoxImage image) =>
-        MessageBox.Show(this, message, Title, MessageBoxButton.YesNo, image, MessageBoxResult.No) == MessageBoxResult.Yes;
+        ToolkitMessageBox.Show(this, message, Title, MessageBoxButton.YesNo, image, MessageBoxResult.No) == MessageBoxResult.Yes;
 
     private void ShowAdvancedFailure(Exception exception) =>
-        MessageBox.Show(
+        ToolkitMessageBox.Show(
             this,
             string.Format(_t("AdvancedToolkitFailedFormat"), exception.Message),
             Title,
@@ -521,7 +521,7 @@ internal sealed class OtherSettingsWindow : Window
         {
             ApplyToggleState(toggle, previous);
             var message = string.Format(_t("SettingWriteFailedFormat"), ex.Message);
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 this,
                 message,
                 Title,
@@ -665,7 +665,7 @@ internal sealed class OtherSettingsWindow : Window
             _autoOffToggle.ToolTip = message;
         }
 
-        MessageBox.Show(this, message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
+        ToolkitMessageBox.Show(this, message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
     private void HandleWriteFailure(ComboBox comboBox, Exception exception)
@@ -676,7 +676,7 @@ internal sealed class OtherSettingsWindow : Window
         else
             SetComboStatus(comboBox, message);
 
-        MessageBox.Show(this, message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
+        ToolkitMessageBox.Show(this, message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
     private void SetBusy(bool busy)

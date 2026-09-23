@@ -141,6 +141,7 @@ internal sealed class ToolkitMainWindow : Window
 
     private void ApplyAppearance()
     {
+        ToolkitMessageBox.SetLanguage(_runtime.Settings.Language);
         ModernTheme.Apply(Application.Current, _runtime.IsDark);
         ModernTheme.ApplyWindowSurfaceStyles(
             this,
@@ -602,7 +603,10 @@ internal sealed class ToolkitMainWindow : Window
     private ToolkitPageBase CreatePage(string page)
     {
         var view = _runtime.Plugins.Page(page) is { } contribution
-            ? new ToolkitPluginPage(_runtime, contribution.Plugin, contribution.Page) : CreateBuiltinPage(page);
+            ? contribution.Page.View is null
+                ? (ToolkitPageBase)new ToolkitPluginPage(_runtime, contribution.Plugin, contribution.Page)
+                : new ToolkitCustomPluginPage(_runtime, contribution.Plugin, contribution.Page)
+            : CreateBuiltinPage(page);
         var extra = _runtime.Plugins.Installations.Where(p => p.Enabled && p.Error is null &&
                 (page != "overview" || _runtime.Settings.OverviewPageMode != OverviewPageMode.Compact))
             .SelectMany(p => p.Manifest.Settings.Where(s => s.PageId == page && s.Replaces is null).Select(s => (p, s))).ToArray();
@@ -791,7 +795,7 @@ internal sealed class ToolkitMainWindow : Window
         {
             return true;
         }
-        MessageBox.Show(
+        ToolkitMessageBox.Show(
             this,
             L(
                 "无法保存风险确认，因此软件不会继续启动：",
@@ -1240,6 +1244,12 @@ internal sealed class ToolkitMainWindow : Window
         catch (Exception ex)
         {
             _runtime.SetStatus(L("退出前恢复风扇失败：", "Failed to restore fans before exit: ") + ex.Message);
+            if (_runtime.ApplicationRestartRequested)
+            {
+                _preparingExit = false; IsEnabled = true;
+                await _runtime.CancelApplicationRestartAsync();
+                return;
+            }
         }
         _forceClose = true;
         _ = Dispatcher.BeginInvoke(new Action(Close));

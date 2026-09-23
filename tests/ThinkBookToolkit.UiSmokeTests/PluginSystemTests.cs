@@ -37,8 +37,11 @@ internal static class PluginSystemTests
 
     private static async Task RunAsync(string? hostPath)
     {
+        await NvApiAvailabilityTests.RunAsync();
+        await CustomPluginPageTests.RunAsync(hostPath);
         await FanBackendPluginTests.RunLifecycleAsync(hostPath);
         await PluginImportTests.RunAsync();
+        await PluginUninstallTests.RunAsync(hostPath);
         await OverviewPluginTests.RunAsync(hostPath);
         var repo = Environment.CurrentDirectory;
         var root = Path.Combine(repo, ".tmp", "plugin-tests", Guid.NewGuid().ToString("N"));
@@ -49,9 +52,12 @@ internal static class PluginSystemTests
         {
             var directory = Path.Combine(code, definition.Id); Directory.CreateDirectory(directory);
             File.Copy(typeof(AverageFanPlugin).Assembly.Location, Path.Combine(directory, definition.EntryAssembly));
+            if (definition.Pages.Any(p => p.View is not null))
+                File.Copy(Path.Combine(AppContext.BaseDirectory, "fixtures", "ThinkBookToolkit.PluginTest.Ui.dll"), Path.Combine(directory, "ThinkBookToolkit.PluginTest.Ui.dll"));
             File.WriteAllText(Path.Combine(directory, "plugin.json"), JsonSerializer.Serialize(definition));
         }
-        Install(manifest);
+        var sampleArchive = Environment.GetEnvironmentVariable("TBT_TEST_PLUGIN_ARCHIVE");
+        if (string.IsNullOrWhiteSpace(sampleArchive)) Install(manifest);
         foreach (var id in new[] { "test.override-a", "test.override-b" })
             Install(manifest with
             {
@@ -69,6 +75,7 @@ internal static class PluginSystemTests
         });
         Fans(2000, 4000);
         await runtime.Plugins.InitializeAsync();
+        if (!string.IsNullOrWhiteSpace(sampleArchive)) await runtime.Plugins.ImportAsync(Path.GetFullPath(sampleArchive));
         Check(runtime.Plugins.Installations.Count == 3 && runtime.Plugins.Installations.All(p => !p.Enabled), "External plugin code must not execute before approval.");
         var plugin = runtime.Plugins.Installations.Single(p => p.Manifest.Id == manifest.Id);
         await runtime.Plugins.SetEnabledAsync(plugin, true);
@@ -80,15 +87,27 @@ internal static class PluginSystemTests
         try
         {
             window.NavigateForTesting("toolkit.plugin-test.page");
-            Check(window.CurrentPage is ToolkitPluginPage, "The plugin navigation page was not registered.");
+            Check(window.CurrentPage is ToolkitCustomPluginPage, "The sample must render its own WPF page.");
             var toggle = Descendants(window.CurrentPage!).OfType<CheckBox>().Single();
             Check(toggle.Content?.ToString() == "显示平均风扇转速" && toggle.IsChecked == false, "The sample setting was not rendered correctly.");
-            await runtime.Plugins.SetSettingAsync(plugin, manifest.Settings[0], JsonSerializer.SerializeToElement(true));
+            await ClickToggleAsync(toggle, true);
+            Check(toggle.IsEnabled && plugin.Settings["show-average"].GetBoolean(), "The custom toggle failed to save its own plugin setting.");
             var expected = DeviceModelDetector.HasSecondFan() ? 3000 : 2000;
             Check(runtime.Plugins.Sensors.Single().Value == expected, "Average fan RPM is incorrect: " + plugin.Error);
             Check(runtime.Snapshot.PluginSensors.Single().Name == "平均转速", "Plugin data was not published to the runtime/shared snapshot.");
             Check(LocalDataSharingService.BuildSnapshot(runtime.Snapshot).PluginSensors.Single().Value == expected,
                 "Plugin readings are absent from the local data sharing payload.");
+            Check(Descendants(window.CurrentPage!).OfType<TextBlock>().Any(t => t.Text == expected.ToString("0.##") + " 转"),
+                "The custom page average does not match its published reading.");
+            await Task.Delay(ToolkitMainWindow.PageTransitionDuration + TimeSpan.FromMilliseconds(80));
+            window.UpdateLayout();
+            var pagePreview = new RenderTargetBitmap((int)window.ActualWidth, (int)window.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+            pagePreview.Render(window);
+            var pageEncoder = new PngBitmapEncoder(); pageEncoder.Frames.Add(BitmapFrame.Create(pagePreview));
+            using (var stream = File.Create(Path.Combine(root, "sample-custom-page.png"))) pageEncoder.Save(stream);
+            await ClickToggleAsync(toggle, false);
+            Check(runtime.Plugins.Sensors.Count == 0 && !plugin.Settings["show-average"].GetBoolean(), "The custom toggle did not withdraw its reading when turned off.");
+            await ClickToggleAsync(toggle, true);
             window.NavigateForTesting("overview"); window.UpdateLayout();
             Check(Descendants(window.CurrentPage!).OfType<TextBlock>().Any(t => t.Text.Contains("平均转速")), "Average RPM is missing from sensor UI.");
             var screenshot = new RenderTargetBitmap((int)Math.Ceiling(window.ActualWidth), (int)Math.Ceiling(window.ActualHeight), 96, 96, PixelFormats.Pbgra32);
@@ -148,12 +167,23 @@ internal static class PluginSystemTests
         Check(restored.Plugins.Installations.Single(p => p.Manifest.Id == manifest.Id).Settings["show-average"].GetBoolean(),
             "Plugin-owned settings did not survive a restart.");
         restored.Plugins.Dispose();
-        File.AppendAllText(Path.Combine(code, manifest.Id, manifest.EntryAssembly), "test modification");
+        // Custom WPF UI keeps its referenced assemblies loaded until exit.
+        // Change the manifest bytes to test approval invalidation without
+        // attempting to overwrite a DLL mapped by this test process.
+        File.AppendAllText(Path.Combine(code, manifest.Id, "plugin.json"), "\n ");
         using var changed = new ToolkitRuntimeService(new AppSettings(), persistSystemSessionState: false, pluginOptions: options);
         await changed.Plugins.InitializeAsync();
         Check(!changed.Plugins.Installations.Single(p => p.Manifest.Id == manifest.Id).Enabled,
-            "Changed plugin binaries executed using a previous approval.");
+            "Changed plugin files executed using a previous approval.");
         Console.WriteLine("Plugin tests and screenshot: " + root);
+    }
+    private static async Task ClickToggleAsync(CheckBox toggle, bool value)
+    {
+        toggle.IsChecked = value;
+        toggle.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!toggle.IsEnabled && DateTime.UtcNow < deadline) await Task.Delay(20);
+        Check(toggle.IsEnabled, "The custom page toggle did not finish saving.");
     }
     private static async Task VerifyOsdAsync(ToolkitRuntimeService runtime, PluginInstallation plugin, PluginSetting setting, string output)
     {

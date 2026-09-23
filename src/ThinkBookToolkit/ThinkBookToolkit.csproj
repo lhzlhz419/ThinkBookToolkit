@@ -24,6 +24,7 @@
 
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Contracts\ThinkBookToolkit.FanBackend.Contracts.csproj" />
     <ProjectReference Include="..\ThinkBookToolkit.PluginApi\ThinkBookToolkit.PluginApi.csproj" />
+    <ProjectReference Include="..\ThinkBookToolkit.PluginUi\ThinkBookToolkit.PluginUi.csproj" />
     <ProjectReference Include="..\ThinkBookToolkit.PluginHost\ThinkBookToolkit.PluginHost.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\ThinkBookToolkit.FanBackend.Wmi\ThinkBookToolkit.FanBackend.Wmi.csproj" />
     <ProjectReference Include="..\..\external\NvAPIWrapper\NvAPIWrapper\NvAPIWrapper.csproj"

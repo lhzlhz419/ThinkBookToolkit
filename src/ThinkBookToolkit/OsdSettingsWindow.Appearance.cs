@@ -6,8 +6,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using Drawing = System.Drawing;
-using Forms = System.Windows.Forms;
 
 namespace ThinkBookToolkit;
 
@@ -101,18 +99,10 @@ internal sealed partial class OsdSettingsWindow
     private void PickColor(ColorEditorBinding binding)
     {
         var normalized = NormalizeHex(binding.Read(), "FFFFFF");
-        using var dialog = new Forms.ColorDialog
-        {
-            FullOpen = true,
-            Color = Drawing.Color.FromArgb(
-                Convert.ToInt32(normalized[..2], 16),
-                Convert.ToInt32(normalized.Substring(2, 2), 16),
-                Convert.ToInt32(normalized.Substring(4, 2), 16))
-        };
-        if (dialog.ShowDialog() != Forms.DialogResult.OK)
+        var dialog = new ToolkitColorPickerWindow(normalized, _runtime.Settings.Language, _runtime.IsDark) { Owner = this };
+        if (dialog.ShowDialog() != true)
             return;
-        var selected = $"{dialog.Color.R:X2}{dialog.Color.G:X2}" +
-                       $"{dialog.Color.B:X2}";
+        var selected = dialog.SelectedHex;
         binding.Write(selected);
         Save();
         SyncColor(binding);

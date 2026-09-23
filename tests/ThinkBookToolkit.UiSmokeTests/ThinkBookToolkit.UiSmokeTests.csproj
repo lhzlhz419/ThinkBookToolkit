@@ -14,9 +14,13 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ThinkBookToolkit\ThinkBookToolkit.csproj" />
     <ProjectReference Include="..\..\plugins\ThinkBookToolkit.PluginTest\ThinkBookToolkit.PluginTest.csproj" />
+    <ProjectReference Include="..\..\plugins\ThinkBookToolkit.PluginTest.Ui\ThinkBookToolkit.PluginTest.Ui.csproj" ReferenceOutputAssembly="false" Private="false" />
     <ProjectReference Include="..\ThinkBookToolkit.FakeFanBackend\ThinkBookToolkit.FakeFanBackend.csproj" ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\ThinkBookToolkit.FakePluginUi\ThinkBookToolkit.FakePluginUi.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
   <Target Name="CopyFanBackendFixture" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\plugins\ThinkBookToolkit.PluginTest.Ui\bin\$(Configuration)\net9.0-windows\ThinkBookToolkit.PluginTest.Ui.dll" DestinationFolder="$(TargetDir)fixtures" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\ThinkBookToolkit.FakePluginUi\bin\$(Configuration)\net9.0-windows\ThinkBookToolkit.FakePluginUi.dll" DestinationFolder="$(TargetDir)fixtures" />
     <Copy SourceFiles="$(MSBuildProjectDirectory)\..\ThinkBookToolkit.FakeFanBackend\bin\$(Configuration)\net9.0-windows\ThinkBookToolkit.FanBackend.dll" DestinationFolder="$(TargetDir)fixtures" />
   </Target>
 </Project>

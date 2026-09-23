@@ -31,6 +31,7 @@ internal static class ModernTheme
             new PropertyMetadata(false));
     private static bool _windowThemeHandlerRegistered;
     private static bool _isDark;
+    internal static bool CurrentIsDark => _windowThemeHandlerRegistered ? _isDark : ToolkitRuntimeService.ResolveDarkTheme("system");
 
     public static void Apply(Application application, bool isDark)
     {
@@ -92,6 +93,7 @@ internal static class ModernTheme
         window.Resources[typeof(TabItem)] = TabItemStyle(controls);
         window.Resources[typeof(Slider)] = SliderStyle(controls);
         window.Resources[typeof(ToolTip)] = ToolTipStyle(standard);
+        window.Resources[typeof(ScrollBar)] = ScrollBarStyle(standard);
     }
 
     internal static void ApplyWindowTitleBar(Window window, bool isDark)

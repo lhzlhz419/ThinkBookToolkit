@@ -508,7 +508,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
 
     private async System.Threading.Tasks.Task RestartNowAsync()
     {
-        if (MessageBox.Show(
+        if (ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 L(
                     "将先恢复固件自动风扇控制，然后立即重新启动 Windows。是否继续？",

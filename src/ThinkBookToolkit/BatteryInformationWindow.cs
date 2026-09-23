@@ -137,7 +137,7 @@ internal sealed class BatteryInformationWindow : Window
         {
             if (showError)
             {
-                MessageBox.Show(
+                ToolkitMessageBox.Show(
                     this,
                     string.Format(_t("SettingsReadFailedFormat"), ex.Message),
                     Title,

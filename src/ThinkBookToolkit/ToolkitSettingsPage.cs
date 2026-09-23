@@ -35,6 +35,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly CheckBox _alternativeFullSpeed = new();
     private readonly CheckBox _continuousFanWrites = new();
     private readonly CheckBox _useNvApiGpuPower = new();
+    private Border? _nvApiGpuPowerRow;
     private readonly CheckBox _useIntelMmioCpuPower = new();
     private readonly CheckBox _useAmdZenStatesCpuPower = new();
     private readonly ComboBox _softwareIntegrationMode = new()
@@ -125,6 +126,28 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             ? BuildSensorIntegrationLayout()
             : BuildLayout();
         SyncControls();
+        runtime.AvailabilityChanged += OnNvApiStateChanged;
+        runtime.SnapshotChanged += OnNvApiStateChanged;
+    }
+
+    private void OnNvApiStateChanged(object? sender, EventArgs args)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => OnNvApiStateChanged(sender, args)));
+            return;
+        }
+        _useNvApiGpuPower.IsChecked = Runtime.NvApiGpuPowerEnabled;
+        _useNvApiGpuPower.IsEnabled = Runtime.NvApiGpuPowerVisible && Runtime.Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true;
+        if (_nvApiGpuPowerRow is not null)
+            _nvApiGpuPowerRow.Visibility = Runtime.NvApiGpuPowerVisible ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public override void Dispose()
+    {
+        Runtime.AvailabilityChanged -= OnNvApiStateChanged;
+        Runtime.SnapshotChanged -= OnNvApiStateChanged;
+        base.Dispose();
     }
 
     private void InitializeControls()
@@ -335,17 +358,15 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             L("关闭按钮隐藏窗口；从托盘菜单选择退出才结束程序。", "The close button hides the window; Exit in the tray menu ends the app."),
             _closeToTray));
         startup.Children.Add(startupPrimary);
-        if (Runtime.NvApiGpuPowerVisible)
-        {
-            startup.Children.Add(SettingRow(
+        _nvApiGpuPowerRow = SettingRow(
                 L(
                     "使用 NVAPI 调整 GPU 功耗（Beta）",
                     "Use NVAPI to adjust GPU power (Beta)"),
                 L(
                     "使用 NVIDIA 接口调整 GPU 功耗、Dynamic Boost，以及受支持的 GPU 温度墙。",
                     "Use NVIDIA APIs to adjust GPU power, Dynamic Boost, and the GPU thermal limit when supported."),
-                _useNvApiGpuPower));
-        }
+                _useNvApiGpuPower);
+        startup.Children.Add(_nvApiGpuPowerRow);
         if (CpuVendorDetector.IsIntel)
             startup.Children.Add(SettingRow(
                 L("直接调整 CPU MMIO 功耗墙（Beta）",
@@ -1080,7 +1101,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             "Values: FirmwareAutomatic, FixedRpm, FanCurve, AdvancedCurve\n\n" +
             $"POST {baseUrl}/fan-full-speed\n" +
             "{\"value\":true}");
-        MessageBox.Show(
+        ToolkitMessageBox.Show(
             Window.GetWindow(this),
             text,
             L("本机 HTTP 联动调用方法", "Local HTTP integration API"),
@@ -1178,6 +1199,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _alternativeFullSpeed.IsChecked = settings.UseAlternativeFullSpeedMethod;
         _continuousFanWrites.IsChecked = settings.ContinuouslyWriteFanTargets;
         _useNvApiGpuPower.IsChecked = Runtime.NvApiGpuPowerEnabled;
+        if (_nvApiGpuPowerRow is not null)
+            _nvApiGpuPowerRow.Visibility = Runtime.NvApiGpuPowerVisible ? Visibility.Visible : Visibility.Collapsed;
         _useNvApiGpuPower.IsEnabled =
             Runtime.NvApiGpuPowerVisible &&
             Runtime.Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true;

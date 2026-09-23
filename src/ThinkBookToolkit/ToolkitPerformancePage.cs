@@ -1583,7 +1583,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         };
         _restartNow.Click += async (_, _) =>
         {
-            if (MessageBox.Show(
+            if (ToolkitMessageBox.Show(
                     Window.GetWindow(this),
                     L("将先恢复固件自动风扇控制，然后立即重新启动 Windows。是否继续？", "Toolkit will restore firmware-automatic fan control and restart Windows immediately. Continue?"),
                     "ThinkBook Toolkit",
@@ -1812,7 +1812,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
 
     private async Task KillGpuApplicationsAsync()
     {
-        if (MessageBox.Show(
+        if (ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 L(
                     "将强制结束当前占用独立显卡的所有非系统应用及其子进程。未保存的数据可能丢失。是否继续？",

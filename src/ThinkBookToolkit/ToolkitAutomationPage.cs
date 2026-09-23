@@ -616,7 +616,7 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
 
     private void Delete(AutomationDefinition automation)
     {
-        if (MessageBox.Show(
+        if (ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 L(
                     $"删除自动化“{automation.Name}”？",

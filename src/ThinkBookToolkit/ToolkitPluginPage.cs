@@ -156,11 +156,18 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
                 CheckFileExists = true, Multiselect = false
             };
             if (picker.ShowDialog(Window.GetWindow(this)) != true) return;
+            var owner = Window.GetWindow(this);
             import.IsEnabled = false; import.Content = L("正在导入…", "Importing…"); importStatus.Visibility = Visibility.Collapsed;
             try
             {
                 var installed = await runtime.Plugins.ImportAsync(picker.FileName);
                 runtime.SetStatus(L("已导入 ", "Imported ") + installed.Manifest.Name + L("，请审核权限后启用。", ". Review its permissions before enabling it."));
+                if (runtime.Plugins.RequiresRestart(installed)) AskRestart(owner, L("插件已安装，需要重启 Toolkit 才能完成切换。", "The plugin is installed. Restart Toolkit to complete the change."));
+            }
+            catch (PluginRestartRequiredException ex)
+            {
+                importStatus.Text = ex.Message; importStatus.Visibility = Visibility.Visible;
+                AskRestart(owner, ex.Message);
             }
             catch (Exception ex)
             {
@@ -191,6 +198,14 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
         };
         root.Children.Add(Surface(intro));
         root.Children.Add(importStatus);
+        if (runtime.Plugins.HasPendingUninstalls)
+        {
+            var pending = new StackPanel();
+            pending.Children.Add(Text(L("有插件等待卸载完成。重启 Toolkit 后会继续清理，插件设置将保留。", "Plugin uninstalls are pending. Restart Toolkit to finish cleanup; plugin settings are retained."), 12));
+            var restart = ActionButton(L("重启 Toolkit", "Restart Toolkit")); restart.HorizontalAlignment = HorizontalAlignment.Left; restart.Margin = new Thickness(0, 10, 0, 0);
+            restart.Click += (_, _) => AskRestart(Window.GetWindow(this), L("需要重启 Toolkit 才能完成插件卸载。", "Restart Toolkit to finish uninstalling plugins."));
+            pending.Children.Add(restart); root.Children.Add(Surface(pending));
+        }
         root.Children.Add(Text(L($"已安装插件 · {runtime.Plugins.Installations.Count}", $"Installed plugins · {runtime.Plugins.Installations.Count}"), 13, muted: true));
         foreach (var error in runtime.Plugins.DiscoveryErrors)
             root.Children.Add(Notice(L("插件未能加载", "Plugin could not be loaded"), error, Palette.Danger));
@@ -224,13 +239,13 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
             identity.Children.Add(Text(L("作者：", "Author: ") + manifest.Author.Trim(), 12, muted: true, top: 5));
         var badges = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         badges.Children.Add(Badge("v" + manifest.Version));
-        badges.Children.Add(Badge(plugin.Error is not null ? L("运行异常", "Error") : plugin.Enabled ? L("已启用", "Enabled") : L("已停用", "Disabled"),
-            plugin.Error is not null ? Palette.Danger : plugin.Enabled ? Palette.Success : Palette.Muted));
+        badges.Children.Add(Badge(plugin.PendingUninstall ? L("待卸载 · 需要重启", "Uninstall pending · Restart required") : plugin.Error is not null ? L("运行异常", "Error") : plugin.Enabled ? L("已启用", "Enabled") : L("已停用", "Disabled"),
+            plugin.PendingUninstall ? Palette.Warning : plugin.Error is not null ? Palette.Danger : plugin.Enabled ? Palette.Success : Palette.Muted));
         if (manifest.FanBackend is not null && plugin.Enabled != (Runtime.Plugins.ActiveFanBackend?.PluginId == manifest.Id))
             badges.Children.Add(Badge(L("后端切换需重启", "Backend change needs restart"), Palette.Warning));
         identity.Children.Add(badges); Grid.SetColumn(identity, 1); header.Children.Add(identity);
         var toggle = new CheckBox { Content = L("启用插件", "Enable plugin"), IsChecked = plugin.Enabled,
-            VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right };
+            IsEnabled = !plugin.PendingUninstall, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right };
         Grid.SetColumn(toggle, 2); header.Children.Add(toggle);
         header.SizeChanged += (_, _) =>
         {
@@ -259,11 +274,14 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
         Count(manifest.Sensors.Length, "传感器", "Sensors"); Count(manifest.OverviewItems.Length, "概览条目", "Overview items");
         Count(manifest.SensorCategories.Length, "自建类别", "Custom categories");
         if (manifest.FanBackend is not null) featureChips.Children.Add(Badge(L("风扇后端", "Fan backend")));
+        Count(manifest.Pages.Count(p => p.View is not null), "自绘页面", "Custom views");
         features.Children.Add(featureChips);
         if (featureChips.Children.Count == 0) features.Children.Add(Text(L("后台逻辑", "Background logic"), 12, muted: true, top: 7));
         var replacedSensors = manifest.Sensors.Where(s => s.Replaces is not null).Select(s => s.Name.Resolve(Runtime.IsChinese)).ToArray();
         if (replacedSensors.Length > 0) features.Children.Add(Text(L("替换读数：", "Replaced readings: ") + string.Join(L("、", ", "), replacedSensors), 12, muted: true, top: 6));
         sections.Children.Add(features); body.Children.Add(sections);
+        if (manifest.Permissions.Contains("ui.custom"))
+            body.Children.Add(Notice(L("主程序内运行 · 高风险", "In-process UI · High risk"), CustomUiWarning, Palette.Warning));
         if (manifest.FanBackend is not null)
             body.Children.Add(Notice(Runtime.Plugins.FanBackendStatus(plugin), FanWarning, Palette.Warning));
         var unclassified = manifest.Sensors.Where(s => s.Replaces is null && PluginSensorPlacement.OverviewCard(s.Category) is null &&
@@ -274,37 +292,77 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
         var error = Notice(L("插件未正常运行", "Plugin is not running normally"), plugin.Error ?? "", Palette.Danger);
         error.Visibility = plugin.Error is null ? Visibility.Collapsed : Visibility.Visible; body.Children.Add(error);
         var technical = TechnicalDetails(plugin);
-        body.Children.Add(new Expander
+        var details = new Expander
         {
             Header = L("技术详情", "Technical details"), IsExpanded = false, Foreground = Brush(Palette.Muted),
             FontSize = 12, HorizontalContentAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 14, 0, 0),
             Content = Text(technical, 12, muted: true, top: 10)
-        });
+        };
+        var footer = new Grid(); footer.ColumnDefinitions.Add(new ColumnDefinition()); footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        footer.Children.Add(details);
+        var uninstall = ActionButton(L("卸载", "Uninstall"), danger: true); uninstall.MinWidth = 76;
+        uninstall.IsEnabled = !plugin.PendingUninstall; uninstall.VerticalAlignment = VerticalAlignment.Top; uninstall.Margin = new Thickness(14, 10, 0, 0);
+        Grid.SetColumn(uninstall, 1); footer.Children.Add(uninstall); body.Children.Add(footer);
+        uninstall.Click += async (_, _) =>
+        {
+            var owner = Window.GetWindow(this);
+            if (ToolkitMessageBox.Show(owner, L("确定卸载此插件？插件文件会移除，插件设置保留。已加载的页面或风扇后端需要重启才能完成卸载。", "Uninstall this plugin? Its files will be removed and settings retained. Loaded custom views or fan backends require a restart to finish uninstalling."),
+                    manifest.Name, MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+            uninstall.IsEnabled = false; toggle.IsEnabled = false;
+            try
+            {
+                var restart = await Runtime.Plugins.UninstallAsync(plugin);
+                if (restart) AskRestart(owner, L("已停用插件并安排卸载。需要重启 Toolkit 完成清理；当前风扇后端会继续使用到安全退出。", "The plugin is disabled and scheduled for removal. Restart Toolkit to finish cleanup; the current fan backend remains available until safe exit."));
+                else Runtime.SetStatus(L("已卸载 ", "Uninstalled ") + manifest.Name + L("，插件设置已保留。", "; plugin settings were retained."));
+            }
+            catch (Exception ex)
+            {
+                error.Child = Text(ex.Message, 12); error.Visibility = Visibility.Visible;
+                uninstall.IsEnabled = !plugin.PendingUninstall; toggle.IsEnabled = !plugin.PendingUninstall;
+                Runtime.SetStatus(L("卸载未完成：", "Uninstall did not finish: ") + ex.GetBaseException().Message);
+            }
+        };
         toggle.Click += async (_, _) =>
         {
             var enabled = toggle.IsChecked == true;
-            if (enabled && MessageBox.Show(Window.GetWindow(this),
+            var owner = Window.GetWindow(this);
+            if (enabled && ToolkitMessageBox.Show(Window.GetWindow(this),
                 L("仅启用你信任的插件。插件继承宿主权限，权限声明不是操作系统沙箱。\n\n", "Enable only trusted plugins. Plugins inherit host privileges; permission declarations are not an OS sandbox.\n\n") +
-                (manifest.FanBackend is null ? "" : FanWarning + "\n\n") + technical,
+                (manifest.FanBackend is null ? "" : FanWarning + "\n\n") +
+                (manifest.Permissions.Contains("ui.custom") ? CustomUiWarning + "\n\n" : "") + technical,
                 manifest.Name, MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
             { toggle.IsChecked = plugin.Enabled; return; }
             toggle.IsEnabled = false;
-            try { await Runtime.Plugins.SetEnabledAsync(plugin, enabled); }
+            try
+            {
+                await Runtime.Plugins.SetEnabledAsync(plugin, enabled);
+                if (Runtime.Plugins.RequiresRestart(plugin)) AskRestart(owner, Runtime.Plugins.FanBackendStatus(plugin));
+            }
             catch (Exception ex)
             {
                 error.Child = Text(ex.Message, 12); error.Visibility = Visibility.Visible; toggle.IsChecked = plugin.Enabled;
             }
-            finally { toggle.IsEnabled = true; }
+            finally { toggle.IsEnabled = !plugin.PendingUninstall; }
         };
         var card = Surface(body); card.Tag = "plugin-card:" + manifest.Id; return card;
     }
 
     private string FanWarning => L("优先于程序目录中的后端 DLL，切换需重启。后端在主程序及恢复服务中执行，不受插件进程隔离保护。", "Overrides the application-directory backend DLL after restart. Backend code runs inside Toolkit and its recovery service, without plugin process isolation.");
 
+    private void AskRestart(Window? owner, string reason)
+    {
+        if (Runtime.IsSystemSessionEnding || Runtime.ApplicationRestartRequested || owner is not null && !owner.IsLoaded) return;
+        var message = reason + "\n\n" + L("是否立即重启 Toolkit？选择“否”可稍后手动重启。这不会重启 Windows。", "Restart Toolkit now? Choose No to restart later. Windows will not restart.");
+        var answer = owner is null ? ToolkitMessageBox.Show(message, "ThinkBook Toolkit", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
+            : ToolkitMessageBox.Show(owner, message, "ThinkBook Toolkit", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+        if (answer == MessageBoxResult.Yes) Runtime.RequestApplicationRestart();
+    }
+
     private string PermissionLabel(string permission) => permission switch
     {
         "sensors.read" => L("读取传感器", "Read sensors"), "data.read" => L("读取运行数据", "Read runtime data"),
         "settings.read" => L("读取设置", "Read settings"), "host.control" => L("控制宿主", "Control host"),
+        "ui.custom" => L("自绘页面（进程内）", "Custom UI (in-process)"),
         "replace" => L("替换内置内容", "Replace built-in content"), "fan.backend" => L("风扇后端", "Fan backend"), _ => permission
     };
 
@@ -316,6 +374,7 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
             L("目录：", "Folder: ") + plugin.Directory };
         if (!string.IsNullOrWhiteSpace(m.Author)) lines.Insert(1, L("作者：", "Author: ") + m.Author.Trim());
         lines.AddRange(m.Pages.Where(p => p.Replaces is not null).Select(p => "page: " + p.Replaces));
+        lines.AddRange(m.Pages.Where(p => p.View is not null).Select(p => "view: " + p.Id + " · " + p.View!.Assembly + " · " + p.View.Type));
         lines.AddRange(m.Settings.Where(s => s.Replaces is not null).Select(s => "setting: " + s.Replaces));
         lines.AddRange(m.Sensors.Where(s => s.Replaces is not null).Select(s => "sensor: " + s.Replaces));
         lines.AddRange(m.OverviewItems.Select(i => "overview: " + i.CardId + "/" + (i.Target ?? i.Id) + " (" + i.Action + ")"));
@@ -323,6 +382,8 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
         if (m.FanBackend is { } backend) { lines.Add("Fan assembly: " + backend.Assembly); lines.Add("Fan type: " + backend.Type); }
         return string.Join("\n", lines);
     }
+
+    private string CustomUiWarning => L("自绘页面代码在 Toolkit 主程序中执行，拥有主程序权限，可能导致整个程序卡住或退出；不受工作进程隔离保护。仅启用可信代码，更新已加载的页面 DLL 需要重启。", "Custom page code runs inside Toolkit with its privileges and may freeze or terminate the entire application. Worker isolation does not apply. Trust the code before enabling it; updating loaded UI DLLs requires a restart.");
 
     private StackPanel Section(string heading)
     {

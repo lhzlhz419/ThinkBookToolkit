@@ -11,6 +11,7 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (!ToolkitApplicationRestart.WaitForPreviousInstance(ref args)) return;
         if (Guardian.GuardianEntryPoint.TryRun(args))
             return;
         if (args.Any(argument => string.Equals(
@@ -24,6 +25,7 @@ public static class Program
 
         try
         {
+            var restartRequested = false;
             ToolkitLog.Initialize();
             AppDomain.CurrentDomain.UnhandledException += (_, args) => LogException(args.ExceptionObject as Exception);
             AppDomain.CurrentDomain.ProcessExit += (_, _) => ToolkitLog.Shutdown();
@@ -37,7 +39,7 @@ public static class Program
             app.DispatcherUnhandledException += (_, args) =>
             {
                 LogException(args.Exception);
-                MessageBox.Show(
+                ToolkitMessageBox.Show(
                     FormatExceptionForDisplay(args.Exception),
                     "ThinkBook Toolkit error",
                     MessageBoxButton.OK,
@@ -54,12 +56,13 @@ public static class Program
                 try { ToolkitStoragePaths.ApplyPendingAtStartup(); }
                 catch (Exception ex)
                 {
-                    MessageBox.Show("文件夹位置未切换，继续使用原目录。原文件未删除。\nFolder migration was not completed; the original locations remain active.\n\n" +
+                    ToolkitMessageBox.Show("文件夹位置未切换，继续使用原目录。原文件未删除。\nFolder migration was not completed; the original locations remain active.\n\n" +
                         ex.Message, "ThinkBook Toolkit", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
                 finally { ToolkitLog.Initialize(); }
                 ConfigurationMigrationService.EnsureInitialized();
                 var settings = CurveProfileStore.LoadSettings();
+                ToolkitMessageBox.SetLanguage(settings.Language);
                 ToolkitLog.Configure(settings.LogLevel);
                 CurveProfileStore.ApplyPendingInstallerSettings(settings);
                 HardwareAccelerationManager.ApplyForStartup(settings);
@@ -130,17 +133,21 @@ public static class Program
                             new Action(runtime.RequestExit)));
                     app.MainWindow = window;
                     app.Run(window);
+                    restartRequested = runtime.ApplicationRestartRequested && !runtime.IsSystemSessionEnding;
                 }
                 finally
                 {
                     app.SessionEnding -= sessionEnding;
                 }
             }
+            // Runtime, plugin workers and the single-instance mutex are released.
+            // The new process waits for this PID to exit before deleting loaded DLLs.
+            if (restartRequested) ToolkitApplicationRestart.Launch(args.Contains("--disable-plugins"));
         }
         catch (Exception ex)
         {
             LogException(ex);
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 FormatExceptionForDisplay(ex),
                 "ThinkBook Toolkit startup failed",
                 MessageBoxButton.OK,

@@ -31,11 +31,13 @@ internal static class PluginManagerLayoutTests
                 [new("test.ec.fan1", new("风扇1转速", "Fan 1 speed"), "RPM", "fans", "toolkit.sensor.fan1Rpm"),
                  new("test.ec.fan2", new("风扇2转速", "Fan 2 speed"), "RPM", "fans", "toolkit.sensor.fan2Rpm"),
                  new("test.ec.battery", new("电池功率", "Battery power"), "W", "battery", "toolkit.sensor.batteryPowerW")])
-            { Author = "  Example Developer  ", FanBackend = new("ThinkBookToolkit.EcControl.dll", "ThinkBookToolkit.EcControl.EcFanBackend") };
+            { Author = "  Example Developer  ", FanBackend = new("ThinkBookToolkit.EcControl.dll", "ThinkBookToolkit.EcControl.EcFanBackend"),
+                Permissions = ["fan.backend", "sensors.read", "replace", "ui.custom"],
+                Pages = [new("test.ec.custom", new("自绘页", "Custom view")) { View = new("Example.UI.dll", "Example.UiPage") }] };
             var plugins = (List<PluginInstallation>)runtime.Plugins.Installations;
             plugins.Add(new(output, manifest, "fixture") { Enabled = true });
             plugins.Add(new(output, manifest with { Id = "test.disabled", Name = chinese ? "自定义传感器扩展" : "Custom sensor extension",
-                Version = "2.0.0", Author = null, FanBackend = null, Permissions = ["sensors.read"], Sensors = [] }, "fixture"));
+                Version = "2.0.0", Author = null, FanBackend = null, Permissions = ["sensors.read"], Sensors = [], Pages = [] }, "fixture"));
             plugins.Add(new(output, manifest with { Id = "test.error", Name = chinese ? "一个较长的插件名称：用于检查窄窗口中的布局与文字换行" : "A longer plugin name for checking responsive layout and readable wrapping",
                 Author = "   ", FanBackend = null, Permissions = ["data.read", "settings.read", "host.control"], Sensors = [],
                 Pages = [new("test.error.page", new("扩展页", "Extension"))],
@@ -52,10 +54,13 @@ internal static class PluginManagerLayoutTests
                 Check(cards.Length == 3 && cards.All(c => c.Background is SolidColorBrush brush && brush.Color == expected), "Plugin cards must use the same transparency as other Toolkit cards.");
                 var authorPrefix = chinese ? "作者：" : "Author: ";
                 Check(Descendants(cards[0]).OfType<TextBlock>().Any(t => t.Text == authorPrefix + "Example Developer"), "Declared author is missing or not trimmed.");
+                Check(Descendants(cards[0]).OfType<TextBlock>().Any(t => t.Text.Contains(chinese ? "拥有主程序权限" : "may freeze or terminate")),
+                    "In-process custom UI risk warning is missing.");
                 Check(cards.Skip(1).All(c => !Descendants(c).OfType<TextBlock>().Any(t => t.Text.StartsWith(authorPrefix, StringComparison.Ordinal))), "Missing/blank authors must not reserve an author row.");
                 Check(Descendants(page).OfType<Expander>().All(e => !e.IsExpanded), "Technical identifiers should be collapsed by default.");
                 foreach (var card in cards)
                 {
+                    Check(Descendants(card).OfType<Button>().Any(b => b.Content?.ToString() == (chinese ? "卸载" : "Uninstall")), "Plugin card has no uninstall action.");
                     var toggle = Descendants(card).OfType<CheckBox>().Single();
                     Check(Grid.GetRow(toggle) == (width < 650 ? 1 : 0), "Enable toggle did not adapt to narrow layout.");
                     var bounds = toggle.TransformToAncestor(card).TransformBounds(new Rect(toggle.RenderSize));

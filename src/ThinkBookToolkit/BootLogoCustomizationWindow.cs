@@ -197,7 +197,7 @@ internal sealed class BootLogoCustomizationWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this,
+            ToolkitMessageBox.Show(this,
                 string.Format(_t("AdvancedToolkitFailedFormat"), ex.Message),
                 Title,
                 MessageBoxButton.OK,
@@ -233,7 +233,7 @@ internal sealed class BootLogoCustomizationWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
+            ToolkitMessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -272,7 +272,7 @@ internal sealed class BootLogoCustomizationWindow : Window
                     BiosAdvancedController.SetBootLogo(_selectedPath);
                 BiosAdvancedController.SetWindowsLoading(showLoading);
             });
-            MessageBox.Show(this, _t("BootLogoSuccess"), Title,
+            ToolkitMessageBox.Show(this, _t("BootLogoSuccess"), Title,
                 MessageBoxButton.OK, MessageBoxImage.Information);
             if (_embeddedMode)
             {
@@ -288,7 +288,7 @@ internal sealed class BootLogoCustomizationWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this,
+            ToolkitMessageBox.Show(this,
                 string.Format(_t("AdvancedToolkitFailedFormat"), ex.Message),
                 Title,
                 MessageBoxButton.OK,
@@ -301,7 +301,7 @@ internal sealed class BootLogoCustomizationWindow : Window
     }
 
     private bool Confirm(string text) =>
-        MessageBox.Show(this, text, Title, MessageBoxButton.YesNo,
+        ToolkitMessageBox.Show(this, text, Title, MessageBoxButton.YesNo,
             MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
 
     private void ShowPreview(byte[]? imageBytes)

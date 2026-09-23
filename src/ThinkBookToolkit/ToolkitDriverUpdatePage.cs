@@ -154,7 +154,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
             : L(
                 $"将下载并安装全部 {updates.Count} 项 Lenovo 更新。安装过程中设备或应用可能暂时不可用。是否继续？",
                 $"Lenovo will download and install all {updates.Count} update(s). Devices or applications may be temporarily unavailable. Continue?");
-        return MessageBox.Show(
+        return ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 warning,
                 L("安装 Lenovo 更新", "Install Lenovo updates"),

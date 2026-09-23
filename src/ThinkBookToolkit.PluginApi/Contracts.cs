@@ -9,7 +9,11 @@ public sealed record PluginText(string Chinese, string English)
 {
     public string Resolve(bool chinese) => chinese ? Chinese : English;
 }
-public sealed record PluginPage(string Id, PluginText Title, string? Replaces = null, int Order = 100);
+public sealed record PluginPage(string Id, PluginText Title, string? Replaces = null, int Order = 100)
+{
+    public PluginPageView? View { get; init; }
+}
+public sealed record PluginPageView(string Assembly, string Type);
 public sealed record PluginSetting(string Id, string PageId, PluginText Title, string Kind,
     JsonElement DefaultValue, string? Replaces = null, double? Minimum = null, double? Maximum = null,
     string[]? Choices = null);

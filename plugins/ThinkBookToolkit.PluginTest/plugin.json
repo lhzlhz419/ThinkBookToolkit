@@ -1,8 +1,9 @@
 {
-  "Id": "toolkit.plugin-test", "Name": "插件测试", "Version": "1.0.0", "ApiVersion": 1,
+  "Id": "toolkit.plugin-test", "Name": "插件测试", "Version": "1.1.0", "ApiVersion": 1,
   "EntryAssembly": "ThinkBookToolkit.PluginTest.dll", "EntryType": "ThinkBookToolkit.PluginTest.AverageFanPlugin",
-  "Permissions": ["sensors.read"],
-  "Pages": [{ "Id": "toolkit.plugin-test.page", "Title": { "Chinese": "插件测试", "English": "Plugin test" } }],
+  "Permissions": ["sensors.read", "ui.custom"],
+  "Pages": [{ "Id": "toolkit.plugin-test.page", "Title": { "Chinese": "插件测试", "English": "Plugin test" },
+    "View": { "Assembly": "ThinkBookToolkit.PluginTest.Ui.dll", "Type": "ThinkBookToolkit.PluginTest.Ui.AverageFanPage" } }],
   "Settings": [{ "Id": "show-average", "PageId": "toolkit.plugin-test.page", "Title": { "Chinese": "显示平均风扇转速", "English": "Show average fan speed" }, "Kind": "boolean", "DefaultValue": false }],
   "Sensors": [{ "Id": "toolkit.plugin-test.average-rpm", "Name": { "Chinese": "平均转速", "English": "Average fan speed" }, "Unit": "RPM", "Category": "fans" }]
 }

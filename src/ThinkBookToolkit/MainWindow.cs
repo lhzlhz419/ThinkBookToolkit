@@ -1975,7 +1975,7 @@ public sealed class MainWindow : Window
             _fullSpeedCheck.IsEnabled = true;
             _fullSpeedCheck.IsChecked = _fullSpeedEnabled;
             _startButton.Content = _running ? T("Stop") : T("Start");
-            MessageBox.Show(this, ex.Message, T("RestoreAutoFailed"), MessageBoxButton.OK, MessageBoxImage.Error);
+            ToolkitMessageBox.Show(this, ex.Message, T("RestoreAutoFailed"), MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -2465,7 +2465,7 @@ public sealed class MainWindow : Window
             _statusText.Text = T("FullSpeedFailed") + ": " + ex.GetType().Name + ": " + ex.Message;
             if (_embeddedMode)
                 throw;
-            MessageBox.Show(this, ex.Message, T("FullSpeedFailed"), MessageBoxButton.OK, MessageBoxImage.Error);
+            ToolkitMessageBox.Show(this, ex.Message, T("FullSpeedFailed"), MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -2560,7 +2560,7 @@ public sealed class MainWindow : Window
                 StartFanControl();
                 throw;
             }
-            MessageBox.Show(this, ex.Message, T("RestoreAutoFailed"), MessageBoxButton.OK, MessageBoxImage.Error);
+            ToolkitMessageBox.Show(this, ex.Message, T("RestoreAutoFailed"), MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -3495,44 +3495,14 @@ public sealed class MainWindow : Window
 
     private void ShowStopFirstWarning()
     {
-        MessageBox.Show(this, T("StopFanControlFirst"), T("Warning"), MessageBoxButton.OK, MessageBoxImage.Warning);
+        ToolkitMessageBox.Show(this, T("StopFanControlFirst"), T("Warning"), MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
     private bool ShowFanCurveWarningDialog()
     {
-        var dialog = new Window
-        {
-            Title = T("FanCurveWarningTitle"),
-            Owner = this,
-            Width = 420,
-            SizeToContent = SizeToContent.Height,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false
-        };
-
-        var panel = new StackPanel { Margin = new Thickness(18) };
-        panel.Children.Add(new TextBlock
-        {
-            Text = T("FanCurveWarning"),
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 16)
-        });
-
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right
-        };
-        var continueButton = new Button { Content = T("Continue"), MinWidth = 86, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
-        var cancelButton = new Button { Content = T("Cancel"), MinWidth = 86, IsCancel = true };
-        continueButton.Click += (_, _) => { dialog.DialogResult = true; };
-        cancelButton.Click += (_, _) => { dialog.DialogResult = false; };
-        buttons.Children.Add(continueButton);
-        buttons.Children.Add(cancelButton);
-        panel.Children.Add(buttons);
-        dialog.Content = panel;
-        return dialog.ShowDialog() == true;
+        return ToolkitMessageBox.Show(this, T("FanCurveWarning"), T("FanCurveWarningTitle"),
+            MessageBoxButton.OKCancel, MessageBoxImage.Warning, MessageBoxResult.OK,
+            new Dictionary<MessageBoxResult, string> { [MessageBoxResult.OK] = T("Continue"), [MessageBoxResult.Cancel] = T("Cancel") }) == MessageBoxResult.OK;
     }
 
     private void ResetFanTargetState()
@@ -3643,12 +3613,12 @@ public sealed class MainWindow : Window
                 var messageKey = result == ItsModeSwitchResult.Unsupported
                     ? "ItsModeSwitchUnavailable"
                     : "ItsModeSwitchNotConfirmed";
-                MessageBox.Show(this, T(messageKey), T("CurrentMode"), MessageBoxButton.OK, MessageBoxImage.Warning);
+                ToolkitMessageBox.Show(this, T(messageKey), T("CurrentMode"), MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 this,
                 string.Format(CultureInfo.CurrentCulture, T("ItsModeSwitchFailedFormat"), ex.Message),
                 T("CurrentMode"),
@@ -3859,7 +3829,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 this,
                 string.Format(
                     CultureInfo.CurrentCulture,
@@ -3886,7 +3856,7 @@ public sealed class MainWindow : Window
             }
             catch (Exception ex)
             {
-                MessageBox.Show(
+                ToolkitMessageBox.Show(
                     this,
                     string.Format(
                         CultureInfo.CurrentCulture,
@@ -4015,7 +3985,7 @@ public sealed class MainWindow : Window
         catch (Exception ex)
         {
             ToolkitLog.Error("Pending GPU working mode could not be applied.", ex);
-            MessageBox.Show(
+            ToolkitMessageBox.Show(
                 this,
                 string.Format(
                     CultureInfo.CurrentCulture,
@@ -4158,53 +4128,10 @@ public sealed class MainWindow : Window
 
     private bool ShowGpuRestartPrompt(GpuWorkingMode target)
     {
-        var dialog = new Window
-        {
-            Title = T("GpuRestartRequiredTitle"),
-            Owner = this,
-            Width = 430,
-            SizeToContent = SizeToContent.Height,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false,
-            FontFamily = FontFamily,
-            FontSize = FontSize
-        };
-        var panel = new StackPanel { Margin = new Thickness(18) };
-        panel.Children.Add(new TextBlock
-        {
-            Text = string.Format(
-                CultureInfo.CurrentCulture,
-                T("GpuRestartRequiredMessage"),
-                T(GpuModeKey(target))),
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 16)
-        });
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right
-        };
-        var restartNowButton = new Button
-        {
-            Content = T("RestartNow"),
-            MinWidth = 96,
-            Margin = new Thickness(0, 0, 8, 0),
-            IsDefault = true
-        };
-        var restartLaterButton = new Button
-        {
-            Content = T("RestartLater"),
-            MinWidth = 96,
-            IsCancel = true
-        };
-        restartNowButton.Click += (_, _) => dialog.DialogResult = true;
-        restartLaterButton.Click += (_, _) => dialog.DialogResult = false;
-        buttons.Children.Add(restartNowButton);
-        buttons.Children.Add(restartLaterButton);
-        panel.Children.Add(buttons);
-        dialog.Content = panel;
-        return dialog.ShowDialog() == true;
+        return ToolkitMessageBox.Show(this, string.Format(CultureInfo.CurrentCulture,
+            T("GpuRestartRequiredMessage"), T(GpuModeKey(target))), T("GpuRestartRequiredTitle"),
+            MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.Yes,
+            new Dictionary<MessageBoxResult, string> { [MessageBoxResult.Yes] = T("RestartNow"), [MessageBoxResult.No] = T("RestartLater") }) == MessageBoxResult.Yes;
     }
 
     private static void RestartComputer()
