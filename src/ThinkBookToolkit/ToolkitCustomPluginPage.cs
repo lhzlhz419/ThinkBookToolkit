@@ -117,6 +117,16 @@ internal sealed class ToolkitCustomPluginPage : ToolkitPageBase
         }
         public Task ExecuteAsync(HostCommand command) => OnUiAsync(() =>
             PluginHostBridge.ExecuteAsync(owner.Runtime, owner._plugin.Manifest.Permissions, command));
+        public async Task<bool> ShowToastAsync(string message, bool isError = false)
+        {
+            var accepted = false;
+            await OnUiAsync(() =>
+            {
+                accepted = owner.Runtime.Plugins.ShowToast(owner._plugin, new PluginToast(message, isError));
+                return Task.CompletedTask;
+            });
+            return accepted;
+        }
         private Task OnUiAsync(Func<Task> action)
         {
             async Task Run() { EnsureActive(); await action(); }

@@ -158,8 +158,10 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
         RefreshValues();
     }
 
-    private string PluginLayoutSignature() => string.Join(";", _runtime.Plugins.Sensors.Where(s => s.Replaces is null)
+    private string PluginLayoutSignature() => string.Join(";", SelectedPluginSensors()
         .Select(s => s.Id + "|" + s.Category + "|" + s.Name + "|" + s.EnglishName));
+    private IEnumerable<PublishedPluginSensor> SelectedPluginSensors() => _runtime.Plugins.Sensors.Where(s => s.Replaces is null &&
+        PluginSensorSelection.Enabled(_runtime, PluginSensorSurface.Osd, s.Id));
 
     private string? PluginCategory(PublishedPluginSensor sensor) =>
         PluginSensorPlacement.OsdGroup(sensor.Category) ??
@@ -345,7 +347,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
                 : Orientation.Vertical
         };
         var selected = new HashSet<OsdSensor>(settings.Sensors ?? []);
-        var pluginSensors = _runtime.Plugins.Sensors.Where(s => s.Replaces is null).ToArray();
+        var pluginSensors = SelectedPluginSensors().ToArray();
         foreach (var group in OsdSensorCatalog.Groups.Concat(_runtime.Plugins.SensorCategories.Select(x =>
             new OsdSensorCatalog.Group(x.Category.Id, x.Category.Title.Chinese, x.Category.Title.English, []))))
         {
@@ -548,7 +550,7 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
                 any = true;
             }
         }
-        foreach (var sensor in _runtime.Plugins.Sensors.Where(s => s.Replaces is null))
+        foreach (var sensor in SelectedPluginSensors())
         {
             if (!_pluginVisuals.TryGetValue(sensor.Id, out var visual)) continue;
             visual.Value.Text = FormatPluginValue(sensor, _runtime.IsChinese);
@@ -682,6 +684,16 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
         var preferred = PreferredMonitor;
         var target = preferred is null ? null : OsdMonitorPolicy.Find(preferred, MonitorProvider());
         if (preferred is not null && target is null) { WaitForMonitor(); return; }
+        if (preferred is not null && target is not null &&
+            (preferred.DeviceId != target.DeviceId || preferred.DeviceName != target.DeviceName ||
+             target.PhysicalId is not null && preferred.PhysicalId != target.PhysicalId))
+        {
+            PreferredMonitor = preferred = preferred with
+            {
+                DeviceName = target.DeviceName, DeviceId = target.DeviceId, PhysicalId = target.PhysicalId ?? preferred.PhysicalId
+            };
+            _runtime.SaveOsdPosition();
+        }
         var work = target?.WorkArea ?? actualWork;
         _waitingForMonitor = false;
         _monitorRetry.Stop();
@@ -744,7 +756,8 @@ internal sealed class ToolkitOsdWindow : UiAccessOverlayWindow
             {
                 var dpi = VisualTreeHelper.GetDpi(this);
                 PreferredMonitor = new(monitor.DeviceName, monitor.DeviceId,
-                    (window.Left - work.Left) / dpi.DpiScaleX, (window.Top - work.Top) / dpi.DpiScaleY);
+                    (window.Left - work.Left) / dpi.DpiScaleX, (window.Top - work.Top) / dpi.DpiScaleY)
+                    { PhysicalId = monitor.PhysicalId };
             }
         }
         var settings = _runtime.Settings.Osd;

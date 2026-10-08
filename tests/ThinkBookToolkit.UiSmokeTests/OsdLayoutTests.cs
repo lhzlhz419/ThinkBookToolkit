@@ -23,6 +23,7 @@ internal static class OsdLayoutTests
         Check(OsdMonitorPolicy.Find(remembered, [primary]) is null &&
               OsdMonitorPolicy.Find(remembered, [primary, returned]) == returned,
             "A sleeping external monitor was replaced with primary or not recognized after renumbering.");
+        CheckMonitorIdentity(remembered, primary);
         foreach (var width in new[] { 120d, 799.5, 1600 })
         {
             Check(OsdPlacementPolicy.Position(0, width, -1920, 0, OsdSnapAnchor.End) == -width,
@@ -211,9 +212,77 @@ internal static class OsdLayoutTests
         osd.ShowIfSessionUnlocked();
         Check(osd.IsVisible && settings.HorizontalMonitor == savedMonitor,
             "OSD did not return when the preferred monitor became available again.");
+        // Same physical panel, new display path after a MUX/driver transition.
+        var physical = monitorProvider().First(m => m.DeviceId == savedMonitor!.DeviceId) with { PhysicalId = "panel-edid" };
+        settings.HorizontalMonitor = savedMonitor! with { PhysicalId = physical.PhysicalId };
+        var switched = physical with { DeviceId = "new-adapter-path", DeviceName = "DISPLAY-MUX" };
+        osd.MonitorProvider = () => [switched];
+        osd.ShowIfSessionUnlocked();
+        Check(osd.IsVisible && settings.HorizontalMonitor!.DeviceId == switched.DeviceId &&
+              settings.HorizontalMonitor.OffsetX == savedMonitor!.OffsetX,
+            "MUX transition hid the OSD or lost its offset instead of migrating the display path.");
+        // Explicit reset must recover even a remembered display that no longer exists.
+        settings.HorizontalMonitor = new("missing-display", "missing-device", 99999, 99999);
+        osd.MonitorProvider = monitorProvider;
+        osd.ShowIfSessionUnlocked();
+        Check(!osd.IsVisible, "Unavailable-display setup did not hide the OSD.");
+        OsdMonitorPolicy.ResetPosition(settings, physical);
+        osd.ApplySettings();
+        osd.ShowIfSessionUnlocked();
+        object[] resetBounds = [Rect.Empty, Rect.Empty];
+        typeof(ToolkitOsdWindow).GetMethod("TryGetScreen", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(osd, resetBounds);
+        var resetWork = (Rect)resetBounds[0];
+        var resetWindow = (Rect)resetBounds[1];
+        Check(osd.IsVisible && resetWindow.Left >= resetWork.Left - 1 && resetWindow.Right <= resetWork.Right + 1 &&
+              resetWindow.Top >= resetWork.Top - 1 && resetWindow.Bottom <= resetWork.Bottom + 1,
+            "Reset failed to restore a hidden OSD into the visible work area.");
         ((DispatcherTimer)typeof(ToolkitOsdWindow).GetField("_timer", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(osd)!).Stop();
         osd.Hide();
+    }
+
+    private static void CheckMonitorIdentity(OsdMonitorPlacement remembered, OsdMonitor primary)
+    {
+        var panel = new OsdMonitor("DISPLAY9", "new-gpu-path", new Rect(-2560, 0, 2560, 1440)) { PhysicalId = "edid-panel" };
+        var placement = remembered with { PhysicalId = panel.PhysicalId };
+        Check(OsdMonitorPolicy.Find(placement, [primary, panel]) == panel,
+            "Physical panel was not matched across graphics adapters.");
+        Check(OsdMonitorPolicy.Find(remembered, [primary, panel], _ => "edid-panel") == panel,
+            "Legacy monitor placement did not migrate from its old PnP EDID.");
+        Check(OsdMonitorPolicy.Find(placement, [primary]) is null &&
+              OsdMonitorPolicy.Find(placement, [panel, panel with { DeviceId = "duplicate" }]) is null &&
+              OsdMonitorPolicy.Find(remembered, [primary with { DeviceName = remembered.DeviceName }], _ => null) is null,
+            "Missing or ambiguous physical monitors were guessed from a display number.");
+        Check(OsdMonitorPolicy.Find(placement, [panel, panel with { DeviceId = remembered.DeviceId }])?.DeviceId == remembered.DeviceId,
+            "Exact device match should take precedence over duplicate EDIDs.");
+        var bytes = new byte[256];
+        Array.Fill(bytes, (byte)255, 1, 6);
+        bytes[127] = 6;
+        var id = OsdMonitorPolicy.PhysicalIdFromEdid(bytes);
+        bytes[130] = 42;
+        Check(id is not null && OsdMonitorPolicy.PhysicalIdFromEdid(bytes) == id &&
+              OsdMonitorPolicy.PhysicalIdFromEdid(new byte[128]) is null,
+            "EDID validation or base-block identity is incorrect.");
+        bytes[20] = 1;
+        Check(OsdMonitorPolicy.PhysicalIdFromEdid(bytes) is null, "Corrupt EDID was accepted.");
+        var settings = new ToolkitOsdSettings { HorizontalMonitor = remembered, VerticalMonitor = remembered,
+            HorizontalX = 99999, HorizontalY = -99999, FixedPosition = true, FontSize = 19 };
+        settings.Orientation = OsdOrientation.Horizontal;
+        OsdMonitorPolicy.ResetPosition(settings, panel);
+        Check(settings.HorizontalMonitor!.PhysicalId == panel.PhysicalId && settings.HorizontalX is null &&
+              settings.HorizontalY is null && settings.HorizontalXAnchor == OsdSnapAnchor.Center &&
+              settings.HorizontalYAnchor == OsdSnapAnchor.None && settings.VerticalMonitor == remembered &&
+              settings.FixedPosition && settings.FontSize == 19,
+            "Horizontal reset altered unrelated settings or failed to clear stale coordinates.");
+        var horizontal = settings.HorizontalMonitor;
+        settings.Orientation = OsdOrientation.Vertical;
+        OsdMonitorPolicy.ResetPosition(settings, panel);
+        Check(settings.HorizontalMonitor == horizontal && settings.VerticalXAnchor == OsdSnapAnchor.None &&
+              settings.VerticalYAnchor == OsdSnapAnchor.Center && settings.VerticalMonitor!.OffsetX == 10,
+            "Vertical reset did not retain the other orientation and restore left-center placement.");
+        var restored = System.Text.Json.JsonSerializer.Deserialize<ToolkitOsdSettings>(System.Text.Json.JsonSerializer.Serialize(settings))!;
+        Check(CurveProfileStore.NormalizeOsdSettings(restored).HorizontalMonitor?.PhysicalId == panel.PhysicalId,
+            "Physical identity was lost when saving/loading OSD settings.");
     }
 
     private static Size Measure(ToolkitOsdWindow osd, Size available, double dpi)

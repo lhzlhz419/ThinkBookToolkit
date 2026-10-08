@@ -14,6 +14,7 @@ internal sealed class ToolkitInputPage : ToolkitPageBase,
     private readonly InputViewModel _viewModel;
     private readonly ComboBox _backlight = new() { MinWidth = 170 };
     private readonly CheckBox _autoOff = new();
+    private readonly CheckBox _restoreBacklight = new();
     private readonly Dictionary<InputSettingKind, CheckBox> _toggles = [];
     private readonly TextBlock _status;
     private bool _syncing;
@@ -50,11 +51,23 @@ internal sealed class ToolkitInputPage : ToolkitPageBase,
         var keyboard = new StackPanel();
         if (Show(FeatureIds.KeyboardBacklight))
         {
+            _restoreBacklight.IsChecked = Runtime.Settings.RestoreKeyboardBacklightOnStartup;
+            _restoreBacklight.Click += (_, _) =>
+            {
+                if (_syncing) return;
+                _viewModel.SetStartupRestore(_restoreBacklight.IsChecked == true);
+                SyncControls();
+            };
             keyboard.Children.Add(SettingRow(
                 L("键盘背光亮度", "Keyboard backlight"),
                 L("选择自动、低、高或关闭。", "Choose auto, low, high, or off."),
                 _backlight,
                 "\uE765"));
+            keyboard.Children.Add(SettingRow(
+                L("恢复上次设置的键盘背光亮度", "Restore the last configured keyboard backlight brightness"),
+                L("仅在 Toolkit 启动时检查并恢复（包括开机自启）；运行期间不重复检查。尚无设置记录时保持当前亮度。",
+                    "Check and restore only when Toolkit starts, including Windows startup. Keep the current brightness if no setting has been saved."),
+                _restoreBacklight, "\uE777"));
         }
         if (Show(FeatureIds.KeyboardBacklightAutoOff))
         {
@@ -149,6 +162,7 @@ internal sealed class ToolkitInputPage : ToolkitPageBase,
     {
         _syncing = true;
         var keyboard = _viewModel.Keyboard;
+        _restoreBacklight.IsChecked = Runtime.Settings.RestoreKeyboardBacklightOnStartup;
         if (keyboard is not null)
         {
             Select(_backlight, keyboard.Level);
@@ -171,6 +185,7 @@ internal sealed class ToolkitInputPage : ToolkitPageBase,
     private void SetEnabled(bool value)
     {
         _backlight.IsEnabled = value && _viewModel.Keyboard?.Level.HasValue == true;
+        _restoreBacklight.IsEnabled = value;
         _autoOff.IsEnabled = value && _viewModel.Keyboard?.AutoOffSupported == true;
         foreach (var pair in _toggles)
             pair.Value.IsEnabled = value && _viewModel.Input?.Get(pair.Key).Supported == true;
@@ -269,10 +284,23 @@ internal sealed class ToolkitInputPage : ToolkitPageBase,
 
         public async Task SetBacklightAsync(KeyboardBacklightLevel value)
         {
-            var previous = Keyboard;
-            await WriteAsync(
-                async () => Keyboard = await Task.Run(() => KeyboardBacklightController.SetBrightness(value)),
-                () => Keyboard = previous);
+            IsBusy = true;
+            try
+            {
+                Keyboard = await Task.Run(() => KeyboardBacklightController.SetBrightness(value));
+                if (Keyboard.Level != value)
+                    throw new InvalidOperationException(Runtime.L("硬件未确认新的亮度。", "Hardware did not confirm the new brightness."));
+                Status = Runtime.TryRememberKeyboardBacklightLevel(value, out var error) ? string.Empty :
+                    Runtime.L("亮度已设置，但记录保存失败：", "Brightness changed, but the setting could not be saved: ") + error;
+            }
+            catch (Exception ex) { Status = Runtime.L("设置背光失败：", "Could not set backlight: ") + ex.Message; }
+            finally { IsBusy = false; }
+        }
+
+        public void SetStartupRestore(bool enabled)
+        {
+            Status = Runtime.TrySetKeyboardBacklightRestoreOnStartup(enabled, out var error)
+                ? string.Empty : error ?? string.Empty;
         }
 
         public async Task SetAutoOffAsync(bool value)

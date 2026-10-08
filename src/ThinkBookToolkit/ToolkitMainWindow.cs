@@ -116,6 +116,7 @@ internal sealed class ToolkitMainWindow : Window
         _runtime.OverviewLayoutChanged += OnOverviewLayoutChanged;
         _runtime.ControlStateChanged += OnControlStateChanged;
         _runtime.StatusChanged += OnStatusChanged;
+        _runtime.PluginToastRequested += OnPluginToastRequested;
         Loaded += OnLoaded;
         IsVisibleChanged += OnVisibilityChanged;
         StateChanged += OnStateChanged;
@@ -305,7 +306,7 @@ internal sealed class ToolkitMainWindow : Window
         AddNavigationIf(navigationItems, "sound", "\uE767", L("声音", "Sound"));
         AddNavigationIf(navigationItems, "input", "\uE765", L("输入设备", "Input devices"));
         AddNavigation(navigationItems, "sensors-integration", "\uE9D9",
-            L("传感器与联动", "Sensors and integration"));
+            L("传感器", "Sensors"));
         AddNavigation(navigationItems, "automation", "\uE771", L("自动化", "Automation"));
         AddNavigationIf(navigationItems, "device", "\uE772", L("设备信息", "Device information"));
         AddNavigationIf(navigationItems, "driver-update", "\uE896", L("驱动更新", "Driver updates"));
@@ -505,6 +506,7 @@ internal sealed class ToolkitMainWindow : Window
             return;
         _toastTimer.Stop();
         _toastText.Text = message;
+        _toast.ToolTip = null;
         _toast.BorderBrush = Brush(isError ? Palette.Danger : Palette.Border);
         _toast.Visibility = Visibility.Visible;
         _toastTimer.Start();
@@ -615,11 +617,9 @@ internal sealed class ToolkitMainWindow : Window
             var root = new StackPanel();
             var original = view.Content as UIElement; view.Content = null;
             if (original is not null) root.Children.Add(original);
-            foreach (var (plugin, setting) in extra)
-            {
-                root.Children.Add(new TextBlock { Text = setting.Title.Resolve(_runtime.IsChinese), Margin = new Thickness(0, 12, 0, 8) });
-                root.Children.Add(PluginSettingControl.Create(_runtime, plugin, setting));
-            }
+            foreach (var group in extra.GroupBy(x => x.p))
+                foreach (var element in view.BuildPluginSettings(group.Key, group.Select(x => x.s)))
+                    root.Children.Add(element);
             view.Content = root;
         }
         return view;
@@ -665,8 +665,8 @@ internal sealed class ToolkitMainWindow : Window
         "input" => (L("输入设备", "Input devices"), L("键盘、功能键与触摸板", "Keyboard, function keys, and touchpad"), "\uE765"),
         "automation" => (L("自动化", "Automation"), L("有序设备控制、应用操作与 Fn 快捷键", "Ordered device controls, application actions, and Fn keys"), "\uE771"),
         "sensors-integration" => (
-            L("传感器与联动", "Sensors and integration"),
-            L("OSD、传感器记录与本机软件联动", "OSD, sensor recording, and local software integration"),
+            L("传感器", "Sensors"),
+            L("OSD 与传感器记录", "OSD and sensor recording"),
             "\uE9D9"),
         "device" => (L("设备信息", "Device information"), L("硬件、固件与保修状态", "Hardware, firmware, and warranty"), "\uE772"),
         "driver-update" => (L("驱动更新", "Driver updates"), L("Lenovo 驱动、固件与 BIOS 更新", "Lenovo driver, firmware, and BIOS updates"), "\uE896"),
@@ -1107,6 +1107,18 @@ internal sealed class ToolkitMainWindow : Window
         ShowToast(message);
     }
 
+    private void OnPluginToastRequested(object? sender, PluginToastNotification notification)
+    {
+        if (_disposed) return;
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => OnPluginToastRequested(sender, notification)));
+            return;
+        }
+        ShowToast("[" + notification.PluginName + "] " + notification.Message, notification.IsError);
+        _toast.ToolTip = notification.PluginId;
+    }
+
     private void OnStateChanged(object? sender, EventArgs args)
     {
         if (WindowState == WindowState.Minimized)
@@ -1282,6 +1294,7 @@ internal sealed class ToolkitMainWindow : Window
         _runtime.OverviewLayoutChanged -= OnOverviewLayoutChanged;
         _runtime.ControlStateChanged -= OnControlStateChanged;
         _runtime.StatusChanged -= OnStatusChanged;
+        _runtime.PluginToastRequested -= OnPluginToastRequested;
         IsVisibleChanged -= OnVisibilityChanged;
         _toastTimer.Stop();
         _backgroundImage?.Dispose();

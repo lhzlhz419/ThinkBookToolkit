@@ -93,7 +93,6 @@ internal static class FeatureIds
     public const string KeyboardMacros = "automation.keyboard-macros";
     public const string UpdateCheck = "settings.update-check";
     public const string Osd = "settings.osd";
-    public const string DataSharing = "settings.data-sharing";
 }
 
 internal static class FeatureAvailabilityCache
@@ -655,15 +654,6 @@ internal static class FeatureAvailabilityService
                 ? "置顶透明 OSD 窗口可用"
                 : "OSD 仅支持 Windows");
 
-        AddState(
-            result,
-            FeatureIds.DataSharing,
-            "设置",
-            "与其它软件联动",
-            System.Net.HttpListener.IsSupported,
-            System.Net.HttpListener.IsSupported
-                ? "本机回环 HTTP JSON 服务可用"
-                : "当前运行环境不支持 HTTP 监听器");
 
         AddState(
             result,

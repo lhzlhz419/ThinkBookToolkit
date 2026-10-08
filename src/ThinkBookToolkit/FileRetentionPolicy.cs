@@ -10,7 +10,8 @@ internal static class FileRetentionPolicy
     internal static readonly int[] Days = [1, 2, 3, 5, 7, 14, 30, 60, 0];
     internal static int Normalize(int days, int fallback) => Days.Contains(days) ? days : fallback;
     private static readonly Regex LogName = new(@"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{3}_(?:(?:gpu-worker|watchdog)_)?\d+\.log$", RegexOptions.CultureInvariant);
-    private static readonly Regex RecordingName = new(@"^sensors-\d{8}-\d{6}-\d{3}\.jsonl(?:\.gz)?$", RegexOptions.CultureInvariant);
+    private static readonly Regex RecordingName = new(@"^sensors-\d{8}-\d{6}-\d{3}(?:-[a-f0-9]{32})?\.jsonl(?:\.gz)?$", RegexOptions.CultureInvariant);
+    internal static bool IsRecordingFile(string path) => RecordingName.IsMatch(Path.GetFileName(path));
 
     internal static int Cleanup(string directory, int days, bool recordings, string? currentPath = null,
         DateTime? utcNow = null)

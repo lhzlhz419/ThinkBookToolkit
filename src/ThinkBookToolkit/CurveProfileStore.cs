@@ -126,6 +126,8 @@ public static class CurveProfileStore
                 return defaults;
 
             defaults.ConfigurationVersion = CurrentConfigurationVersion;
+            defaults.LastKeyboardBacklightLevel = loaded.LastKeyboardBacklightLevel is { } light && Enum.IsDefined(light) ? light : null;
+            defaults.RestoreKeyboardBacklightOnStartup = loaded.RestoreKeyboardBacklightOnStartup;
             defaults.LogRetentionDays = FileRetentionPolicy.Normalize(loaded.LogRetentionDays, 7);
             defaults.LogLevel = loaded.LogLevel is "INFO" or "WARN" or "ERROR" or "NONE"
                 ? loaded.LogLevel : "ERROR";
@@ -328,21 +330,6 @@ public static class CurveProfileStore
             defaults.UseNvApiGpuPower = loaded.UseNvApiGpuPower;
             defaults.UseIntelMmioCpuPower = loaded.UseIntelMmioCpuPower;
             defaults.UseAmdZenStatesCpuPower = loaded.UseAmdZenStatesCpuPower;
-            defaults.SoftwareIntegrationMode = settingsJson.Contains(
-                    nameof(AppSettings.SoftwareIntegrationMode),
-                    StringComparison.OrdinalIgnoreCase) &&
-                Enum.IsDefined(loaded.SoftwareIntegrationMode)
-                    ? loaded.SoftwareIntegrationMode
-                    : loaded.ShareDataWithOtherSoftware
-                        ? SoftwareIntegrationMode.ShareDataOnly
-                        : SoftwareIntegrationMode.Disabled;
-            defaults.ShareDataWithOtherSoftware =
-                defaults.SoftwareIntegrationMode !=
-                SoftwareIntegrationMode.Disabled;
-            defaults.DataSharingPort = IsValidDataSharingPort(
-                    loaded.DataSharingPort)
-                ? loaded.DataSharingPort
-                : 2975;
             defaults.OverviewPageMode = Enum.IsDefined(
                     loaded.OverviewPageMode)
                 ? loaded.OverviewPageMode
@@ -507,8 +494,6 @@ public static class CurveProfileStore
             settings.PowerSettingsLocksByMode);
         settings.NvApiPowerSettingsLocksByMode = NormalizePowerModeLocks(
             settings.NvApiPowerSettingsLocksByMode);
-        if (!IsValidDataSharingPort(settings.DataSharingPort))
-            settings.DataSharingPort = 2975;
         settings.GpuOverclock = GpuOverclockPolicy.Normalize(
             settings.GpuOverclock);
         settings.Automations = AutomationSettingsDefaults.Normalize(
@@ -625,7 +610,8 @@ public static class CurveProfileStore
             normalized[mode.ToString()] = new PowerModeLockSettings
             {
                 Locks = locks,
-                Target = pair.Value.Target
+                Target = pair.Value.Target,
+                AcceptedTarget = PowerSettingsController.IsValidState(pair.Value.AcceptedTarget) ? pair.Value.AcceptedTarget : null
             };
         }
         return normalized;
@@ -810,8 +796,6 @@ public static class CurveProfileStore
         seconds.Value == Math.Truncate(seconds.Value) &&
         seconds.Value <= TimeSpan.MaxValue.TotalSeconds;
 
-    public static bool IsValidDataSharingPort(int port) =>
-        port is >= 1 and <= 65535;
 
     public static bool IsSupportedConfigurationVersion(string? version) =>
         string.IsNullOrWhiteSpace(version) ||
@@ -1062,6 +1046,7 @@ public static class CurveProfileStore
             BatteryOutputPowerWarning = batteryOutput.Warning,
             BatteryOutputPowerCritical = batteryOutput.Critical,
             Sensors = sensors.Distinct().ToList(),
+            DisabledPluginSensors = PluginSensorSelection.Normalize(value.DisabledPluginSensors),
             HorizontalX = value.HorizontalX,
             HorizontalMonitor = OsdMonitorPolicy.Normalize(value.HorizontalMonitor),
             VerticalMonitor = OsdMonitorPolicy.Normalize(value.VerticalMonitor),
@@ -1095,7 +1080,8 @@ public static class CurveProfileStore
                 value.MaximumPlotPoints,
                 100,
                 10_000),
-            Sensors = sensors
+            Sensors = sensors,
+            DisabledPluginSensors = PluginSensorSelection.Normalize(value.DisabledPluginSensors)
         };
     }
 

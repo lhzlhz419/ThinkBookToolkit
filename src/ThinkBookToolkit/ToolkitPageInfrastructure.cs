@@ -83,6 +83,25 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
     protected string L(string chinese, string english) =>
         Runtime.L(chinese, english);
 
+    internal IEnumerable<UIElement> BuildPluginSettings(PluginInstallation plugin,
+        IEnumerable<ThinkBookToolkit.PluginApi.PluginSetting> settings)
+    {
+        var rows = settings.ToArray();
+        UIElement Row(ThinkBookToolkit.PluginApi.PluginSetting setting) => SettingRow(
+            setting.Title.Resolve(Runtime.IsChinese), setting.Description?.Resolve(Runtime.IsChinese) ?? "",
+            PluginSettingControl.Create(Runtime, plugin, setting, showTitle: false), setting.Glyph);
+        foreach (var setting in rows.Where(s => s.GroupId is null)) yield return Row(setting);
+        foreach (var group in plugin.Manifest.SettingGroups.OrderBy(g => g.Order))
+        {
+            var members = rows.Where(s => s.GroupId == group.Id).ToArray();
+            if (members.Length == 0) continue;
+            var body = new StackPanel();
+            foreach (var setting in members) body.Children.Add(Row(setting));
+            yield return Card(group.Title.Resolve(Runtime.IsChinese), body,
+                group.Description?.Resolve(Runtime.IsChinese), group.Glyph);
+        }
+    }
+
     protected Border Card(
         string title,
         UIElement content,
@@ -487,7 +506,10 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
 
         void Add(string cardId, Border card, OverviewLayoutSettings? settings)
         {
-            if (settings is null || OverviewLayoutDefaults.IsCardEnabled(settings, cardId))
+            var hasNative = settings is null || OverviewLayoutDefaults.IsCardEnabled(settings, cardId);
+            var pluginOnly = !hasNative && settings is not null && settings.Cards.GetValueOrDefault(cardId)?.Enabled != false &&
+                PluginSensorSelection.HasOverviewReading(Runtime, cardId, settings);
+            if (hasNative || pluginOnly)
             {
                 card.Tag = cardId;
                 if (overviewPlugins) ApplyOverviewContributions(card, cardId);
@@ -496,6 +518,8 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                 // the target section. All other readings join their own card.
                 if (cardId != OverviewCardIds.Fans)
                     ((StackPanel)card.Child).Children.Add(new PluginSensorPanel(Runtime, cardId));
+                if (pluginOnly && ((StackPanel)card.Child).Children.OfType<PluginSensorPanel>().FirstOrDefault() is { } readings)
+                    card.SetBinding(VisibilityProperty, new Binding(nameof(Visibility)) { Source = readings });
                 panel.Children.Add(card);
             }
         }
@@ -793,6 +817,8 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
     private FrameworkElement CreatePluginRow(PluginInstallation plugin, ThinkBookToolkit.PluginApi.PluginOverviewItem item)
     {
         var row = new Grid { Margin = new Thickness(0, 2, 0, 2), ToolTip = plugin.Manifest.Name + " · " + item.Id };
+        if (item.Action == "add" && item.SensorId is { } sensorId && !PluginSensorSelection.Enabled(Runtime, PluginSensorSurface.Overview, sensorId))
+            row.Visibility = Visibility.Collapsed;
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.Children.Add(new TextBlock { Text = item.Label!.Resolve(Runtime.IsChinese), FontSize = 12,

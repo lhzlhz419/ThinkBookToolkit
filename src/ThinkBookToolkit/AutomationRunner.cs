@@ -232,7 +232,13 @@ internal sealed class AutomationRunner
             case AutomationStepKind.KeyboardBacklight:
                 return ParseEnum<KeyboardBacklightLevel>(step.Value, out var light)
                     ? await RunAndRefreshAsync(() =>
-                        KeyboardBacklightController.SetBrightness(light))
+                        KeyboardBacklightController.SetBrightness(light), confirmed =>
+                        {
+                            if (confirmed.Level != light)
+                                throw new InvalidOperationException(_runtime.L("硬件未确认新的亮度。", "Hardware did not confirm the new brightness."));
+                            if (!_runtime.TryRememberKeyboardBacklightLevel(light, out var error))
+                                throw new InvalidOperationException(error);
+                        })
                     : InvalidValue(step);
             case AutomationStepKind.KeyboardBacklightAutoOff:
                 return await ApplyBooleanAsync(step, value =>
@@ -438,11 +444,12 @@ internal sealed class AutomationRunner
         }
     }
 
-    private async Task<string?> RunAndRefreshAsync<T>(Func<T> action)
+    private async Task<string?> RunAndRefreshAsync<T>(Func<T> action, Action<T>? onConfirmed = null)
     {
         try
         {
-            _ = await Task.Run(action);
+            var result = await Task.Run(action);
+            onConfirmed?.Invoke(result);
             await _runtime.RefreshAsync(force: true);
             _runtime.NotifyControlStateChanged();
             return null;

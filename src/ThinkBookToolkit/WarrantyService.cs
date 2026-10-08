@@ -49,11 +49,8 @@ internal sealed record WarrantySnapshot(
         IReadOnlyList<WarrantyEntitlement>? entitlements = null)
     {
         var today = DateOnly.FromDateTime(DateTime.Now);
-        var state = today < startDate
-            ? WarrantyState.NotStarted
-            : today > endDate
-                ? WarrantyState.Expired
-                : WarrantyState.InWarranty;
+        // The latest-ending entitlement can be a future extension.
+        var state = today > endDate ? WarrantyState.Expired : WarrantyState.InWarranty;
 
         var progress = CalculateProgress(startDate, endDate, today);
         return new(startDate, endDate, state, progress, isStale, error)

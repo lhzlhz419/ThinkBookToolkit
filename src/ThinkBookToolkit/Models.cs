@@ -296,6 +296,7 @@ public sealed class PowerModeLockSettings
 {
     public PowerSettingsLockSelection Locks { get; set; } = new();
     public PowerSettingsState? Target { get; set; }
+    public PowerSettingsState? AcceptedTarget { get; set; }
 }
 
 public sealed class AppSettings
@@ -352,6 +353,8 @@ public sealed class AppSettings
     public bool MinimizeToTray { get; set; }
     public bool CloseToTray { get; set; }
     public bool TakeOverFnKeys { get; set; }
+    public bool RestoreKeyboardBacklightOnStartup { get; set; } = true;
+    public KeyboardBacklightLevel? LastKeyboardBacklightLevel { get; set; }
     public bool ShowCapsLockOsd { get; set; } = true;
     public bool ShowNumLockOsd { get; set; } = true;
     public List<uint> RefreshRateCycleHz { get; set; } = [];
@@ -371,9 +374,6 @@ public sealed class AppSettings
     public bool UseNvApiGpuPower { get; set; }
     public bool UseIntelMmioCpuPower { get; set; }
     public bool UseAmdZenStatesCpuPower { get; set; }
-    public bool ShareDataWithOtherSoftware { get; set; }
-    public SoftwareIntegrationMode SoftwareIntegrationMode { get; set; }
-    public int DataSharingPort { get; set; } = 2975;
     public OverviewPageMode OverviewPageMode { get; set; } =
         OverviewPageMode.Detailed;
     public OverviewLayoutSettings OverviewLayout { get; set; } =
@@ -432,12 +432,6 @@ public enum HardwareAccelerationMode
     HighPerformance
 }
 
-public enum SoftwareIntegrationMode
-{
-    Disabled,
-    ShareDataOnly,
-    ShareDataAndControl
-}
 
 public enum OsdOrientation
 {
@@ -512,10 +506,14 @@ public enum OsdMemoryDisplayMode
 }
 
 public enum OsdSnapAnchor { None, Start, Center, End }
-public sealed record OsdMonitorPlacement(string DeviceName, string DeviceId, double OffsetX, double OffsetY);
+public sealed record OsdMonitorPlacement(string DeviceName, string DeviceId, double OffsetX, double OffsetY)
+{
+    public string? PhysicalId { get; init; }
+}
 
 public sealed class ToolkitOsdSettings
 {
+    public List<string> DisabledPluginSensors { get; set; } = [];
     public OsdMonitorPlacement? HorizontalMonitor { get; set; }
     public OsdMonitorPlacement? VerticalMonitor { get; set; }
     public OsdSnapAnchor HorizontalXAnchor { get; set; }
@@ -605,6 +603,7 @@ public sealed class ToolkitOsdSettings
 
 public sealed class SensorRecordingSettings
 {
+    public List<string> DisabledPluginSensors { get; set; } = [];
     public int RetentionDays { get; set; }
     public double IntervalSeconds { get; set; } = 1;
     public int MaximumPlotPoints { get; set; } = 300;

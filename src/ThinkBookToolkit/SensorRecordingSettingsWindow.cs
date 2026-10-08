@@ -123,7 +123,7 @@ internal sealed class SensorRecordingSettingsWindow : Window
                 "查看记录时按此数量均匀采样，范围为 100 到 10000。",
                 "Downsample charts to this many points, from 100 to 10000."),
             maximum));
-        foreach (var group in OsdSensorCatalog.Groups)
+        foreach (var group in PluginSensorSelection.Groups(_runtime, PluginSensorSurface.Recording))
         {
             var items = new StackPanel();
             foreach (var sensor in group.Sensors)
@@ -158,6 +158,8 @@ internal sealed class SensorRecordingSettingsWindow : Window
                 };
                 items.Children.Add(toggle);
             }
+            PluginSensorSelection.AddToggles(items, _runtime, PluginSensorSurface.Recording, group.Id, () => _draft.DisabledPluginSensors,
+                (id, enabled) => { if (_syncing) return; PluginSensorSelection.SetEnabled(_draft.DisabledPluginSensors, id, enabled); Save(); });
             if (items.Children.Count > 0)
                 content.Children.Add(Card(
                     _runtime.L(group.Chinese, group.English),
@@ -348,7 +350,8 @@ internal sealed class SensorRecordingSettingsWindow : Window
             IntervalSeconds = source.IntervalSeconds,
             MaximumPlotPoints = source.MaximumPlotPoints,
             RetentionDays = source.RetentionDays,
-            Sensors = source.Sensors.ToList()
+            Sensors = source.Sensors.ToList(),
+            DisabledPluginSensors = PluginSensorSelection.Normalize(source.DisabledPluginSensors)
         };
 
     private static SolidColorBrush Brush(string value) =>

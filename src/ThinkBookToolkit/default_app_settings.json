@@ -152,9 +152,6 @@
   "UseNvApiGpuPower": false,
   "UseIntelMmioCpuPower": false,
   "UseAmdZenStatesCpuPower": false,
-  "ShareDataWithOtherSoftware": false,
-  "SoftwareIntegrationMode": 0,
-  "DataSharingPort": 2975,
   "OverviewPageMode": 1,
   "PerformanceFanLink": {
     "SwitchFanStrategyWithPerformanceMode": false,

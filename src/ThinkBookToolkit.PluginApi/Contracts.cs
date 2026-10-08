@@ -16,8 +16,20 @@ public sealed record PluginPage(string Id, PluginText Title, string? Replaces = 
 public sealed record PluginPageView(string Assembly, string Type);
 public sealed record PluginSetting(string Id, string PageId, PluginText Title, string Kind,
     JsonElement DefaultValue, string? Replaces = null, double? Minimum = null, double? Maximum = null,
-    string[]? Choices = null);
-public sealed record PluginSensor(string Id, PluginText Name, string Unit, string Category = "plugin", string? Replaces = null);
+    string[]? Choices = null)
+{
+    public string? GroupId { get; init; }
+    public PluginText? Description { get; init; }
+    public string? Glyph { get; init; }
+}
+public sealed record PluginSettingGroup(string Id, string PageId, PluginText Title,
+    PluginText? Description = null, string? Glyph = null, int Order = 100);
+public sealed record PluginSensor(string Id, PluginText Name, string Unit, string Category = "plugin", string? Replaces = null)
+{
+    // Optional plotting metadata; never constrains the recorded reading itself.
+    public double? ChartMinimum { get; init; }
+    public double? ChartMaximum { get; init; }
+}
 public sealed record PluginSensorCategory(string Id, PluginText Title, int Order = 100);
 public sealed record PluginFanBackend(string Assembly, string Type);
 /// <summary>Overview-only row contribution. Action is add, replace or remove; Target is a built-in item ID.</summary>
@@ -29,6 +41,7 @@ public sealed record PluginManifest(string Id, string Name, string Version, int 
 {
     // Additive property preserves the v1 constructor and existing plugin binaries.
     public string? Author { get; init; }
+    public PluginSettingGroup[] SettingGroups { get; init; } = [];
     public PluginFanBackend? FanBackend { get; init; }
     public PluginOverviewItem[] OverviewItems { get; init; } = [];
     public PluginSensorCategory[] SensorCategories { get; init; } = [];
@@ -41,10 +54,12 @@ public sealed record PluginContext(DateTimeOffset Timestamp, IReadOnlyDictionary
 public sealed record PluginRequest(string Operation, PluginContext Context,
     IReadOnlyDictionary<string, JsonElement> PluginSettings, string? Action = null, JsonElement? Argument = null);
 public sealed record HostCommand(string Id, IReadOnlyDictionary<string, JsonElement> Arguments);
+public sealed record PluginToast(string Message, bool IsError = false);
 public sealed record PluginResult(IReadOnlyDictionary<string, double?> Values,
     string[]? VisibleSensors = null, HostCommand[]? Commands = null)
 {
     public IReadOnlyDictionary<string, string?>? OverviewValues { get; init; }
+    public PluginToast? Toast { get; init; }
 }
 public sealed record PluginResponse(bool Success, PluginResult? Result = null, string? Error = null);
 

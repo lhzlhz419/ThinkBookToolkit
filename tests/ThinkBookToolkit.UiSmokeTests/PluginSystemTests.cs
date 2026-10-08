@@ -39,6 +39,7 @@ internal static class PluginSystemTests
     {
         await NvApiAvailabilityTests.RunAsync();
         await CustomPluginPageTests.RunAsync(hostPath);
+        await PluginToastTests.RunWorkerAsync(hostPath);
         await FanBackendPluginTests.RunLifecycleAsync(hostPath);
         await PluginImportTests.RunAsync();
         await PluginUninstallTests.RunAsync(hostPath);
@@ -95,8 +96,8 @@ internal static class PluginSystemTests
             var expected = DeviceModelDetector.HasSecondFan() ? 3000 : 2000;
             Check(runtime.Plugins.Sensors.Single().Value == expected, "Average fan RPM is incorrect: " + plugin.Error);
             Check(runtime.Snapshot.PluginSensors.Single().Name == "平均转速", "Plugin data was not published to the runtime/shared snapshot.");
-            Check(LocalDataSharingService.BuildSnapshot(runtime.Snapshot).PluginSensors.Single().Value == expected,
-                "Plugin readings are absent from the local data sharing payload.");
+            Check(runtime.Snapshot.PluginSensors.Single().Value == expected,
+                "Plugin readings are absent from the runtime snapshot.");
             Check(Descendants(window.CurrentPage!).OfType<TextBlock>().Any(t => t.Text == expected.ToString("0.##") + " 转"),
                 "The custom page average does not match its published reading.");
             await Task.Delay(ToolkitMainWindow.PageTransitionDuration + TimeSpan.FromMilliseconds(80));

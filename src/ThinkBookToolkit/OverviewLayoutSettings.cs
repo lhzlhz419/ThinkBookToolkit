@@ -33,6 +33,7 @@ public sealed class OverviewCardSettings
 
 public sealed class OverviewLayoutSettings
 {
+    public List<string> DisabledPluginSensors { get; set; } = [];
     public Dictionary<string, bool> HeroCards { get; set; } =
         OverviewLayoutDefaults.CreateHeroCards();
     public Dictionary<string, OverviewCardSettings> Cards { get; set; } =
@@ -111,17 +112,13 @@ internal static class OverviewLayoutDefaults
                     if (source.Items?.TryGetValue(item, out var enabled) == true)
                         target.Items[item] = enabled;
                 }
-                if (definition.Value.Length > 0 &&
-                    target.Items.Values.All(enabled => !enabled))
-                {
-                    target.Enabled = false;
-                }
             }
         }
         return new OverviewLayoutSettings
         {
             HeroCards = heroCards,
-            Cards = cards
+            Cards = cards,
+            DisabledPluginSensors = PluginSensorSelection.Normalize(value?.DisabledPluginSensors)
         };
     }
 

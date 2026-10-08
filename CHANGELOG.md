@@ -7,6 +7,52 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-08
+
+### Added
+
+- Added a versioned plugin system with isolated worker processes, reviewed
+  permissions, safe ZIP import, declared settings and sensors, overview rows,
+  replaceable pages and fan backends, optional custom WPF pages, and attributed
+  plugin toasts. Imported plugins start disabled; the sample plugin is built
+  separately and is not included in public releases.
+- Added per-surface plugin-sensor selection for Overview, OSD and recording,
+  plugin setting groups, and optional chart-axis bounds for plugin sensors.
+- Added safe plugin uninstall with fingerprint checks, deferred cleanup for
+  loaded assemblies, and a guarded Toolkit restart flow.
+- Added startup restoration of the last confirmed keyboard-backlight level.
+
+### Changed
+
+- Replaced the built-in localhost HTTP data/control listener with the reviewed
+  plugin APIs. Existing HTTP integration settings are ignored and no listener
+  is opened by Toolkit.
+- Plugin sensor cards, OSD entries, charts, settings and dialogs follow the
+  selected theme and language; Overview and history views retain stable layout
+  while plugin values change.
+- OSD monitor matching now uses validated EDID identity when display paths
+  change across GPU/MUX transitions, without guessing between identical panels.
+- Sensor recordings use unique file names, queue compression off the UI thread,
+  recover closed recordings after an interrupted session, and retain source
+  files if compression fails.
+- Driver installations now continue when the user navigates away and share a
+  process-wide queue. Helper processes have bounded execution times.
+- Power locks now preserve the requested target separately from confirmed
+  firmware-clamped values, verify hardware readback, and keep unchanged timer
+  deadlines stable.
+
+### Fixed
+
+- Fixed plugin setting validation, grouped settings, UI lifecycle cleanup,
+  custom sensor placement, chart bounds, toast permissions and duplicate
+  suppression, and safe handling of changed or loaded plugin files during
+  uninstall.
+- Fixed power-lock races when profiles change during hardware reads or writes;
+  unconfirmed or unavailable readings no longer become accepted lock values.
+- Fixed recording recovery, retention handling for unique recording names,
+  numeric chart edge cases, keyboard-backlight confirmation, OSD display
+  identity restoration, and driver-install queue state after navigation.
+
 ## [1.0.4] - 2026-09-06
 
 ### Added

@@ -82,26 +82,13 @@ Changing GPU mode or some firmware options may require a system restart. The app
 restores firmware-automatic fan control before normal exit and before actions
 that restart the computer.
 
-## Local software integration
 
-Settings > Integrate with other software exposes a loopback-only JSON endpoint
-on port `2975` by default. `GET http://127.0.0.1:2975/` returns the shared sensor
-snapshot. In "Share data and control selected settings" mode, send a JSON body
-containing `value` to one of these endpoints:
+## Local software integration through plugins
 
-```text
-POST /performance-mode  PowerSaving | Intelligent | Performance | Geek
-POST /fan-strategy      FirmwareAutomatic | FixedRpm | FanCurve | AdvancedCurve
-POST /fan-full-speed    true | false
-```
-
-For example:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:2975/performance-mode `
-  -Method Post -ContentType application/json `
-  -Body '{"value":"Performance"}'
-```
+The built-in localhost HTTP integration has been removed. A trusted plugin can
+provide an authenticated local endpoint using `sensors.read` / `data.read` and
+queue control commands through `host.control`. Old integration settings are ignored
+and no port is opened by Toolkit itself. See [the plugin guide](docs/plugin-system.md).
 
 ## Replaceable fan backend
 

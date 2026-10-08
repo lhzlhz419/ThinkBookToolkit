@@ -30,6 +30,7 @@ ThinkBook Toolkit 是面向部分 Lenovo ThinkBook 设备的 Windows 原生控�
 - BIOS 启动操作、开机 Logo 更换，以及由 BIOS 实际能力决定是否显示的 I/O 与虚拟化开关；
 - 可按任意顺序组合设备控制、应用启动、键盘宏和延迟的自动化，支持电源/游戏事件触发，以及 Fn 快捷键单击、双击绑定和按键发现；发现到的任意 WMI/驱动按键均可加入自定义列表；
 - 可录制、逐项编辑并绑定普通按键的键盘宏；宏录制内容包括按键、按下/释放状态和事件间隔；
+- 可审核启用的插件，扩展页面、设置、传感器、概览读数或风扇后端；
 - 深浅色主题、中英文、托盘控制和开机自启。
 
 不可用的功能不会出现在对应调控页面中；设置页可以查看完整的功能可用性汇总。
@@ -45,24 +46,9 @@ ThinkBook Toolkit 是面向部分 Lenovo ThinkBook 设备的 Windows 原生控�
 
 切换 GPU 模式或执行部分固件操作可能需要重启。正常退出以及执行会重启计算机的操作前，软件会先尝试恢复固件自动风扇控制。
 
-## 与其它软件联动
+## 插件与本机集成
 
-“设置 > 与其它软件联动”默认使用端口 `2975`，仅监听本机回环地址。
-`GET http://127.0.0.1:2975/` 可读取共享的传感器快照。选择“允许共享数据和调整部分设置”后，可向以下地址提交带有 `value` 字段的 JSON：
-
-```text
-POST /performance-mode  PowerSaving | Intelligent | Performance | Geek
-POST /fan-strategy      FirmwareAutomatic | FixedRpm | FanCurve | AdvancedCurve
-POST /fan-full-speed    true | false
-```
-
-例如：
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:2975/performance-mode `
-  -Method Post -ContentType application/json `
-  -Body '{"value":"Performance"}'
-```
+内置的本机 HTTP 联动接口已移除；Toolkit 不再打开数据共享端口。需要读取传感器或请求受支持的控制操作时，可导入并审核可信插件，通过 `sensors.read`、`data.read` 和 `host.control` 权限调用插件 API。导入的插件默认停用；普通插件逻辑使用独立工作进程，授权的 WPF 页面和风扇后端会在 Toolkit 进程中运行。插件不是恶意代码沙箱，只启用审阅过的代码。旧版联动设置会被忽略。导入、权限和安全边界见[插件系统说明](docs/plugin-system.md)。
 
 ## 可替换风扇后端
 

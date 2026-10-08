@@ -23,7 +23,6 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
     private readonly Dictionary<DriverUpdateItem, Button> _downloadButtons = [];
     private readonly HashSet<string> _queuedPackageIds =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly SemaphoreSlim _installationGate = new(1, 1);
     private IReadOnlyList<DriverUpdateItem> _scanResults = [];
     private bool _hasScanned;
     private bool _scanBusy;
@@ -46,6 +45,27 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
         };
         _status = StatusText();
         Content = BuildLayout();
+        Runtime.DriverInstallations.Changed += OnInstallationsChanged;
+        OnInstallationsChanged(this, EventArgs.Empty);
+    }
+
+    private void OnInstallationsChanged(object? sender, EventArgs args)
+    {
+        UpdateActionStates();
+        if (_queuedInstallCount != 0) return;
+        if (Runtime.DriverInstallations.IsBusy)
+            _status.Text = L("驱动更新正在后台排队或安装，切换页面不会中断任务。", "Driver updates are queued or installing in the background. Navigation will not interrupt them.");
+        else if (Runtime.DriverInstallations.LastResult is { } result)
+            _status.Text = result.FailedPackageIds.Count > 0
+                ? L("部分更新安装失败，请重新扫描。", "Some updates failed. Scan again for details.")
+                : result.RebootNeeded ? L("更新安装完成，需要重新启动电脑。", "Updates installed. Restart the PC to finish.")
+                : L("更新安装完成。", "Updates installed.");
+    }
+
+    public override void Dispose()
+    {
+        Runtime.DriverInstallations.Changed -= OnInstallationsChanged;
+        base.Dispose();
     }
 
     private UIElement BuildLayout()
@@ -88,7 +108,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
 
     private async Task ScanAsync()
     {
-        if (_scanBusy || _queuedInstallCount > 0)
+        if (_scanBusy || Runtime.DriverInstallations.IsBusy)
             return;
         _scanBusy = true;
         UpdateActionStates();
@@ -168,7 +188,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
         bool isBatch)
     {
         if (updates.Count == 0 ||
-            updates.Any(update => _queuedPackageIds.Contains(update.PackageId)))
+            updates.Any(update => Runtime.DriverInstallations.IsQueued(update.PackageId) || _queuedPackageIds.Contains(update.PackageId)))
         {
             return;
         }
@@ -179,7 +199,6 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
         _batchInstallQueued |= isBatch;
         UpdateActionStates();
 
-        await _installationGate.WaitAsync();
         string completionMessage;
         IReadOnlySet<string> successfulPackageIds =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -220,7 +239,6 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
         }
         finally
         {
-            _installationGate.Release();
             _queuedInstallCount--;
         }
 
@@ -411,15 +429,16 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
 
     private void UpdateActionStates()
     {
-        _scan.IsEnabled = !_scanBusy && _queuedInstallCount == 0;
+        _scan.IsEnabled = !_scanBusy && !Runtime.DriverInstallations.IsBusy && _queuedInstallCount == 0;
         _install.IsEnabled = !_scanBusy &&
+                             !Runtime.DriverInstallations.IsBusy &&
                              _queuedInstallCount == 0 &&
                              _scanResults.Any(update =>
                                  update.IsUpdateRequired);
         _showUpToDate.IsEnabled = !_scanBusy;
         foreach (var pair in _downloadButtons)
         {
-            var queued = _queuedPackageIds.Contains(pair.Key.PackageId);
+            var queued = _queuedPackageIds.Contains(pair.Key.PackageId) || Runtime.DriverInstallations.IsQueued(pair.Key.PackageId);
             SetDownloadBusy(pair.Value, queued);
             pair.Value.IsEnabled = !_scanBusy &&
                                    !_batchInstallQueued &&
@@ -524,7 +543,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
             {
                 ToolkitLog.Info(
                     $"Starting Lenovo update installation for {updates.Count} selected package(s).");
-                return await DriverUpdateController.InstallAsync(updates);
+                return await Runtime.DriverInstallations.InstallAsync(updates);
             }
             finally
             {

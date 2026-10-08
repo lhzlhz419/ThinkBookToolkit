@@ -25,4 +25,8 @@ public interface IPluginPageContext
     Task SetSettingAsync(string id, JsonElement value);
     /// <summary>Uses the existing host.control permission and host validation.</summary>
     Task ExecuteAsync(HostCommand command);
+    /// <summary>Requires ui.toast. False means the request was rate-limited.
+    /// Submission does not bring a hidden Toolkit window to the foreground.</summary>
+    Task<bool> ShowToastAsync(string message, bool isError = false) =>
+        Task.FromException<bool>(new NotSupportedException("This host does not support plugin toasts."));
 }

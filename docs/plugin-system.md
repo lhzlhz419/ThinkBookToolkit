@@ -4,7 +4,7 @@
 
 测试插件**不随正式安装包或主程序发布 ZIP 分发**。运行 `scripts/build_test_plugin.ps1` 单独生成 `dist/test-plugins/PluginTest` 文件夹和 `ThinkBookToolkit.PluginTest.zip`，将其中的插件文件夹放到“插件”页打开的目录，重启并审核启用后，导航栏会增加 **插件测试** 页面。
 测试插件 1.1.0 起使用 `ui.custom` 自行绘制 WPF 页面，提供开关、风扇原始转速与平均值预览，适配深浅色、中英文和窄窗口；开关通过 `IPluginPageContext.SetSettingAsync` 保存。包中包含独立的逻辑 DLL 与 `ThinkBookToolkit.PluginTest.Ui.dll`，后台计算不依赖 WPF。也可直接在“导入插件”中选择 ZIP。旧版测试插件已安装时，先退出 Toolkit，再手动替换其文件夹并重启、重新审核权限。
-“显示平均风扇转速”默认关闭。开启后，“平均转速”显示在完整概览的风扇转速区域，并作为插件传感器提供给 OSD、传感器记录和本机数据共享；简洁概览不追加这条读数。
+“显示平均风扇转速”默认关闭。开启后，“平均转速”显示在完整概览的风扇转速区域，并作为插件传感器提供给 OSD、传感器记录和插件数据快照；简洁概览不追加这条读数。
 数值为有效风扇读数的算术平均值：停转的 0 RPM 有效；负数、缺失或过期读数不参与；没有有效读数时显示 `--`。插件不修改风扇控制参数。
 
 外部插件放入配置目录下的 `plugins/<目录>/`，每个目录包含 `plugin.json`、入口 DLL 和必要依赖。重启后在独立的 **插件** 管理页审核并启用。插件代码或清单指纹改变后，之前的授权不会自动沿用。插件配置位于配置目录下的 `plugin-settings/<插件ID>.json`。
@@ -54,7 +54,47 @@
 - `Settings`：boolean、number、string、choice 四类控件；包含默认值、范围/选项、所属页面及可选替换目标。
 - `Sensors`：名称、单位、分类（`Category`）、ID、可选替换目标。新增读数按硬件分类直接加入现有栏目，不再创建“插件传感器”卡片。
 
+### 标题与设置项分组
+
+插件向内置页面追加设置时，可以通过可选的 `SettingGroups` 和设置的 `GroupId`，生成与本体相同的“标题 + 说明 + 多条设置”卡片。声明式插件页面同样支持；WPF 自绘页面仍由插件自行布局。
+
+```json
+"SettingGroups": [
+  { "Id": "my.plugin.power", "PageId": "battery",
+    "Title": { "Chinese": "扩展供电", "English": "Additional power settings" },
+    "Description": { "Chinese": "插件提供的供电设置", "English": "Power settings provided by this plugin" },
+    "Glyph": "\uE8B7", "Order": 10 }
+],
+"Settings": [
+  { "Id": "enabled", "PageId": "battery", "GroupId": "my.plugin.power",
+    "Title": { "Chinese": "启用功能", "English": "Enable feature" },
+    "Description": { "Chinese": "控制插件功能的开关", "English": "Toggle the plugin feature" },
+    "Glyph": "\uE7F4", "Kind": "boolean", "DefaultValue": false }
+]
+```
+
+`Description`、`Glyph` 和分组 `Order` 均可省略；图标使用 Segoe Fluent Icons / Segoe MDL2 Assets 字符。每组最多 160 字符的中英文标题、1024 字符的说明；单个清单最多 32 组。组 ID 必须属于插件命名空间且不与其它贡献 ID 重复；设置必须引用本插件同一页面的分组。组内按 `Settings` 顺序显示，组间按 `Order` 排列；没有成员的组不显示。不同插件的同名标题不会合并。
+
+未声明分组的旧插件仍可使用，默认值、控件类型和保存方式不变。分组只适用于新增设置，不能与设置的 `Replaces` 同时声明；替换项保留原页面位置。简洁概览仍不追加这些设置。新卡片复用本体透明度、主题、图标和窄窗口换行规则，不需要新增权限。
+
+### 传感器绘图范围
+
+传感器还可声明记录图表的纵轴范围：`ChartMinimum`（下限）和 `ChartMaximum`（上限），两者都是可选数字。例如：
+
+```json
+{ "Id": "my.plugin.fan", "Name": { "Chinese": "风扇转速", "English": "Fan speed" },
+  "Unit": "RPM", "Category": "fans", "ChartMinimum": 0, "ChartMaximum": 6000 }
+```
+
+只写 `"ChartMinimum": 0` 时上限自动计算；只写 `"ChartMaximum": 6000` 时下限自动计算；省略或设为 `null` 表示不指定。两项都指定时必须满足下限小于上限，且均为有限数字。上下限只影响传感器记录绘图，不修改读数、保存数据、OSD 或硬件控制；超出指定范围的曲线显示在边界，记录值仍保留原值。
+
+`Replaces` 替换传感器也支持这两个字段。声明自定义范围的替换读数会在原分类下单独绘图，避免把同图的其他内置曲线强制改成相同范围；未声明范围时保留既有内置图表规则。新增传感器不声明范围则使用自动缩放。
+
+与现有的名称、分类一样，图表范围取自当前安装的插件清单，不写入记录文件。替换项优先使用当前启用的提供者；没有启用者但只有一个已安装候选时使用该候选，多个停用候选则不猜测。卸载插件后，历史数据仍可读取，范围回到自动或内置规则。
+
 传感器的 `Category` 决定显示位置：
+
+插件新增传感器会出现在“编辑概览页”（完整模式）、“OSD 设置 → 传感器”和“传感器记录设置”的对应分类中，包含自建分类。选项来自清单，不依赖当前是否有读数；未启用插件的选项也可提前配置。三处开关分别保存，默认开启，关闭一处不影响其他位置、插件自己的页面或插件数据快照。关闭记录只影响后续采样，不删除已经保存的历史数据。替换已有传感器继续使用被替换项原有的开关，不重复添加开关。
 
 | Category | 概览栏目 | OSD 分组 |
 | --- | --- | --- |
@@ -168,6 +208,30 @@ public sealed class DashboardPage : IToolkitPluginPage
 
 **`ui.custom` 是高风险、进程内能力，不是沙箱。** 启用确认框和插件卡片都会明确提示：代码具有主程序权限，可能让整个 Toolkit 卡住或退出。宿主会捕获调用创建、更新和释放接口时的托管异常，并挂起插件、撤回贡献、恢复可用的内置页面；这不能隔离任意事件回调、后台线程、原生异常或死锁。首次载入会校验包指纹，变更文件必须重新审核。WPF 的资源和静态缓存无法保证卸载，因此停用只释放页面，不保证从进程移除代码；更新已加载的 UI DLL 需要重启。
 
+### 右下角提示
+
+插件声明 `ui.toast` 权限后，可调用 Toolkit 窗口内的右下角提示，无需申请 `host.control`。
+
+普通工作进程插件在一次 `EvaluateAsync` 响应中设置：
+
+```csharp
+return new PluginResult(values)
+{
+    Toast = new PluginToast("操作已完成")
+};
+```
+
+自绘页面通过 `IPluginPageContext` 调用：
+
+```csharp
+await context.ShowToastAsync("操作已完成");
+await context.ShowToastAsync("操作失败，请检查设置", isError: true);
+```
+
+普通提示和错误提示使用 Toolkit 原有样式及自动消失行为，自动加上插件名称，悬停可查看插件 ID。文字必须非空且不超过 512 字符。每个插件的提示间隔至少 1 秒；与上一条相同的内容及级别在 10 秒内不重复展示，自绘接口被限频时返回 `false`。应只在操作完成或状态变化时请求，不要每次刷新重复发送。插件停用、挂起、卸载或宿主退出期间不可发送；自绘页面释放后也不可发送。
+
+这是应用窗口内的提示，不是 Windows 通知，也不会将隐藏或最小化的 Toolkit 强行打开。原有 `host.control` 的 `SetStatus` 调用保持兼容。
+
 ### 概览卡片的单条内容
 
 清单可选字段 `OverviewItems` 支持在概览的指定卡片中增加、删除或替换一条内容，不需要替换整个页面，也不改变原始硬件数据、OSD 或记录数据。旧插件不声明此字段即可保持原行为。
@@ -190,7 +254,7 @@ public sealed class DashboardPage : IToolkitPluginPage
 - `Label` 为双语标签。值可用固定的双语 `Text`，或用 `SensorId` 引用本插件声明的传感器。动态文本可从 `PluginResult.OverviewValues` 返回 `{ "my.plugin.note": "当前状态" }`；文本上限 4096 字符，仅按纯文本渲染。值优先级为 `SensorId` > 动态文本 > `Text` > `--`；超过 10 秒的动态值显示 `--`。
 - 用户隐藏的卡片/内置条目不会被插件强制显示。简洁概览只应用 `replace` 和 `remove`，且仅作用于该模式本来就存在的条目；有实际替换/删除的卡片使用逐条读数布局，其他卡片保持原布局。`add` 不增加内容，也不改变卡片布局；即使同一卡片同时声明增加和替换，也只应用替换。概览顶部模式操作区不属于这些传感器卡片。
 
-简洁模式同样不追加插件传感器行、自建传感器类别或通过 `Settings.PageId = "overview"` 新增的设置；切回完整模式后这些内容恢复显示。已有传感器的 `Replaces` 和整页替换仍按原规则生效。此限制只针对简洁概览，不影响 OSD、插件自身页面、历史曲线和数据共享。
+简洁模式同样不追加插件传感器行、自建传感器类别或通过 `Settings.PageId = "overview"` 新增的设置；切回完整模式后这些内容恢复显示。已有传感器的 `Replaces` 和整页替换仍按原规则生效。此限制只针对简洁概览，不影响 OSD、插件自身页面、历史曲线和插件数据快照。
 
 返回动态值只更新原控件的文字，不重建页面或重新播放切页动画。
 
@@ -205,6 +269,7 @@ public sealed class DashboardPage : IToolkitPluginPage
 - `replace`：允许清单接管已注册的设置、传感器或页面目标，启用提示会列出目标。
 - `fan.backend`：允许插件提供风扇控制后端；必须另外声明 `FanBackend`，启用提示会说明进程内加载与重启要求。
 - `ui.custom`：允许插件提供 WPF 自绘页面，在主程序进程内运行；启用时单独列出风险提示。
+- `ui.toast`：允许发送 Toolkit 窗口内的右下角提示，不包含修改设置或控制硬件的权限。
 
 插件自己的设置始终通过 `PluginRequest.PluginSettings` 提供，由宿主负责类型检查和持久化。
 宿主命令参数使用列出的参数名称与 JSON 值，枚举可使用字符串；操作进入原有 Runtime 方法，保留其验证、串行化及硬件保护。宿主不会通过插件协议暴露私有字段、任意反射或任意方法执行。
@@ -212,7 +277,15 @@ public sealed class DashboardPage : IToolkitPluginPage
 
 `PluginResult.Values` 只能返回清单声明的传感器 ID，拒绝非有限数。`VisibleSensors` 可动态显隐传感器。超过 10 秒的旧输出显示为不可用。超时、异常、错误协议或越界输出会挂起该插件并撤销页面/设置/传感器贡献；用户可在插件页重新启用。已经选中的风扇后端不会因此热切换。关闭管道时宿主尝试释放插件，不能及时退出的进程由进程作业终止。
 
-记录保持兼容原 v2 数字索引格式；存在插件字段时使用 v3 字符串字段表，键为 `plugin:<传感器ID>`。查看器支持这些字段；插件未安装时仍以 ID 显示历史数据。数据共享保留既有原始字段，并增加 `pluginSensors` 列表，提供来源、替换目标和插件读数。
+记录保持兼容原 v2 数字索引格式；存在插件字段时使用 v3 字符串字段表，键为 `plugin:<传感器ID>`。查看器支持这些字段；插件未安装时仍以 ID 显示历史数据。`data.read` 的运行时快照包含 `PluginSensors`，提供来源、替换目标和插件读数。
+
+## 替代旧本地联动接口
+
+Toolkit 本体不再启动 localhost HTTP 服务，旧端口和联动开关配置会被忽略。需要此功能时，由用户安装可信的联动插件；不会自动安装或启用替代插件。
+
+逻辑插件可以自行维护 HTTP 监听器和请求队列，使用 `sensors.read` 获取基础传感器、`data.read` 获取运行时快照，并通过 `host.control` 提交 `SetItsModeAsync(mode)`、`SetFanModeAsync(mode)`、`SetFullSpeedAsync(enabled)` 命令，覆盖原接口的读数及控制能力。命令参数名称应以 `Context.Operations` 实际声明为准。普通逻辑插件在宿主轮询时提交排队命令，不能把“已入队”宣称为“硬件已确认”。
+
+网络端口、令牌验证、请求大小限制、跨域和速率限制由插件负责。监听器应在插件 `DisposeAsync` 时关闭；停用、失败或退出时宿主也会结束其工作进程，释放端口。旧客户端需要按所安装插件的协议调整，旧 HTTP 协议不会由本体继续提供。
 
 ## 风扇后端插件
 

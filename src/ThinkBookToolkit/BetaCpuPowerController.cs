@@ -60,12 +60,9 @@ internal static class AmdZenStatesPowerController
             RedirectStandardError = true, CreateNoWindow = true
         };
         foreach (var arg in args) start.ArgumentList.Add(arg);
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("AMD helper could not start.");
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        if (!process.WaitForExit(15000)) { process.Kill(true); throw new TimeoutException("AMD helper timed out."); }
-        if (process.ExitCode != 0) throw new InvalidOperationException(error.Trim());
-        using var json = JsonDocument.Parse(output);
+        var processResult = BoundedProcess.RunAsync(start, TimeSpan.FromSeconds(15)).GetAwaiter().GetResult();
+        if (processResult.ExitCode != 0) throw new InvalidOperationException(processResult.Error.Trim());
+        using var json = JsonDocument.Parse(processResult.Output);
         var mode = json.RootElement.GetProperty("mode").GetString();
         var values = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in json.RootElement.GetProperty("values").EnumerateObject())

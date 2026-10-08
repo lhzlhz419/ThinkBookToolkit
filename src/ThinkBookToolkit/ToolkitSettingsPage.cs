@@ -12,6 +12,7 @@ namespace ThinkBookToolkit;
 internal sealed class ToolkitSettingsPage : ToolkitPageBase
 {
     private readonly SettingsViewModel _viewModel;
+    private readonly Dictionary<(string Card, string Sensor), CheckBox> _overviewPluginToggles = new();
     private readonly ComboBox _refresh = new() { MinWidth = 150 };
     private readonly ComboBox _language = new() { MinWidth = 150 };
     private readonly ComboBox _theme = new() { MinWidth = 170 };
@@ -38,20 +39,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private Border? _nvApiGpuPowerRow;
     private readonly CheckBox _useIntelMmioCpuPower = new();
     private readonly CheckBox _useAmdZenStatesCpuPower = new();
-    private readonly ComboBox _softwareIntegrationMode = new()
-    {
-        MinWidth = 250
-    };
-    private readonly Button _softwareIntegrationHelp;
     private readonly CheckBox _osdEnabled = new();
     private readonly CheckBox _sensorRecordingEnabled = new();
-    private readonly TextBox _dataSharingPort = new()
-    {
-        Width = 88,
-        MinHeight = 36,
-        TextAlignment = TextAlignment.Center,
-        VerticalContentAlignment = VerticalAlignment.Center
-    };
     private readonly Button _editOverview;
     private readonly Button _backgroundImageSettings;
     private readonly Button _restartReaders;
@@ -113,7 +102,6 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _osdSettings = ActionButton(L("设置", "Settings"));
         _sensorRecordingSettings = ActionButton(L("设置", "Settings"));
         _sensorRecordingShow = ActionButton(L("展示", "Show"));
-        _softwareIntegrationHelp = ActionButton(L("调用方法", "API usage"));
         _restartReaders = ActionButton(L("强制刷新读数", "Restart readers"));
         _checkUpdates = ActionButton(L("检查更新", "Check for updates"));
         _downloadUpdate = ActionButton(L("下载更新", "Download update"), primary: true);
@@ -204,20 +192,6 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             _startupMode,
             L("延迟启动", "Delayed start"),
             StartupLaunchMode.Delayed);
-        AddChoice(
-            _softwareIntegrationMode,
-            L("关闭", "Disabled"),
-            SoftwareIntegrationMode.Disabled);
-        AddChoice(
-            _softwareIntegrationMode,
-            L("仅共享数据", "Share data only"),
-            SoftwareIntegrationMode.ShareDataOnly);
-        AddChoice(
-            _softwareIntegrationMode,
-            L(
-                "允许共享数据和调整部分设置",
-                "Share data and control selected settings"),
-            SoftwareIntegrationMode.ShareDataAndControl);
         WireEvents();
         foreach (var level in new[] { "INFO", "WARN", "ERROR", "NONE" })
             AddChoice(_logLevel, level == "NONE" ? L("无", "None") : level, level);
@@ -509,19 +483,6 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 "Manage the on-screen display and sensor history."),
             "\uE9D9"));
 
-        var integration = new StackPanel();
-        integration.Children.Add(SettingRow(
-            L("与其它软件联动", "Integrate with other software"),
-            L(
-                "通过仅限本机的 HTTP JSON 接口共享数据，并可选择是否允许调整部分设置。",
-                "Use a loopback-only HTTP JSON API to share data and optionally control selected settings."),
-            BuildDataSharingEditor()));
-        root.Children.Add(Card(
-            L("软件联动", "Software integration"),
-            integration,
-            L("向本机其它程序提供传感器和控制接口。",
-                "Provide sensor and control APIs to other local applications."),
-            "\uE968"));
         _status.Margin = new Thickness(4, 0, 4, 12);
         root.Children.Add(_status);
         return root;
@@ -944,20 +905,6 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 Owner = Window.GetWindow(this)
             }.ShowDialog();
         };
-        _softwareIntegrationMode.SelectionChanged += (_, _) =>
-            SaveDataSharingSettings();
-        _softwareIntegrationHelp.Click += (_, _) =>
-            ShowSoftwareIntegrationHelp();
-        _dataSharingPort.LostKeyboardFocus += (_, _) =>
-            SaveDataSharingSettings();
-        _dataSharingPort.KeyDown += (_, args) =>
-        {
-            if (args.Key != Key.Enter)
-                return;
-            SaveDataSharingSettings();
-            Keyboard.ClearFocus();
-            args.Handled = true;
-        };
         _editOverview.Click += (_, _) =>
         {
             ShowOverviewEditor();
@@ -1020,94 +967,6 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         SyncControls();
     }
 
-    private UIElement BuildDataSharingEditor()
-    {
-        _dataSharingPort.Margin = new Thickness(8, 0, 12, 0);
-        _softwareIntegrationMode.Margin = new Thickness(0, 0, 12, 0);
-        _softwareIntegrationHelp.Margin = new Thickness(0);
-        var panel = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Tag = "KeepOnRight"
-        };
-        panel.Children.Add(new TextBlock
-        {
-            Text = L("端口", "Port"),
-            Foreground = Brush(Palette.Muted),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        panel.Children.Add(_dataSharingPort);
-        panel.Children.Add(_softwareIntegrationMode);
-        panel.Children.Add(_softwareIntegrationHelp);
-        return panel;
-    }
-
-    private void SaveDataSharingSettings()
-    {
-        if (_syncing)
-            return;
-        if (!int.TryParse(
-                _dataSharingPort.Text,
-                NumberStyles.None,
-                CultureInfo.InvariantCulture,
-                out var port))
-        {
-            Runtime.SetStatus(L(
-                "数据共享端口必须为 1 到 65535 之间的整数。",
-                "The data-sharing port must be an integer between 1 and 65535."));
-            SyncControls();
-            return;
-        }
-
-        var mode = Selected<SoftwareIntegrationMode>(_softwareIntegrationMode);
-        var succeeded = Runtime.TrySetSoftwareIntegration(
-            mode,
-            port,
-            out var error);
-        Runtime.SetStatus(succeeded
-            ? mode != SoftwareIntegrationMode.Disabled
-                ? L(
-                    $"软件联动已启用：http://127.0.0.1:{port}/",
-                    $"Software integration is available at http://127.0.0.1:{port}/")
-                : L("软件联动已关闭。", "Software integration is disabled.")
-            : L("软件联动设置失败：", "Software integration failed: ") + error);
-        SyncControls();
-    }
-
-    private void ShowSoftwareIntegrationHelp()
-    {
-        var port = Runtime.Settings.DataSharingPort;
-        var baseUrl = $"http://127.0.0.1:{port}";
-        var text = L(
-            $"读取数据：\nGET {baseUrl}/\n\n" +
-            "允许控制时使用 JSON 请求：\n" +
-            $"POST {baseUrl}/performance-mode\n" +
-            "{\"value\":\"Performance\"}\n" +
-            "可选：PowerSaving、Intelligent、Performance、Geek\n\n" +
-            $"POST {baseUrl}/fan-strategy\n" +
-            "{\"value\":\"FixedRpm\"}\n" +
-            "可选：FirmwareAutomatic、FixedRpm、FanCurve、AdvancedCurve\n\n" +
-            $"POST {baseUrl}/fan-full-speed\n" +
-            "{\"value\":true}",
-            $"Read data:\nGET {baseUrl}/\n\n" +
-            "When control is allowed, send JSON requests:\n" +
-            $"POST {baseUrl}/performance-mode\n" +
-            "{\"value\":\"Performance\"}\n" +
-            "Values: PowerSaving, Intelligent, Performance, Geek\n\n" +
-            $"POST {baseUrl}/fan-strategy\n" +
-            "{\"value\":\"FixedRpm\"}\n" +
-            "Values: FirmwareAutomatic, FixedRpm, FanCurve, AdvancedCurve\n\n" +
-            $"POST {baseUrl}/fan-full-speed\n" +
-            "{\"value\":true}");
-        ToolkitMessageBox.Show(
-            Window.GetWindow(this),
-            text,
-            L("本机 HTTP 联动调用方法", "Local HTTP integration API"),
-            MessageBoxButton.OK,
-            MessageBoxImage.Information);
-    }
 
     private UIElement BuildUpdateActions()
     {
@@ -1217,13 +1076,6 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _sensorRecordingShow.IsEnabled =
             settings.SensorRecordingEnabled ||
             !string.IsNullOrWhiteSpace(settings.LastSensorRecordingPath);
-        Select(_softwareIntegrationMode, settings.SoftwareIntegrationMode);
-        _softwareIntegrationMode.IsEnabled =
-            Runtime.Report?.IsAvailable(FeatureIds.DataSharing) != false;
-        _softwareIntegrationHelp.IsEnabled =
-            _softwareIntegrationMode.IsEnabled;
-        _dataSharingPort.Text = settings.DataSharingPort.ToString(
-            CultureInfo.InvariantCulture);
         if (_disableOnSleepRow is not null)
         {
             _disableOnSleepRow.Visibility = Runtime.CanConfigureSleepFanControl
@@ -1280,6 +1132,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             : OverviewLayoutDefaults.DetailedCardDefinitions;
         foreach (var definition in definitions)
         {
+            var pluginOptions = Runtime.Settings.OverviewPageMode == OverviewPageMode.Detailed
+                ? PluginSensorSelection.Options(Runtime, PluginSensorSurface.Overview, definition.Key) : [];
+            bool HasPluginSelection() => pluginOptions.Any(x => PluginSensorSelection.Enabled(_overviewDraft.DisabledPluginSensors, x.Sensor.Id));
             var hasHybridCores = Runtime.Snapshot.Temperatures?
                                      .CpuPerformanceCoreAverageClockMhz.HasValue == true &&
                                  Runtime.Snapshot.Temperatures?
@@ -1311,7 +1166,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 var card = _overviewDraft.Cards[definition.Key];
                 card.Enabled = cardToggle.IsChecked == true;
                 if (card.Enabled && displayedItems.Length > 0 &&
-                    displayedItems.All(item => !card.Items[item]))
+                    displayedItems.All(item => !card.Items[item]) && !HasPluginSelection())
                 {
                     foreach (var item in displayedItems)
                         card.Items[item] = true;
@@ -1331,11 +1186,23 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                     if (_syncing) return;
                     var card = _overviewDraft.Cards[definition.Key];
                     card.Items[itemId] = itemToggle.IsChecked == true;
-                    card.Enabled = displayedItems.Any(item =>
-                        card.Items[item]);
+                    card.Enabled = displayedItems.Any(item => card.Items[item]) || HasPluginSelection();
                     SyncOverviewEditor();
                 };
                 items.Children.Add(itemToggle);
+            }
+            if (Runtime.Settings.OverviewPageMode == OverviewPageMode.Detailed)
+            {
+                PluginSensorSelection.AddToggles(items, Runtime, PluginSensorSurface.Overview, definition.Key, () => _overviewDraft.DisabledPluginSensors,
+                    (id, enabled) =>
+                    {
+                        if (_syncing) return;
+                        PluginSensorSelection.SetEnabled(_overviewDraft.DisabledPluginSensors, id, enabled);
+                        _overviewDraft.Cards[definition.Key].Enabled = displayedItems.Any(item => _overviewDraft.Cards[definition.Key].Items[item]) || HasPluginSelection();
+                        SyncOverviewEditor();
+                    });
+                foreach (var toggle in items.Children.OfType<CheckBox>().Where(c => c.Tag is string tag && tag.StartsWith("plugin:", StringComparison.Ordinal)))
+                    _overviewPluginToggles[(definition.Key, ((string)toggle.Tag)["plugin:".Length..])] = toggle;
             }
             var section = new StackPanel();
             section.Children.Add(cardToggle);
@@ -1351,6 +1218,14 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 Child = section
             });
         }
+        if (Runtime.Settings.OverviewPageMode == OverviewPageMode.Detailed)
+            foreach (var group in PluginSensorSelection.Groups(Runtime, PluginSensorSurface.Overview).Where(g => !definitions.ContainsKey(g.Id)))
+            {
+                var items = new StackPanel();
+                PluginSensorSelection.AddToggles(items, Runtime, PluginSensorSurface.Overview, group.Id, () => _overviewDraft.DisabledPluginSensors,
+                    (id, enabled) => PluginSensorSelection.SetEnabled(_overviewDraft.DisabledPluginSensors, id, enabled));
+                content.Children.Add(Card(L(group.Chinese, group.English), items));
+            }
         var apply = ActionButton(L("应用", "Apply"), primary: true);
         var cancel = ActionButton(L("取消", "Cancel"));
         apply.Click += (_, _) =>
@@ -1400,6 +1275,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _overviewHeroToggles.Clear();
         _overviewCardToggles.Clear();
         _overviewItemToggles.Clear();
+        _overviewPluginToggles.Clear();
         var editor = BuildOverviewEditor();
         var window = new Window
         {
@@ -1442,6 +1318,11 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             var card = _overviewDraft.Cards[pair.Key.Card];
             pair.Value.IsChecked = card.Items[pair.Key.Item];
             pair.Value.IsEnabled = card.Enabled;
+        }
+        foreach (var pair in _overviewPluginToggles)
+        {
+            pair.Value.IsChecked = PluginSensorSelection.Enabled(_overviewDraft.DisabledPluginSensors, pair.Key.Sensor);
+            pair.Value.IsEnabled = _overviewDraft.Cards[pair.Key.Card].Enabled;
         }
         _syncing = wasSyncing;
     }
@@ -1721,7 +1602,6 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.KeyboardMacros => "Keyboard macros",
             FeatureIds.UpdateCheck => "Software update check",
             FeatureIds.Osd => "On-screen display",
-            FeatureIds.DataSharing => "Software integration",
             _ => fallback
         };
     }
@@ -1745,7 +1625,6 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 FeatureIds.IntelMmioCpuPower => L("无法读取 Intel MMIO 功耗墙。", "Intel MMIO power limits could not be read."),
                 FeatureIds.AmdZenStatesCpuPower => L("无法通过 ZenStates-Core Helper 读取 CPU 功耗墙。", "CPU power limits could not be read through the ZenStates-Core helper."),
                 FeatureIds.Osd => L("当前运行环境不支持置顶透明窗口。", "Topmost transparent windows are unsupported in this environment."),
-                FeatureIds.DataSharing => L("当前运行环境不支持本机 HTTP 监听器。", "The local HTTP listener is unsupported in this environment."),
                 FeatureIds.WarrantyInformation => L("需要有效的序列号和网络连接。", "A valid serial number and network connection are required."),
                 FeatureIds.FanControl => L("当前设备上无法使用风扇监控与控制。", "Fan monitoring and control are unavailable on this device."),
                 FeatureIds.FanFullSpeed => L("当前风扇后端不支持原生风扇拉满。", "Native full fan speed is unavailable with the current backend."),

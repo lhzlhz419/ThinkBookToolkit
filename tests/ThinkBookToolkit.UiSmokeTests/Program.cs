@@ -24,6 +24,12 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 3 && args[0] == "--audit-helper") return AuditFixTests.Helper(args[1], args[2]);
+        if (args.Length == 1 && args[0] == "--test-bounded-process")
+        {
+            try { AuditFixTests.ProcessesAsync().GetAwaiter().GetResult(); return 0; }
+            catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+        }
         if (args.Length == 2 && args[0] == "--nvpcf-test-worker")
             return NvPcfIsolationTests.RunFakeWorker(args[1]);
         if (args.Length == 1 && args[0] == "--test-nvpcf-isolation")
@@ -36,6 +42,12 @@ internal static class Program
             }
             catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
         }
+        // Window placement tests exercise the real save path. Keep all smoke
+        // test settings/logs/recordings away from the user's running Toolkit.
+        var storageRoot = Path.Combine(Environment.CurrentDirectory, ".tmp", "ui-smoke-storage", Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("TBT_STORAGE_LOCATIONS", JsonSerializer.Serialize(new StorageLocations(
+            Path.Combine(storageRoot, "dependency"), Path.Combine(storageRoot, "configuration"),
+            Path.Combine(storageRoot, "logs"), Path.Combine(storageRoot, "downloads"), Path.Combine(storageRoot, "recordings"))));
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         try
         {
@@ -60,6 +72,11 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        AuditFixTests.Run();
+        StartupAndSettingGroupTests.Run();
+        PluginToastTests.Run();
+        PluginSensorSelectionTests.Run();
+        PluginSensorChartTests.Run();
         ToolkitDialogTests.Run();
         PluginManagerLayoutTests.Run();
         FanBackendPluginTests.Run();
@@ -142,7 +159,6 @@ internal static class Program
         VerifyPowerDeviceProfiles();
         VerifyNvPcfPowerControl();
         VerifyBetaCpuPowerUi();
-        VerifyDataSharingContracts();
         VerifySensorRecordingContracts();
         VerifyOsdContracts();
         VerifyOverviewLayoutSettings();
@@ -181,7 +197,7 @@ internal static class Program
         using var runtime = new ToolkitRuntimeService(settings);
         ModernTheme.Apply(Application.Current, runtime.IsDark);
         var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false);
-        Assert(window.Title == "ThinkBook Toolkit v1.0.4",
+        Assert(window.Title == "ThinkBook Toolkit v1.1.0",
             "The native title bar does not show the current application version.");
         var backgroundLayer = typeof(ToolkitMainWindow)
             .GetField(
@@ -296,7 +312,7 @@ internal static class Program
         using (var versionSettingsPage = new ToolkitSettingsPage(runtime))
         {
             Assert(ContainsText(versionSettingsPage, "当前版本") &&
-                   ContainsText(versionSettingsPage, "v1.0.4") &&
+                   ContainsText(versionSettingsPage, "v1.1.0") &&
                    ContainsButtonText(versionSettingsPage, "检查更新") &&
                    ContainsText(versionSettingsPage, "软件更新检查") &&
                    ContainsText(versionSettingsPage, "自定义游戏检测路径"),
@@ -308,12 +324,12 @@ internal static class Program
                     nameof(ToolkitSettingsPage),
                     "ApplyUpdateResult");
             var newerRelease = ApplicationUpdateService.ParseReleaseJson(
-                "{\"tag_name\":\"v1.1.0\",\"html_url\":" +
-                "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.1.0\"}");
+                "{\"tag_name\":\"v1.2.0\",\"html_url\":" +
+                "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.2.0\"}");
             applyUpdateResult.Invoke(versionSettingsPage, [newerRelease]);
             Assert(GetPrivateField<TextBlock>(
                        versionSettingsPage,
-                       "_updateStatus").Text == "最新版 v1.1.0" &&
+                       "_updateStatus").Text == "最新版 v1.2.0" &&
                    GetPrivateField<Button>(
                        versionSettingsPage,
                        "_downloadUpdate").Visibility == Visibility.Visible,
@@ -431,16 +447,12 @@ internal static class Program
                !Descendants(window.CurrentPage!).Contains(
                    GetPrivateField<CheckBox>(
                        window.CurrentPage!,
-                       "_sensorRecordingEnabled")) &&
-               !Descendants(window.CurrentPage!).Contains(
-                   GetPrivateField<ComboBox>(
-                       window.CurrentPage!,
-                       "_softwareIntegrationMode")),
+                       "_sensorRecordingEnabled")),
             "Sensor and integration controls remain on the Settings page.");
         window.NavigateForTesting("sensors-integration");
         Assert(ContainsText(window.CurrentPage!, "启用 OSD") &&
                ContainsText(window.CurrentPage!, "记录传感器信息") &&
-               ContainsText(window.CurrentPage!, "与其它软件联动"),
+               !ContainsText(window.CurrentPage!, "与其它软件联动"),
             "The Sensors and integration page is missing its controls.");
         window.NavigateForTesting("settings");
         Assert(ContainsText(window.CurrentPage!, "独立显卡状态与占用应用") &&
@@ -3199,7 +3211,6 @@ internal static class Program
         FeatureIds.Automation => "自动化与 Fn 快捷键映射",
         FeatureIds.KeyboardMacros => "键盘宏",
         FeatureIds.UpdateCheck => "软件更新检查",
-        FeatureIds.DataSharing => "与其它软件联动",
         _ => id
     };
 
@@ -3267,13 +3278,13 @@ internal static class Program
 
     private static void VerifyApplicationUpdateService()
     {
-        Assert(ApplicationUpdateService.CurrentVersionText == "1.0.4",
+        Assert(ApplicationUpdateService.CurrentVersionText == "1.1.0",
             "The application version is not the expected release version.");
         var release = ApplicationUpdateService.ParseReleaseJson(
-            "{\"tag_name\":\"v1.1.0\",\"html_url\":" +
-            "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.1.0\"}");
-        Assert(release.Version == new Version(1, 1, 0) &&
-               release.TagName == "v1.1.0" &&
+            "{\"tag_name\":\"v1.2.0\",\"html_url\":" +
+            "\"https://github.com/lhzlhz419/ThinkBookToolkit/releases/tag/v1.2.0\"}");
+        Assert(release.Version == new Version(1, 2, 0) &&
+               release.TagName == "v1.2.0" &&
                ApplicationUpdateService.IsNewer(release),
             "The GitHub Release response is not parsed or compared correctly.");
     }
@@ -5370,83 +5381,6 @@ internal static class Program
         }
     }
 
-    private static void VerifyDataSharingContracts()
-    {
-        Assert(new AppSettings() is
-               {
-                   ShareDataWithOtherSoftware: false,
-                   SoftwareIntegrationMode: SoftwareIntegrationMode.Disabled,
-                   DataSharingPort: 2975
-               } &&
-               CurveProfileStore.IsValidDataSharingPort(1) &&
-               CurveProfileStore.IsValidDataSharingPort(65535) &&
-               !CurveProfileStore.IsValidDataSharingPort(0) &&
-               !CurveProfileStore.IsValidDataSharingPort(65536),
-            "Local data-sharing defaults or port validation are incorrect.");
-
-        var snapshot = ToolkitRuntimeSnapshot.Empty with
-        {
-            ItsMode = ItsMode.Performance,
-            Temperatures = new TemperatureSnapshot(
-                56.5, 43.25, null, 18.75, 11.5,
-                "CPU", "GPU", string.Empty),
-            Fans = new FanSnapshot(
-                DateTimeOffset.Now,
-                2400,
-                2200,
-                new Dictionary<string, FanLimit>())
-        };
-        var shared = LocalDataSharingService.BuildSnapshot(snapshot);
-        Assert(shared.CpuTemperatureC == 56.5 &&
-               shared.CpuPowerW == 18.75 &&
-               shared.GpuTemperatureC == 43.25 &&
-               shared.GpuPowerW == 11.5 &&
-               shared.Fan1Rpm == 2400 &&
-               shared.PerformanceMode == nameof(ItsMode.Performance),
-            "The local data-sharing payload does not expose the required readings.");
-        var missing = LocalDataSharingService.BuildSnapshot(
-            ToolkitRuntimeSnapshot.Empty);
-        Assert(missing.CpuTemperatureC is null &&
-               missing.CpuPowerW is null &&
-               missing.GpuTemperatureC is null &&
-               missing.GpuPowerW is null &&
-               missing.Fan1Rpm is null &&
-               missing.Fan2Rpm is null &&
-               missing.PerformanceMode is null,
-            "Unavailable shared readings are not represented as null.");
-
-        var settings = new AppSettings
-        {
-            Language = "zh-CN",
-            Theme = "dark",
-            DataSharingPort = 2975
-        };
-        using var runtime = new ToolkitRuntimeService(settings);
-        runtime.SetReportForTesting(new FeatureAvailabilityReport([
-            new FeatureAvailability(
-                FeatureIds.DataSharing,
-                "设置",
-                "与其它软件联动",
-                true,
-                "test")
-        ]));
-        using var page = new ToolkitSettingsPage(
-            runtime,
-            sensorIntegrationOnly: true);
-        using var settingsPage = new ToolkitSettingsPage(runtime);
-        Assert(ContainsText(page, "与其它软件联动") &&
-               GetPrivateField<TextBox>(page, "_dataSharingPort").Text ==
-               "2975" &&
-               GetPrivateField<ComboBox>(
-                   page,
-                   "_softwareIntegrationMode").SelectedItem is
-                   ComboBoxItem { Tag: SoftwareIntegrationMode.Disabled } &&
-               GetPrivateField<CheckBox>(settingsPage, "_takeOverFnKeys") is
-               {
-                   VerticalAlignment: VerticalAlignment.Center
-               } fnSwitch && fnSwitch.Margin == new Thickness(0),
-            "Data-sharing settings or the Fn takeover switch alignment are incorrect.");
-    }
 
     private static void VerifySensorRecordingContracts()
     {
@@ -5909,6 +5843,7 @@ internal static class Program
                    ContainsText(settingsWindow, "刷新时间") &&
                    ContainsText(settingsWindow, "吸附阈值") &&
                    ContainsText(settingsWindow, "固定位置") &&
+                   ContainsText(settingsWindow, "重置位置") &&
                    ContainsText(settingsWindow, "不透明度") &&
                    ContainsText(settingsWindow, "文字大小") &&
                    ContainsText(settingsWindow, "对于内存利用率，显示") &&
@@ -5934,6 +5869,19 @@ internal static class Program
                    ContainsText(settingsWindow, "硬盘2温度") &&
                    !ContainsText(settingsWindow, "硬盘3温度"),
                 "The two-column OSD settings UI is incomplete.");
+            settingsWindow.Show();
+            var reset = Descendants(settingsWindow).OfType<Button>().Single(b => b.Content as string == "重置位置");
+            var monitor = OsdMonitorPolicy.ForWindow(new System.Windows.Interop.WindowInteropHelper(settingsWindow).Handle)!;
+            reset.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var position = runtime.Settings.Osd.Orientation == OsdOrientation.Horizontal
+                ? runtime.Settings.Osd.HorizontalMonitor : runtime.Settings.Osd.VerticalMonitor;
+            Assert(position?.DeviceId == monitor.DeviceId && !runtime.Settings.OsdEnabled &&
+                   GetPrivateField<TextBlock>(settingsWindow, "_status").Text == string.Empty,
+                "Reset button did not save the settings-window monitor or changed the OSD enabled state.");
+            var draft = GetPrivateField<ToolkitOsdSettings>(settingsWindow, "_draft");
+            Assert(draft.HorizontalMonitor == runtime.Settings.Osd.HorizontalMonitor &&
+                   draft.VerticalMonitor == runtime.Settings.Osd.VerticalMonitor,
+                "Settings draft would undo the reset on the next edit.");
         }
         finally
         {
@@ -5945,12 +5893,6 @@ internal static class Program
                 FeatureIds.Osd,
                 "设置",
                 "OSD",
-                true,
-                "test"),
-            new FeatureAvailability(
-                FeatureIds.DataSharing,
-                "设置",
-                "与其它软件联动",
                 true,
                 "test")
         ]));
@@ -5967,8 +5909,7 @@ internal static class Program
                ContainsText(page, "记录传感器信息") &&
                labels.IndexOf("启用 OSD") <
                    labels.IndexOf("记录传感器信息") &&
-               labels.IndexOf("记录传感器信息") <
-                   labels.IndexOf("与其它软件联动") &&
+               !ContainsText(page, "与其它软件联动") &&
                controls is not null &&
                ReferenceEquals(controls, LogicalTreeHelper.GetParent(osdSwitch)) &&
                controls.Children.IndexOf(osdButton) <
@@ -6269,7 +6210,7 @@ internal static class Program
         foreach (var item in layout.Cards[OverviewCardIds.Cpu].Items.Keys.ToArray())
             layout.Cards[OverviewCardIds.Cpu].Items[item] = false;
         var normalized = OverviewLayoutDefaults.Normalize(layout);
-        Assert(!normalized.Cards[OverviewCardIds.Cpu].Enabled &&
+        Assert(!OverviewLayoutDefaults.IsCardEnabled(normalized, OverviewCardIds.Cpu) &&
                normalized.Cards[OverviewCardIds.Warranty].Enabled &&
                normalized.Cards[OverviewCardIds.Warranty].Items.Count == 5 &&
                normalized.Cards[OverviewCardIds.Power].Items.Count == 15 &&

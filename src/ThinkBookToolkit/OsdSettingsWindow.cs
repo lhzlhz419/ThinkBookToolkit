@@ -354,6 +354,17 @@ internal sealed partial class OsdSettingsWindow : Window
             _runtime.L("固定位置", "Lock position"),
             _runtime.L("关闭时可拖动；开启后锁定位置并允许鼠标穿透。", "When off, the OSD can be dragged. When on, it is locked and click-through."),
             _fixed));
+        var resetPosition = Button(_runtime.L("重置位置", "Reset position"));
+        resetPosition.Click += (_, _) =>
+        {
+            _status.Text = _runtime.TryResetOsdPosition(this, out var error) ? string.Empty : error;
+            _draft = Clone(_runtime.Settings.Osd);
+        };
+        content.Children.Add(Row(
+            _runtime.L("重置位置", "Reset position"),
+            _runtime.L("将当前方向的 OSD 移回本窗口所在屏幕；不改变 OSD 开关和固定位置设置。",
+                "Move the current OSD orientation onto this screen without changing its enabled or locked state."),
+            resetPosition));
         var opacity = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -409,7 +420,7 @@ internal sealed partial class OsdSettingsWindow : Window
                 "选择容量数值、百分比或同时显示两者。",
                 "Show used/total capacity, percentage, or both."),
             _memoryDisplayMode));
-        foreach (var group in OsdSensorCatalog.Groups)
+        foreach (var group in PluginSensorSelection.Groups(_runtime, PluginSensorSurface.Osd))
         {
             var items = new StackPanel();
             foreach (var sensor in group.Sensors)
@@ -467,6 +478,8 @@ internal sealed partial class OsdSettingsWindow : Window
                 };
                 items.Children.Add(toggle);
             }
+            PluginSensorSelection.AddToggles(items, _runtime, PluginSensorSurface.Osd, group.Id, () => _draft.DisabledPluginSensors,
+                (id, enabled) => { if (_syncing) return; PluginSensorSelection.SetEnabled(_draft.DisabledPluginSensors, id, enabled); Save(); });
             content.Children.Add(Card(
                 _runtime.L(group.Chinese, group.English),
                 items));
@@ -726,6 +739,7 @@ internal sealed partial class OsdSettingsWindow : Window
         BatteryOutputPowerWarning = source.BatteryOutputPowerWarning,
         BatteryOutputPowerCritical = source.BatteryOutputPowerCritical,
         Sensors = source.Sensors.ToList(),
+        DisabledPluginSensors = PluginSensorSelection.Normalize(source.DisabledPluginSensors),
         HorizontalX = source.HorizontalX,
         HorizontalMonitor = source.HorizontalMonitor,
         VerticalMonitor = source.VerticalMonitor,

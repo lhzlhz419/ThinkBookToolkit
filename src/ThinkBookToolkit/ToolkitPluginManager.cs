@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -31,7 +32,10 @@ internal sealed class PluginInstallation(string directory, PluginManifest manife
     internal PublishedPluginSensor[] Values = [];
     internal IReadOnlyDictionary<string, string?> OverviewValues = new Dictionary<string, string?>();
     internal DateTimeOffset LastResultAt;
+    internal long LastToastTimestamp;
+    internal string? LastToastKey;
 }
+internal sealed record PluginToastNotification(string PluginId, string PluginName, string Message, bool IsError);
 internal sealed record PluginPreference(bool Enabled, string Fingerprint);
 internal sealed record PluginManagerOptions(string? PluginRoot = null, string? StateRoot = null, string? HostPath = null, string? BundledRoot = null);
 
@@ -301,7 +305,9 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
             manifest.Pages.Any(p => p.Id.Length > 180 || p.Title.Chinese.Length > 160 || p.Title.English.Length > 160) ||
             manifest.Settings.Any(s => string.IsNullOrWhiteSpace(s.Id) || s.Id.Length > 100 || s.Title.Chinese.Length > 160 || s.Title.English.Length > 160) ||
             manifest.Sensors.Any(s => s.Name.Chinese.Length > 160 || s.Name.English.Length > 160 || s.Unit.Length > 32)) throw new InvalidDataException("Invalid metadata length.");
-        if (manifest.Permissions.Except(new[] { "sensors.read", "data.read", "settings.read", "host.control", "replace", "fan.backend", "ui.custom" }).Any()) throw new InvalidDataException("Unknown permission.");
+        if (manifest.Sensors.Any(s => !PluginSensorChartPolicy.ValidBounds(s.ChartMinimum, s.ChartMaximum)))
+            throw new InvalidDataException("传感器绘图范围无效：上下限必须是有限数字，且下限小于上限。 / Invalid sensor chart range: bounds must be finite and minimum must be less than maximum.");
+        if (manifest.Permissions.Except(new[] { "sensors.read", "data.read", "settings.read", "host.control", "replace", "fan.backend", "ui.custom", "ui.toast" }).Any()) throw new InvalidDataException("Unknown permission.");
         foreach (var page in manifest.Pages.Where(p => p.View is not null))
         {
             var view = page.View!;
@@ -318,16 +324,20 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
                 throw new InvalidDataException("Fan backend requires fan.backend permission and its assembly.");
         }
         ValidateOverviewItems(manifest);
+        ValidateSettingGroups(manifest);
         if (manifest.SensorCategories is null || manifest.SensorCategories.Length > 32 || manifest.SensorCategories.Any(c => c is null ||
             string.IsNullOrWhiteSpace(c.Id) || c.Id.Length > 180 || c.Title is null || string.IsNullOrWhiteSpace(c.Title.Chinese) ||
             string.IsNullOrWhiteSpace(c.Title.English) || c.Title.Chinese.Length > 160 || c.Title.English.Length > 160))
             throw new InvalidDataException("Invalid sensor category declaration.");
         var ids = manifest.Pages.Select(x => x.Id).Concat(manifest.Sensors.Select(x => x.Id)).Concat(manifest.OverviewItems.Select(x => x.Id))
-            .Concat(manifest.SensorCategories.Select(x => x.Id)).ToArray();
+            .Concat(manifest.SensorCategories.Select(x => x.Id)).Concat(manifest.SettingGroups.Select(x => x.Id)).ToArray();
         if (ids.Distinct().Count() != ids.Length || ids.Any(id => !id.StartsWith(manifest.Id + ".", StringComparison.Ordinal))) throw new InvalidDataException("IDs must belong to the plugin namespace.");
         if (manifest.Settings.Select(s => s.Id).Distinct().Count() != manifest.Settings.Length) throw new InvalidDataException("Duplicate setting ID.");
         foreach (var setting in manifest.Settings)
         {
+            if (setting.GroupId is { } groupId && (setting.Replaces is not null ||
+                !manifest.SettingGroups.Any(g => g.Id == groupId && g.PageId == setting.PageId)))
+                throw new InvalidDataException("Setting group must exist on the same page and cannot be used with a replacement.");
             if (!ValidSetting(setting, setting.DefaultValue) || !(manifest.Pages.Any(p => p.Id == setting.PageId) || BuiltinPages.Contains(setting.PageId))) throw new InvalidDataException("Invalid setting definition: " + setting.Id);
             if (setting.Replaces is { } slot && (PluginBuiltinSettings.Kind(slot) is not { } kind || kind != setting.Kind)) throw new InvalidDataException("Unknown or incompatible setting replacement: " + slot);
         }
@@ -337,6 +347,20 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         if (manifest.Pages.Any(p => p.Replaces is "plugins") || manifest.Pages.Any(p => p.Replaces is not null && !BuiltinPages.Contains(p.Replaces))) throw new InvalidDataException("Invalid page replacement.");
         if (Targets(manifest).Any(t => t != "fan-backend") && !manifest.Permissions.Contains("replace")) throw new InvalidDataException("Replacement permission was not declared.");
     }
+    private static void ValidateSettingGroups(PluginManifest manifest)
+    {
+        static bool TextValid(PluginText? text, int maximum) => text is not null &&
+            !string.IsNullOrWhiteSpace(text.Chinese) && !string.IsNullOrWhiteSpace(text.English) &&
+            text.Chinese.Length <= maximum && text.English.Length <= maximum;
+        if (manifest.SettingGroups is null || manifest.SettingGroups.Length > 32 || manifest.SettingGroups.Any(g =>
+            g is null || string.IsNullOrWhiteSpace(g.Id) || g.Id.Length > 180 || !TextValid(g.Title, 160) ||
+            g.Description is not null && !TextValid(g.Description, 1024) || g.Glyph?.Length > 8 ||
+            !(BuiltinPages.Contains(g.PageId) || manifest.Pages.Any(p => p.Id == g.PageId))))
+            throw new InvalidDataException("Invalid setting group declaration.");
+        if (manifest.Settings.Any(s => s.Description is not null && !TextValid(s.Description, 1024) || s.Glyph?.Length > 8))
+            throw new InvalidDataException("Invalid setting presentation metadata.");
+    }
+
     internal static bool ValidSetting(PluginSetting setting, JsonElement value) => setting.Kind switch
     {
         "boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
@@ -468,6 +492,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
                     plugin.LastResultAt = context.Timestamp;
                     foreach (var command in result.Commands ?? [])
                         await PluginHostBridge.ExecuteAsync(_runtime, plugin.Manifest.Permissions, command);
+                    if (result.Toast is { } toast) ShowToast(plugin, toast);
                 }
                 catch (Exception ex)
                 {
@@ -486,6 +511,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
     }
     internal static PublishedPluginSensor[] ValidateResult(PluginInstallation plugin, PluginResult result, DateTimeOffset timestamp)
     {
+        if (result.Toast is { } toast) ValidateToast(plugin, toast);
         if ((result.OverviewValues?.Count ?? 0) > 128 || result.OverviewValues?.Any(pair =>
             pair.Value?.Length > 4096 || !plugin.Manifest.OverviewItems.Any(i => i.Id == pair.Key && i.Action != "remove")) == true)
             throw new InvalidDataException("Invalid or undeclared overview value.");
@@ -504,6 +530,28 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         Revision++; PropertyChanged?.Invoke(this, new(nameof(Revision)));
         ValuesChanged?.Invoke(this, EventArgs.Empty);
         _runtime.PublishPluginSensors(Sensors);
+    }
+    private static void ValidateToast(PluginInstallation plugin, PluginToast toast)
+    {
+        if (!plugin.Manifest.Permissions.Contains("ui.toast")) throw new UnauthorizedAccessException("Plugin has no ui.toast permission.");
+        if (string.IsNullOrWhiteSpace(toast.Message) || toast.Message.Length > 512)
+            throw new ArgumentException("Toast text must contain 1–512 characters.");
+    }
+    internal bool ShowToast(PluginInstallation plugin, PluginToast toast)
+    {
+        ValidateToast(plugin, toast);
+        if (_disposed || _exitSuspended || !plugin.Enabled || plugin.PendingUninstall || plugin.Error is not null || !_plugins.Contains(plugin))
+            throw new InvalidOperationException("Plugin is not active.");
+        var now = Stopwatch.GetTimestamp();
+        var key = toast.IsError + ":" + toast.Message.Trim();
+        if (plugin.LastToastTimestamp != 0)
+        {
+            var elapsed = Stopwatch.GetElapsedTime(plugin.LastToastTimestamp, now);
+            if (elapsed < TimeSpan.FromSeconds(1) || plugin.LastToastKey == key && elapsed < TimeSpan.FromSeconds(10)) return false;
+        }
+        plugin.LastToastTimestamp = now; plugin.LastToastKey = key;
+        _runtime.PublishPluginToast(new(plugin.Manifest.Id, plugin.Manifest.Name.Replace('\r', ' ').Replace('\n', ' '), toast.Message.Trim(), toast.IsError));
+        return true;
     }
     internal void ReportUiFailure(PluginInstallation plugin, Exception error)
     {

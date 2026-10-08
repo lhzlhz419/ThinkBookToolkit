@@ -102,10 +102,12 @@ internal sealed class SensorRecordingViewerWindow : Window
         Content = Build();
         _refreshTimer.Tick += (_, _) => RefreshIfCurrent();
         _runtime.SensorRecordingSampleWritten += OnSampleWritten;
+        _runtime.Plugins.CatalogChanged += OnPluginCatalogChanged;
         Closed += (_, _) =>
         {
             _refreshTimer.Stop();
             _runtime.SensorRecordingSampleWritten -= OnSampleWritten;
+            _runtime.Plugins.CatalogChanged -= OnPluginCatalogChanged;
             Content = null;
             _charts.Children.Clear();
             _hiddenSeriesByChart.Clear();
@@ -292,6 +294,12 @@ internal sealed class SensorRecordingViewerWindow : Window
             _refreshTimer.Stop();
     }
 
+    private void OnPluginCatalogChanged(object? sender, EventArgs args)
+    {
+        _lastRenderedSourceCount = -1;
+        if (IsLoaded) RefreshCharts();
+    }
+
     private void RefreshCharts()
     {
         if (_refreshingCharts)
@@ -326,26 +334,7 @@ internal sealed class SensorRecordingViewerWindow : Window
             samples = AverageResample(samples, maximumPoints);
             _charts.Children.Clear();
             var any = false;
-            var customCategories = _runtime.Plugins.Installations.SelectMany(p => p.Manifest.SensorCategories)
-                .OrderBy(c => c.Order).ThenBy(c => c.Id, StringComparer.Ordinal).ToArray();
-            var pluginKeys = samples.SelectMany(sample => sample.Values.Keys).Where(key => key.StartsWith("plugin:", StringComparison.Ordinal)).Distinct().ToArray();
-            var pluginCharts = pluginKeys.Select(key =>
-            {
-                var descriptor = _runtime.Plugins.Installations.SelectMany(p => p.Manifest.Sensors).FirstOrDefault(s => "plugin:" + s.Id == key);
-                var label = descriptor?.Name.Resolve(_runtime.IsChinese) ?? key["plugin:".Length..];
-                var group = PluginSensorPlacement.HistoryGroup(descriptor?.Category) ??
-                    customCategories.FirstOrDefault(c => c.Id == descriptor?.Category)?.Id;
-                return (Group: group, Chart: B(label, label, S(key, label)));
-            }).ToArray();
-            var grouped = Definitions.Concat(customCategories.Select(c =>
-                new ChartGroupDefinition(c.Title.Chinese, c.Title.English, [], c.Id))).Select(definition => definition with
-            {
-                Charts = definition.Charts.Concat(pluginCharts.Where(p => p.Group == (definition.Id ?? definition.English)).Select(p => p.Chart)).ToArray()
-            });
-            // Old recordings outlive their plugin manifests; never discard data
-            // or guess a hardware category when its metadata is unavailable.
-            var unclassified = pluginCharts.Where(p => p.Group is null).Select(p => p.Chart).ToArray();
-            foreach (var definition in grouped.Concat(unclassified.Length == 0 ? [] : new[] { new ChartGroupDefinition("其他记录", "Other recordings", unclassified) }))
+            foreach (var definition in BuildChartGroups(samples, _runtime.Plugins.Installations, _runtime.IsChinese))
             {
                 var charts = definition.Charts
                     .Where(chart => chart.Series.Any(series => samples.Any(sample =>
@@ -671,6 +660,46 @@ internal sealed class SensorRecordingViewerWindow : Window
         Template = ModernTheme.RoundedButtonTemplate(10)
     };
 
+    internal static IReadOnlyList<ChartGroupDefinition> BuildChartGroups(IReadOnlyList<SensorRecordingSample> samples,
+        IReadOnlyList<PluginInstallation> plugins, bool chinese)
+    {
+        var categories = plugins.SelectMany(p => p.Manifest.SensorCategories).OrderBy(c => c.Order).ThenBy(c => c.Id, StringComparer.Ordinal).ToArray();
+        var keys = samples.SelectMany(s => s.Values.Keys).Where(k => k.StartsWith("plugin:", StringComparison.Ordinal)).Distinct().ToArray();
+        var pluginCharts = keys.Select(key =>
+        {
+            var sensor = plugins.SelectMany(p => p.Manifest.Sensors).FirstOrDefault(s => "plugin:" + s.Id == key);
+            var label = sensor?.Name.Resolve(chinese) ?? key["plugin:".Length..];
+            var group = PluginSensorPlacement.HistoryGroup(sensor?.Category) ?? categories.FirstOrDefault(c => c.Id == sensor?.Category)?.Id;
+            return (Group: group, Chart: new ChartDefinition(sensor?.Name.Chinese ?? label, sensor?.Name.English ?? label,
+                [S(key, label)], sensor?.ChartMinimum, sensor?.ChartMaximum));
+        }).ToArray();
+        var result = new List<ChartGroupDefinition>();
+        foreach (var group in Definitions.Concat(categories.Select(c => new ChartGroupDefinition(c.Title.Chinese, c.Title.English, [], c.Id))))
+        {
+            var charts = new List<ChartDefinition>();
+            foreach (var chart in group.Charts)
+            {
+                var remaining = new List<SeriesDefinition>();
+                var separate = new List<ChartDefinition>();
+                foreach (var series in chart.Series)
+                {
+                    var sensor = PluginSensorChartPolicy.Replacement(series.Key, plugins);
+                    if (sensor is null || !PluginSensorChartPolicy.HasBounds(sensor)) { remaining.Add(series); continue; }
+                    // Each declared range belongs to one sensor, not every curve
+                    // which previously happened to share the built-in chart.
+                    separate.Add(new(sensor.Name.Chinese, sensor.Name.English, [S(series.Key, sensor.Name.Resolve(chinese))], sensor.ChartMinimum, sensor.ChartMaximum));
+                }
+                if (remaining.Count > 0) charts.Add(chart with { Series = remaining });
+                charts.AddRange(separate);
+            }
+            charts.AddRange(pluginCharts.Where(c => c.Group == (group.Id ?? group.English)).Select(c => c.Chart));
+            result.Add(group with { Charts = charts });
+        }
+        var unknown = pluginCharts.Where(c => c.Group is null).Select(c => c.Chart).ToArray();
+        if (unknown.Length > 0) result.Add(new("其他记录", "Other recordings", unknown));
+        return result;
+    }
+
     private static ChartDefinition C(
         string chinese,
         string english,
@@ -690,12 +719,12 @@ internal sealed class SensorRecordingViewerWindow : Window
     private static SolidColorBrush Brush(string value) =>
         new((Color)ColorConverter.ConvertFromString(value));
 
-    private sealed record ChartGroupDefinition(
+    internal sealed record ChartGroupDefinition(
         string Chinese,
         string English,
         IReadOnlyList<ChartDefinition> Charts,
         string? Id = null);
-    private sealed record ChartDefinition(
+    internal sealed record ChartDefinition(
         string Chinese,
         string English,
         IReadOnlyList<SeriesDefinition> Series,
@@ -931,7 +960,7 @@ internal sealed class SensorHistoryChart : FrameworkElement
                 {
                     if (!sample.Values.TryGetValue(
                             item.series.Key,
-                            out var value) || !value.HasValue)
+                            out var value) || !value.HasValue || !double.IsFinite(value.Value))
                     {
                         open = false;
                         continue;
@@ -939,10 +968,7 @@ internal sealed class SensorHistoryChart : FrameworkElement
                     var x = _plot.Left +
                         (sample.Timestamp - start).TotalMilliseconds /
                         duration * _plot.Width;
-                    var normalized = Math.Clamp(
-                        (value.Value - minimum) / (maximum - minimum),
-                        0,
-                        1);
+                    var normalized = NormalizeReading(value.Value, minimum, maximum);
                     var point = new Point(
                         x,
                         _plot.Bottom - normalized * _plot.Height);
@@ -967,23 +993,41 @@ internal sealed class SensorHistoryChart : FrameworkElement
         double? minimumBound,
         double? maximumBound)
     {
-        var rawMinimum = values.Count > 0 ? values.Min() : 0;
-        var rawMaximum = values.Count > 0 ? values.Max() : 1;
+        if (!PluginSensorChartPolicy.ValidBounds(minimumBound, maximumBound)) throw new ArgumentOutOfRangeException(nameof(minimumBound), "Invalid chart bounds.");
+        var finite = values.Where(double.IsFinite).ToArray();
+        var rawMinimum = finite.Length > 0 ? finite.Min() : 0;
+        var rawMaximum = finite.Length > 0 ? finite.Max() : 1;
         var minimum = minimumBound ?? rawMinimum;
         var maximum = maximumBound ?? rawMaximum;
+        // Readings may all lie beyond a fixed endpoint. Only move the automatic
+        // endpoint; never expand a declared limit to accommodate those readings.
+        if (!minimumBound.HasValue && maximumBound.HasValue) minimum = Math.Min(minimum, maximum);
+        if (!maximumBound.HasValue && minimumBound.HasValue) maximum = Math.Max(maximum, minimum);
         if (!minimumBound.HasValue)
         {
-            var range = Math.Max(1, maximum - minimum);
-            minimum -= range * .08;
+            var padding = Math.Max(.5, maximum / 2 - minimum / 2) * .16;
+            minimum = Math.Max(double.MinValue, minimum - padding);
         }
         if (!maximumBound.HasValue)
         {
-            var range = Math.Max(1, maximum - minimum);
-            maximum += range * .08;
+            var padding = Math.Max(.5, maximum / 2 - minimum / 2) * .16;
+            maximum = Math.Min(double.MaxValue, maximum + padding);
         }
         if (maximum <= minimum)
-            maximum = minimum + 1;
+        {
+            if (!minimumBound.HasValue) minimum = Math.BitDecrement(maximum);
+            else maximum = Math.BitIncrement(minimum);
+        }
         return (minimum, maximum);
+    }
+
+    internal static double NormalizeReading(double value, double minimum, double maximum)
+    {
+        if (value <= minimum) return 0;
+        if (value >= maximum) return 1;
+        var range = maximum - minimum;
+        return double.IsFinite(range) ? (value - minimum) / range :
+            (value / 2 - minimum / 2) / (maximum / 2 - minimum / 2);
     }
 
     internal void ToggleSeriesForTesting(string key)

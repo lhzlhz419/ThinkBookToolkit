@@ -151,6 +151,9 @@ internal sealed class SensorRecordingService : IDisposable
     private StreamWriter? _writer;
     private IReadOnlyList<string> _metricKeys = [];
     private bool _writing;
+    private readonly RecordingCompressionQueue _compression = new();
+    private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
+    private bool _disposed;
 
     public SensorRecordingService(ToolkitRuntimeService runtime)
     {
@@ -177,7 +180,7 @@ internal sealed class SensorRecordingService : IDisposable
         {
             var desiredKeys = KeysForSelectedSensors(
                 _runtime.Settings.SensorRecording.Sensors);
-            desiredKeys = SensorRecordingFormat.OrderKeys(desiredKeys.Concat(_runtime.Plugins.Sensors.Where(s => s.Replaces is null).Select(s => "plugin:" + s.Id)));
+            desiredKeys = SensorRecordingFormat.OrderKeys(desiredKeys.Concat(PluginSensorSelection.RecordingSensors(_runtime).Where(s => s.Replaces is null).Select(s => "plugin:" + s.Id)));
             if (_writer is null || !_metricKeys.SequenceEqual(desiredKeys))
                 StartNewFile();
             _timer.Interval = TimeSpan.FromSeconds(
@@ -198,7 +201,7 @@ internal sealed class SensorRecordingService : IDisposable
         Directory.CreateDirectory(CurveProfileStore.SensorRecordingDirectory);
         CurrentPath = Path.Combine(
             CurveProfileStore.SensorRecordingDirectory,
-            $"sensors-{DateTime.Now:yyyyMMdd-HHmmss-fff}.jsonl");
+            $"sensors-{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Guid.NewGuid():N}.jsonl");
         var stream = new FileStream(
             CurrentPath,
             FileMode.CreateNew,
@@ -212,7 +215,7 @@ internal sealed class SensorRecordingService : IDisposable
             64 * 1024);
         _metricKeys = KeysForSelectedSensors(
             _runtime.Settings.SensorRecording.Sensors);
-        _metricKeys = SensorRecordingFormat.OrderKeys(_metricKeys.Concat(_runtime.Plugins.Sensors.Where(s => s.Replaces is null).Select(s => "plugin:" + s.Id)));
+        _metricKeys = SensorRecordingFormat.OrderKeys(_metricKeys.Concat(PluginSensorSelection.RecordingSensors(_runtime).Where(s => s.Replaces is null).Select(s => "plugin:" + s.Id)));
         _writer.WriteLine(SensorRecordingFormat.Header(_metricKeys));
         _runtime.Settings.LastSensorRecordingPath = CurrentPath;
         SaveRecordingPath();
@@ -230,28 +233,52 @@ internal sealed class SensorRecordingService : IDisposable
         try { writer?.Dispose(); } catch { }
         if (!string.IsNullOrWhiteSpace(CurrentPath))
         {
-            var completedPath = CurrentPath;
-            try
-            {
-                completedPath = SensorRecordingArchive
-                    .CompressAndDeleteSource(CurrentPath);
-                _runtime.Settings.LastSensorRecordingPath = completedPath;
-                SaveRecordingPath();
-                ToolkitLog.Info(
-                    "Sensor recording compressed: " + completedPath);
-            }
-            catch (Exception ex)
-            {
-                ToolkitLog.Error(
-                    "Sensor recording could not be compressed; the original file was kept: " +
-                    CurrentPath,
-                    ex);
-            }
-            ToolkitLog.Info("Sensor recording stopped: " + completedPath);
+            QueueCompression(CurrentPath);
+            ToolkitLog.Info("Sensor recording closed; compression queued: " + CurrentPath);
         }
         CurrentPath = string.Empty;
         _metricKeys = [];
         _buffer.Clear();
+    }
+
+    private void QueueCompression(string source)
+    {
+        _compression.Enqueue(source, archive =>
+        {
+            if (_dispatcher.HasShutdownStarted || _dispatcher.HasShutdownFinished) return;
+            _dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_disposed || _runtime.Settings.LastSensorRecordingPath != source) return;
+                _runtime.Settings.LastSensorRecordingPath = archive;
+                SaveRecordingPath();
+            }));
+        });
+    }
+
+    internal void RecoverClosedFiles()
+    {
+        var current = CurrentPath;
+        var directory = CurveProfileStore.SensorRecordingDirectory;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                if (!Directory.Exists(directory)) return;
+                foreach (var path in Directory.EnumerateFiles(directory, "sensors-*.jsonl"))
+                    if (FileRetentionPolicy.IsRecordingFile(path) &&
+                        (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0 &&
+                        !string.Equals(path, current, StringComparison.OrdinalIgnoreCase)) QueueCompression(path);
+                var last = _runtime.Settings.LastSensorRecordingPath;
+                if (!string.IsNullOrEmpty(last) && !File.Exists(last) && File.Exists(last + ".gz"))
+                    _dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (_disposed || _runtime.Settings.LastSensorRecordingPath != last) return;
+                        _runtime.Settings.LastSensorRecordingPath = last + ".gz";
+                        SaveRecordingPath();
+                    }));
+            }
+            catch (Exception ex) { ToolkitLog.Warning("Recording compression recovery failed: " + ex.Message); }
+        });
     }
 
     private void SaveRecordingPath()
@@ -291,7 +318,7 @@ internal sealed class SensorRecordingService : IDisposable
                 snapshot,
                 _runtime.CurrentFps,
                 _runtime.Settings.SensorRecording.Sensors);
-            sample = MergePluginSample(sample, _runtime.Plugins.Sensors);
+            sample = MergePluginSample(sample, PluginSensorSelection.RecordingSensors(_runtime));
             if (!_runtime.Settings.SensorRecordingEnabled ||
                 _runtime.IsSystemSessionEnding ||
                 !ReferenceEquals(_writer, recordingWriter))
@@ -442,5 +469,5 @@ internal sealed class SensorRecordingService : IDisposable
             ? Math.Round(value.Value, 2, MidpointRounding.AwayFromZero)
             : null;
 
-    public void Dispose() => Stop();
+    public void Dispose() { _disposed = true; Stop(); }
 }

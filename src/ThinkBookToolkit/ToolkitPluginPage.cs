@@ -14,8 +14,8 @@ internal sealed class ToolkitPluginPage : ToolkitPageBase
     internal ToolkitPluginPage(ToolkitRuntimeService runtime, PluginInstallation plugin, PluginPage page) : base(runtime)
     {
         var panel = new StackPanel();
-        foreach (var setting in plugin.Manifest.Settings.Where(s => s.PageId == page.Id))
-            panel.Children.Add(Card(setting.Title.Resolve(runtime.IsChinese), PluginSettingControl.Create(runtime, plugin, setting)));
+        foreach (var element in BuildPluginSettings(plugin, plugin.Manifest.Settings.Where(s => s.PageId == page.Id)))
+            panel.Children.Add(element);
         panel.Children.Add(new PluginSensorPanel(runtime, pluginId: plugin.Manifest.Id));
         Content = panel;
     }
@@ -23,7 +23,7 @@ internal sealed class ToolkitPluginPage : ToolkitPageBase
 
 internal static class PluginSettingControl
 {
-    internal static UIElement Create(ToolkitRuntimeService runtime, PluginInstallation plugin, PluginSetting setting)
+    internal static UIElement Create(ToolkitRuntimeService runtime, PluginInstallation plugin, PluginSetting setting, bool showTitle = true)
     {
         if (runtime.Plugins.Setting(plugin.Manifest.Id + ".setting." + setting.Id) is { } replacement)
         { plugin = replacement.Plugin; setting = replacement.Setting; }
@@ -41,7 +41,8 @@ internal static class PluginSettingControl
         var current = runtime.Plugins.SettingValue(plugin, setting);
         if (setting.Kind == "boolean")
         {
-            var control = new CheckBox { Content = setting.Title.Resolve(runtime.IsChinese), IsChecked = current.GetBoolean(), Margin = new Thickness(4) };
+            if (!showTitle) root.Tag = "KeepOnRight";
+            var control = new CheckBox { Content = showTitle ? setting.Title.Resolve(runtime.IsChinese) : null, IsChecked = current.GetBoolean(), Margin = new Thickness(4) };
             reload = () => control.IsChecked = runtime.Plugins.SettingValue(plugin, setting).GetBoolean();
             control.Click += (_, _) => Save(JsonSerializer.SerializeToElement(control.IsChecked == true));
             root.Children.Add(control);
@@ -97,6 +98,7 @@ internal sealed class PluginSensorPanel : StackPanel
     internal void Refresh()
     {
         var sensors = _runtime.Plugins.Sensors.Where(s => s.Replaces is null &&
+            ((_overviewCard is null && _category is null) || PluginSensorSelection.Enabled(_runtime, PluginSensorSurface.Overview, s.Id)) &&
             (_overviewCard is null || PluginSensorPlacement.OverviewCard(s.Category) == _overviewCard) &&
             (_category is null || s.Category == _category) &&
             (_pluginId is null || s.PluginId == _pluginId)).ToArray();
@@ -363,6 +365,7 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
         "sensors.read" => L("读取传感器", "Read sensors"), "data.read" => L("读取运行数据", "Read runtime data"),
         "settings.read" => L("读取设置", "Read settings"), "host.control" => L("控制宿主", "Control host"),
         "ui.custom" => L("自绘页面（进程内）", "Custom UI (in-process)"),
+        "ui.toast" => L("显示右下角提示", "Show in-app notifications"),
         "replace" => L("替换内置内容", "Replace built-in content"), "fan.backend" => L("风扇后端", "Fan backend"), _ => permission
     };
 

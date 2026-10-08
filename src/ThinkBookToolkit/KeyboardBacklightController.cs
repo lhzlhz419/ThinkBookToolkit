@@ -6,7 +6,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace ThinkBookToolkit;
 
-internal enum KeyboardBacklightLevel
+public enum KeyboardBacklightLevel
 {
     Auto,
     Low,

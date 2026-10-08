@@ -76,6 +76,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly DispatcherTimer _pollTimer = new();
     private readonly DispatcherTimer _powerSettingsLockTimer = new();
     private readonly SemaphoreSlim _powerSettingsGate = new(1, 1);
+    private long _powerLockRevision;
     private readonly SemaphoreSlim _temperatureReadGate = new(1, 1);
     private readonly SemaphoreSlim _batteryReadGate = new(1, 1);
     private readonly FanWatchdogClient _fanWatchdog = new();
@@ -85,9 +86,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly LenovoFnKeyManager _fnKeyManager;
     private readonly AutomationRunner _automationRunner;
     private readonly KeyboardMacroService _macroService;
-    private readonly LocalDataSharingService _dataSharing;
     private readonly FpsSensorController _fpsMonitor;
     private readonly ToolkitOsdManager _osdManager;
+    internal DriverInstallationCoordinator DriverInstallations { get; } = new();
+    private readonly KeyboardBacklightStartupRestore _keyboardBacklightStartupRestore = new();
     private readonly SensorRecordingService _sensorRecording;
     private readonly GameProcessDetector _gameProcessDetector;
     private MainWindow? _fanRuntime;
@@ -154,10 +156,6 @@ internal sealed class ToolkitRuntimeService : IDisposable
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
         Plugins = new ToolkitPluginManager(this, pluginOptions);
-        _dataSharing = new LocalDataSharingService(
-            () => Snapshot,
-            () => Settings.SoftwareIntegrationMode,
-            HandleIntegrationControlAsync);
         _osdManager = new ToolkitOsdManager(this);
         _sensorRecording = new SensorRecordingService(this);
         _pollTimer.Tick += async (_, _) => await RefreshAsync();
@@ -167,24 +165,6 @@ internal sealed class ToolkitRuntimeService : IDisposable
         GpuTelemetryControl.ModeChanged += OnGpuTelemetryModeChanged;
         SyncPollingInterval();
         SyncSystemThemeSubscription();
-        if (settings.SoftwareIntegrationMode !=
-            SoftwareIntegrationMode.Disabled)
-        {
-            try
-            {
-                _dataSharing.Start(settings.DataSharingPort);
-            }
-            catch (Exception ex)
-            {
-                ToolkitLog.Error(
-                    "Local data sharing could not be started from the saved settings.",
-                    ex);
-                settings.ShareDataWithOtherSoftware = false;
-                settings.SoftwareIntegrationMode =
-                    SoftwareIntegrationMode.Disabled;
-                try { CurveProfileStore.SaveSettings(settings); } catch { }
-            }
-        }
     }
 
     public AppSettings Settings { get; }
@@ -415,6 +395,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             var wasEnabled = NvApiGpuPowerEnabled;
+            if (wasEnabled || Settings.UseNvApiGpuPower) ResetAcceptedPowerLimits();
             _nvApiDisableSavePending |= Settings.UseNvApiGpuPower;
             Settings.UseNvApiGpuPower = false;
             NvApiGpuPowerEnabled = false;
@@ -927,6 +908,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     }
 
     public event EventHandler<string>? StatusChanged;
+    internal event EventHandler<PluginToastNotification>? PluginToastRequested;
+    internal void PublishPluginToast(PluginToastNotification notification) => PluginToastRequested?.Invoke(this, notification);
 
     internal void SetReportForTesting(FeatureAvailabilityReport report)
     {
@@ -1011,6 +994,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
             $"Feature detection completed: {Report.Items.Count(item => item.Usable)}/{Report.Items.Count} usable.");
         FeatureAvailabilityDiagnostics.LogIssues(Report);
         FeatureAvailabilityCache.Current = Report;
+        try
+        {
+            await _keyboardBacklightStartupRestore.ApplyOnceAsync(Settings, Report.IsAvailable(FeatureIds.KeyboardBacklight));
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning("Startup keyboard backlight restore failed: " + ex.Message);
+            SetStatus(L("启动时恢复键盘背光失败：", "Startup keyboard backlight restore failed: ") + ex.Message);
+        }
         InitializeAlternativeFullSpeedMethod();
         LogStage("feature detection");
 
@@ -1074,6 +1066,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         SyncPowerSettingsLockTimer();
         _osdManager.Sync();
         _sensorRecording.Sync();
+        _sensorRecording.RecoverClosedFiles();
         LogStage("background refresh scheduling");
     }
 
@@ -1352,9 +1345,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
         await _powerSettingsGate.WaitAsync();
         try
         {
+            ResetAcceptedPowerLimits();
+            var profile = CurrentPowerModeLock(create: false);
+            var revision = _powerLockRevision;
             var confirmed = await Task.Run(() =>
                 ApplyPowerSettingsCore(state));
-            UpdatePowerLockTargetAfterApply(confirmed);
+            if (revision == _powerLockRevision && ReferenceEquals(profile, CurrentPowerModeLock(create: false)))
+                UpdatePowerLockTargetAfterApply(confirmed, state);
             return confirmed;
         }
         finally
@@ -1380,6 +1377,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         await _powerSettingsGate.WaitAsync();
         try
         {
+            ResetAcceptedPowerLimits();
             var confirmed = await Task.Run(() =>
             {
                 NvPcfPowerController.ResetToDefaults();
@@ -1458,6 +1456,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             if (enabled && (!NvApiGpuPowerVisible || Report?.IsAvailable(FeatureIds.NvApiGpuPower) != true))
                 throw new InvalidOperationException("NVPCF is no longer available.");
+            ResetAcceptedPowerLimits();
             var source = automatic && !enabled
                 ? _cachedPowerSettings ?? Snapshot.PowerSettings ?? NvPcfPowerPolicy.EmptyState()
                 : await Task.Run(ReadPowerSettingsCore);
@@ -1521,10 +1520,14 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         var oldIntel = Settings.UseIntelMmioCpuPower;
         var oldAmd = Settings.UseAmdZenStatesCpuPower;
+        var previousLegacyProfiles = ClonePowerModeLocks(Settings.PowerSettingsLocksByMode);
+        var previousNvApiProfiles = ClonePowerModeLocks(Settings.NvApiPowerSettingsLocksByMode);
         try
         {
             Settings.UseIntelMmioCpuPower = intel && enabled;
             Settings.UseAmdZenStatesCpuPower = !intel && enabled;
+            if (oldIntel != Settings.UseIntelMmioCpuPower || oldAmd != Settings.UseAmdZenStatesCpuPower)
+                ResetAcceptedPowerLimits();
             CurveProfileStore.SaveSettings(Settings);
             _cachedPowerSettings = null;
             OverviewLayoutChanged?.Invoke(this, EventArgs.Empty);
@@ -1534,6 +1537,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             Settings.UseIntelMmioCpuPower = oldIntel;
             Settings.UseAmdZenStatesCpuPower = oldAmd;
+            Settings.PowerSettingsLocksByMode = previousLegacyProfiles;
+            Settings.NvApiPowerSettingsLocksByMode = previousNvApiProfiles;
             return ex.Message;
         }
     }
@@ -1603,6 +1608,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             confirmed,
             settings,
             profile.Locks);
+        PowerLockAcceptancePolicy.Accept(profile, confirmed, selection);
         return confirmed;
     }
 
@@ -1864,12 +1870,16 @@ internal sealed class ToolkitRuntimeService : IDisposable
     }
 
     private void UpdatePowerLockTargetAfterApply(
-        PowerSettingsState confirmed)
+        PowerSettingsState confirmed, PowerSettingsState? requested = null)
     {
         var modeLock = CurrentPowerModeLock(create: false);
         if (modeLock?.Locks is not { Any: true })
+        {
+            TrySaveSettingsAfterBackgroundChange("power clamp acceptance reset");
             return;
-        modeLock.Target = confirmed;
+        }
+        modeLock.Target = requested ?? confirmed;
+        PowerLockAcceptancePolicy.Accept(modeLock, confirmed, modeLock.Locks);
         var inactiveProfiles = NvApiGpuPowerEnabled
             ? Settings.PowerSettingsLocksByMode
             : Settings.NvApiPowerSettingsLocksByMode;
@@ -1894,13 +1904,22 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 if (inactive.Locks.IsLocked(setting))
                     inactiveTarget = PowerSettingsController.WithSetting(
                         inactiveTarget,
-                        confirmed,
+                        requested ?? confirmed,
                         setting);
             }
             inactive.Target = inactive.Locks.Any ? inactiveTarget : null;
+            var common = inactive.Locks with
+            {
+                GpuPowerBoost = false, GpuConfigurableTgp = false, GpuTemperatureLimit = false,
+                GpuToCpuDynamicBoost = false, Atpp = false,
+                NvPcfAcTargetTppLimit = false, NvPcfAcDefaultGpuLimit = false,
+                NvPcfAcMinGpuLimit = false, NvPcfAcMaxGpuLimit = false,
+                NvPcfDynamicBoost = false, NvApiGpuTemperatureLimit = false
+            };
+            PowerLockAcceptancePolicy.Accept(inactive, confirmed, common);
         }
         Settings.PowerSettingsLocks = modeLock.Locks;
-        Settings.PowerSettingsLockTarget = confirmed;
+        Settings.PowerSettingsLockTarget = modeLock.Target;
         try
         {
             CurveProfileStore.SaveSettings(Settings);
@@ -1923,7 +1942,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
             result[pair.Key] = new PowerModeLockSettings
             {
                 Locks = pair.Value.Locks with { },
-                Target = pair.Value.Target
+                Target = pair.Value.Target,
+                AcceptedTarget = pair.Value.AcceptedTarget
             };
         }
         return result;
@@ -2188,6 +2208,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             modeLock.Target = null;
         }
         MirrorCommonPowerLock(setting, enabled, target);
+        ResetAcceptedPowerLimits();
         Settings.PowerSettingsLocks = modeLock.Locks;
         Settings.PowerSettingsLockTarget = modeLock.Target;
         try
@@ -3620,107 +3641,6 @@ internal sealed class ToolkitRuntimeService : IDisposable
             value,
             out error);
 
-    public bool TrySetDataSharing(
-        bool enabled,
-        int port,
-        out string? error) => TrySetSoftwareIntegration(
-        enabled
-            ? SoftwareIntegrationMode.ShareDataOnly
-            : SoftwareIntegrationMode.Disabled,
-        port,
-        out error);
-
-    public bool TrySetSoftwareIntegration(
-        SoftwareIntegrationMode mode,
-        int port,
-        out string? error)
-    {
-        if (!Enum.IsDefined(mode))
-        {
-            error = L("联动模式无效。", "The integration mode is invalid.");
-            return false;
-        }
-        if (!CurveProfileStore.IsValidDataSharingPort(port))
-        {
-            error = L(
-                "端口号必须为 1 到 65535 之间的整数。",
-                "The port must be an integer between 1 and 65535.");
-            return false;
-        }
-
-        var previousMode = Settings.SoftwareIntegrationMode;
-        var previousPort = Settings.DataSharingPort;
-        try
-        {
-            if (mode != SoftwareIntegrationMode.Disabled)
-                _dataSharing.Start(port);
-            else
-                _dataSharing.Stop();
-            Settings.SoftwareIntegrationMode = mode;
-            Settings.ShareDataWithOtherSoftware =
-                mode != SoftwareIntegrationMode.Disabled;
-            Settings.DataSharingPort = port;
-            CurveProfileStore.SaveSettings(Settings);
-            error = null;
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Settings.SoftwareIntegrationMode = previousMode;
-            Settings.ShareDataWithOtherSoftware =
-                previousMode != SoftwareIntegrationMode.Disabled;
-            Settings.DataSharingPort = previousPort;
-            try
-            {
-                if (previousMode != SoftwareIntegrationMode.Disabled)
-                    _dataSharing.Start(previousPort);
-                else
-                    _dataSharing.Stop();
-            }
-            catch (Exception rollbackException)
-            {
-                ToolkitLog.Error(
-                    "Local data sharing could not be rolled back.",
-                    rollbackException);
-            }
-            error = ex.GetBaseException().Message;
-            return false;
-        }
-    }
-
-    private async Task<string?> HandleIntegrationControlAsync(
-        string route,
-        string value)
-    {
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is not null && !dispatcher.CheckAccess())
-        {
-            return await dispatcher.InvokeAsync(() =>
-                    HandleIntegrationControlAsync(route, value))
-                .Task.Unwrap();
-        }
-        return route switch
-        {
-            "performance-mode" =>
-                Enum.TryParse<ItsMode>(value, true, out var mode) &&
-                PerformanceModeCycle.IsSelectableMode(mode)
-                    ? await SetItsModeAsync(mode)
-                    : "Invalid performance mode. Use PowerSaving, " +
-                      "Intelligent, Performance, or Geek.",
-            "fan-strategy" =>
-                Enum.TryParse<FanControlMode>(value, true, out var strategy) &&
-                strategy is FanControlMode.FirmwareAutomatic or
-                    FanControlMode.FixedRpm or FanControlMode.FanCurve or
-                    FanControlMode.AdvancedCurve
-                    ? await SetFanModeAsync(strategy)
-                    : "Invalid fan strategy. Use FirmwareAutomatic, " +
-                      "FixedRpm, FanCurve, or AdvancedCurve.",
-            "fan-full-speed" => bool.TryParse(value, out var enabled)
-                ? await SetFullSpeedAsync(enabled)
-                : "Invalid fan-full-speed value. Use true or false.",
-            _ => "Unknown control route."
-        };
-    }
 
     public bool TrySetOsdEnabled(bool enabled, out string? error)
     {
@@ -3762,6 +3682,46 @@ internal sealed class ToolkitRuntimeService : IDisposable
             error = ex.GetBaseException().Message;
             return false;
         }
+    }
+
+    internal bool TrySetKeyboardBacklightRestoreOnStartup(bool enabled, out string? error)
+    {
+        var previous = Settings.RestoreKeyboardBacklightOnStartup;
+        Settings.RestoreKeyboardBacklightOnStartup = enabled;
+        try { CurveProfileStore.SaveSettings(Settings); error = null; return true; }
+        catch (Exception ex)
+        {
+            Settings.RestoreKeyboardBacklightOnStartup = previous;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    internal bool TryRememberKeyboardBacklightLevel(KeyboardBacklightLevel level, out string? error)
+    {
+        if (!Enum.IsDefined(level))
+        {
+            error = L("无效的键盘背光亮度。", "Invalid keyboard backlight brightness.");
+            return false;
+        }
+        var previous = Settings.LastKeyboardBacklightLevel;
+        Settings.LastKeyboardBacklightLevel = level;
+        if (TrySetKeyboardBacklightRestoreOnStartup(Settings.RestoreKeyboardBacklightOnStartup, out error)) return true;
+        Settings.LastKeyboardBacklightLevel = previous;
+        return false;
+    }
+
+    internal bool TryResetOsdPosition(System.Windows.Window owner, out string? error)
+    {
+        var monitor = OsdMonitorPolicy.ForWindow(new System.Windows.Interop.WindowInteropHelper(owner).Handle);
+        if (monitor is null)
+        {
+            error = L("未找到可用的显示器，请稍后重试。", "No display is available. Please try again shortly.");
+            return false;
+        }
+        var settings = CurveProfileStore.NormalizeOsdSettings(Settings.Osd);
+        OsdMonitorPolicy.ResetPosition(settings, monitor);
+        return TrySetOsdSettings(settings, out error);
     }
 
     public bool TrySetSensorRecordingEnabled(
@@ -4519,7 +4479,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             var modeLock = CurrentPowerModeLock(create: false);
-            var target = modeLock?.Target;
+            var desiredTarget = modeLock?.Target;
+            var revision = _powerLockRevision;
+            var target = PowerLockAcceptancePolicy.Effective(modeLock);
             var selection = modeLock is null
                 ? new PowerSettingsLockSelection()
                 : modeLock.Locks with { };
@@ -4545,7 +4507,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
             var current = await Task.Run(ReadPowerSettingsCore);
             var active = CurrentPowerModeLock(create: false);
-            if (active?.Locks != selection || active?.Target != target)
+            if (revision != _powerLockRevision || !ReferenceEquals(active, modeLock) || active?.Locks != selection || active?.Target != desiredTarget)
             {
                 return;
             }
@@ -4560,7 +4522,6 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     target!,
                     effectiveSelection);
                 Exception? wmiLockError = null;
-                BetaCpuPowerSnapshot? betaReadback = null;
                 await Task.Run(() =>
                 {
                     var wmiSelection = effectiveSelection;
@@ -4591,7 +4552,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     if (IntelMmioCpuPowerEnabled &&
                         (effectiveSelection.CpuPl1 || effectiveSelection.CpuPl2 ||
                          effectiveSelection.CpuTurboTimeLimit))
-                        betaReadback = IntelMmioPowerController.Write(
+                        _ = IntelMmioPowerController.Write(
                             restored.CpuPl1, restored.CpuPl2,
                             restored.CpuTurboTimeLimit);
                     else if (AmdZenStatesCpuPowerEnabled &&
@@ -4607,7 +4568,6 @@ internal sealed class ToolkitRuntimeService : IDisposable
                         _ = AmdZenStatesPowerController.Write(names[2], restored.CpuTurboTimeLimit);
                         if (effectiveSelection.CpuTemperatureLimit)
                             _ = AmdZenStatesPowerController.Write("tctlmax", restored.CpuTemperatureLimit);
-                        betaReadback = AmdZenStatesPowerController.Read();
                     }
                     if (NvApiGpuPowerEnabled &&
                         (effectiveSelection.NvPcfAcTargetTppLimit ||
@@ -4629,12 +4589,17 @@ internal sealed class ToolkitRuntimeService : IDisposable
                         "locks could not be restored.",
                         wmiLockError);
                 }
-                if (betaReadback is not null)
-                    restored = MergeBetaCpu(restored, betaReadback);
+                // Do not report the requested state as hardware confirmation.
+                // A backend can accept a write yet clamp it to a different value.
+                restored = await Task.Run(ReadPowerSettingsCore);
+                if (revision != _powerLockRevision || !ReferenceEquals(modeLock, CurrentPowerModeLock(create: false)) ||
+                    modeLock!.Locks != selection || modeLock.Target != desiredTarget) return;
+                if (!PowerLockAcceptancePolicy.Accept(modeLock, restored, effectiveSelection))
+                    throw new InvalidOperationException("Locked power values could not be confirmed by hardware readback.");
                 _cachedPowerSettings = restored;
                 Snapshot = Snapshot with { PowerSettings = restored };
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                UpdatePowerLockTargetAfterApply(restored);
+                CurveProfileStore.SaveSettings(Settings);
             }
             _lastPowerSettingsLockError = string.Empty;
         }
@@ -4659,10 +4624,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    private void ResetAcceptedPowerLimits()
+    {
+        _powerLockRevision++;
+        PowerLockAcceptancePolicy.Clear(Settings);
+    }
+
     private void SyncPowerSettingsLockTimer()
     {
-        _powerSettingsLockTimer.Stop();
-        _powerSettingsLockTimer.Interval = TimeSpan.FromSeconds(
+        var interval = TimeSpan.FromSeconds(
             PowerSettingsController.IsSupportedLockInterval(
                 Settings.PowerSettingsLockIntervalSeconds)
                 ? Settings.PowerSettingsLockIntervalSeconds
@@ -4683,15 +4653,24 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 NvApiGpuTemperatureLimit = false
             };
         }
-        if (!_disposed && modeLock is not null &&
+        var enabled = !_disposed && modeLock is not null &&
             effectiveLocks.Any &&
             PowerSettingsController.IsValidLockConfiguration(
                 effectiveLocks,
                 modeLock.Target) &&
-            CanWritePowerSettings)
+            CanWritePowerSettings;
+        SyncPowerSettingsTimer(_powerSettingsLockTimer, enabled, interval);
+    }
+
+    internal static void SyncPowerSettingsTimer(DispatcherTimer timer, bool enabled, TimeSpan interval)
+    {
+        // Repeated status refreshes must not postpone an unchanged deadline.
+        if (timer.Interval != interval) timer.Interval = interval;
+        if (enabled)
         {
-            _powerSettingsLockTimer.Start();
+            if (!timer.IsEnabled) timer.Start();
         }
+        else if (timer.IsEnabled) timer.Stop();
     }
 
     private PowerModeLockSettings? CurrentPowerModeLock(bool create)
@@ -5132,7 +5111,6 @@ internal sealed class ToolkitRuntimeService : IDisposable
         GpuTelemetryControl.ModeChanged -= OnGpuTelemetryModeChanged;
         _fnKeyManager.Dispose();
         _macroService.Dispose();
-        _dataSharing.Dispose();
         Plugins.Dispose();
         _sensorRecording.Dispose();
         _fpsMonitor.Dispose();

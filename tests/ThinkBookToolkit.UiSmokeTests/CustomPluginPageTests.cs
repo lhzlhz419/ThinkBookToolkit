@@ -27,7 +27,7 @@ internal static class CustomPluginPageTests
         File.Copy(Path.Combine(AppContext.BaseDirectory, "fixtures", "ThinkBookToolkit.FakePluginUi.dll"), Path.Combine(folder, "views.dll"));
         PluginPage Page(string suffix, string type = "FakePage", string? replaces = null) => new("test.custom." + suffix,
             new("自绘测试 " + suffix, "Custom view " + suffix), replaces) { View = new("views.dll", "ThinkBookToolkit.Tests.Ui." + type) };
-        var manifest = new PluginManifest("test.custom", "Custom UI fixture", "1", 1, "logic.dll", typeof(AverageFanPlugin).FullName!, ["ui.custom", "replace"],
+        var manifest = new PluginManifest("test.custom", "Custom UI fixture", "1", 1, "logic.dll", typeof(AverageFanPlugin).FullName!, ["ui.custom", "replace", "ui.toast"],
             [Page("add"), Page("replace", replaces: "performance"), Page("fail", "FailingCreatePage"), Page("update", "FailingUpdatePage")],
             [new("value", "test.custom.add", new("值", "Value"), "string", JsonSerializer.SerializeToElement("initial"))], []);
         File.WriteAllText(Path.Combine(folder, "plugin.json"), JsonSerializer.Serialize(manifest));
@@ -55,6 +55,7 @@ internal static class CustomPluginPageTests
             Check(context.PluginId == manifest.Id && context.PageId == "test.custom.add" && context.State.Request.Context.Sensors.Count == 0 &&
                 context.State.Request.Context.Settings.GetRawText() == "{}", "Custom UI bypassed data permissions or lost page identity.");
             await context.SetSettingAsync("value", JsonSerializer.SerializeToElement("updated"));
+            Check(await Task.Run(() => context.ShowToastAsync("页面保存成功")) && window.ToastTextForTesting == "[Custom UI fixture] 页面保存成功", "Custom UI could not dispatch a toast without host.control.");
             Check(view.Children.OfType<TextBlock>().Any(t => t.Text == "Value: updated"), "Own-setting write did not refresh the custom view.");
             await RejectAsync(() => context.SetSettingAsync("other.plugin.value", JsonSerializer.SerializeToElement("forbidden")));
             await RejectAsync(() => context.ExecuteAsync(new("SetStatus", new Dictionary<string, JsonElement> { ["message"] = JsonSerializer.SerializeToElement("forbidden") })));
@@ -65,6 +66,7 @@ internal static class CustomPluginPageTests
             window.NavigateForTesting("overview");
             Check(context.Lifetime.IsCancellationRequested && Equals(view.Tag, "disposed"), "Navigating away did not dispose the view or cancel its lifetime.");
             await RejectAsync(() => context.SetSettingAsync("value", JsonSerializer.SerializeToElement("late write")));
+            await RejectAsync(() => context.ShowToastAsync("Disposed page"));
             window.NavigateForTesting("test.custom.add");
             Check(!ReferenceEquals(window.CurrentPage!.Content, view), "Navigation reused a disposed custom page.");
             window.NavigateForTesting("performance");
