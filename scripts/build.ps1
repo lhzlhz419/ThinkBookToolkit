@@ -338,7 +338,8 @@ if ($Publish -or $Installer) {
         $compilerCandidates = @(
             (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
             (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
-            (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
+            (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
+            (Join-Path $env:USERPROFILE "AppData\Local\Programs\Inno Setup 6\ISCC.exe")
         )
         $compiler = $compilerCandidates |
         Where-Object { Test-Path -LiteralPath $_ } |
