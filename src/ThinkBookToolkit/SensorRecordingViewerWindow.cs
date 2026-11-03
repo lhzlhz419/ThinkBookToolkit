@@ -34,6 +34,7 @@ internal sealed class SensorRecordingViewerWindow : Window
     private string _cachedPath = string.Empty;
     private long _cachedReadOffset;
     private IReadOnlyList<string> _cachedMetricKeys = [];
+    private PluginRecordingMetadata? _pluginMetadata;
     private List<SensorRecordingSample> _cachedFileSamples = [];
     private int _lastRenderedSourceCount = -1;
     private DateTimeOffset _lastRenderedTimestamp = DateTimeOffset.MinValue;
@@ -334,7 +335,7 @@ internal sealed class SensorRecordingViewerWindow : Window
             samples = AverageResample(samples, maximumPoints);
             _charts.Children.Clear();
             var any = false;
-            foreach (var definition in BuildChartGroups(samples, _runtime.Plugins.Installations, _runtime.IsChinese))
+            foreach (var definition in BuildChartGroups(samples, _runtime.Plugins.Installations, _runtime.IsChinese, _pluginMetadata))
             {
                 var charts = definition.Charts
                     .Where(chart => chart.Series.Any(series => samples.Any(sample =>
@@ -478,6 +479,7 @@ internal sealed class SensorRecordingViewerWindow : Window
         _cachedPath = _selectedPath;
         _cachedReadOffset = 0;
         _cachedMetricKeys = [];
+        _pluginMetadata = null;
         _cachedFileSamples.Clear();
     }
 
@@ -514,10 +516,13 @@ internal sealed class SensorRecordingViewerWindow : Window
             }
             string? line;
             while ((line = reader.ReadLine()) is not null)
+            {
+                if (PluginRecordingMetadata.Parse(line) is { } metadata) { _pluginMetadata = metadata; continue; }
                 SensorRecordingFormat.ReadBatch(
                     line,
                     _cachedMetricKeys,
                     _cachedFileSamples);
+            }
             _cachedReadOffset = stream.Position;
             CompactCachedHistory();
         }
@@ -661,13 +666,13 @@ internal sealed class SensorRecordingViewerWindow : Window
     };
 
     internal static IReadOnlyList<ChartGroupDefinition> BuildChartGroups(IReadOnlyList<SensorRecordingSample> samples,
-        IReadOnlyList<PluginInstallation> plugins, bool chinese)
+        IReadOnlyList<PluginInstallation> plugins, bool chinese, PluginRecordingMetadata? recorded = null)
     {
-        var categories = plugins.SelectMany(p => p.Manifest.SensorCategories).OrderBy(c => c.Order).ThenBy(c => c.Id, StringComparer.Ordinal).ToArray();
+        var categories = (recorded?.Categories ?? plugins.SelectMany(p => p.Manifest.SensorCategories).ToArray()).OrderBy(c => c.Order).ThenBy(c => c.Id, StringComparer.Ordinal).ToArray();
         var keys = samples.SelectMany(s => s.Values.Keys).Where(k => k.StartsWith("plugin:", StringComparison.Ordinal)).Distinct().ToArray();
         var pluginCharts = keys.Select(key =>
         {
-            var sensor = plugins.SelectMany(p => p.Manifest.Sensors).FirstOrDefault(s => "plugin:" + s.Id == key);
+            var sensor = recorded is not null ? recorded.Sensors.GetValueOrDefault(key)?.Sensor : plugins.SelectMany(p => p.Manifest.Sensors).FirstOrDefault(s => "plugin:" + s.Id == key);
             var label = sensor?.Name.Resolve(chinese) ?? key["plugin:".Length..];
             var group = PluginSensorPlacement.HistoryGroup(sensor?.Category) ?? categories.FirstOrDefault(c => c.Id == sensor?.Category)?.Id;
             return (Group: group, Chart: new ChartDefinition(sensor?.Name.Chinese ?? label, sensor?.Name.English ?? label,
@@ -683,7 +688,7 @@ internal sealed class SensorRecordingViewerWindow : Window
                 var separate = new List<ChartDefinition>();
                 foreach (var series in chart.Series)
                 {
-                    var sensor = PluginSensorChartPolicy.Replacement(series.Key, plugins);
+                    var sensor = recorded is not null ? recorded.Sensors.GetValueOrDefault(series.Key)?.Sensor : PluginSensorChartPolicy.Replacement(series.Key, plugins);
                     if (sensor is null || !PluginSensorChartPolicy.HasBounds(sensor)) { remaining.Add(series); continue; }
                     // Each declared range belongs to one sensor, not every curve
                     // which previously happened to share the built-in chart.

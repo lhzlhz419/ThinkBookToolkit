@@ -24,7 +24,8 @@ try
         }
         catch (Exception ex)
         {
-            await PluginWire.WriteAsync(pipe, new PluginResponse(false, Error: ex.GetBaseException().Message), CancellationToken.None);
+            await PluginWire.WriteAsync(pipe, new PluginResponse(false, Error: ex.GetBaseException().Message)
+                { ErrorKind = ex is OperationCanceledException ? "timeout" : "plugin" }, CancellationToken.None);
         }
     }
     return 0;

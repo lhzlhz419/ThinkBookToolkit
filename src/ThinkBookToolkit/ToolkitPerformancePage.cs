@@ -2477,25 +2477,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     {
         _syncing = true;
         var snapshot = Runtime.Snapshot;
-        var isAcConnected = snapshot.Battery?.IsAcConnected;
         var itsPath = new ItsModeDetector().GetControlPath();
-        foreach (var item in _itsMode.Items.OfType<ComboBoxItem>())
-        {
-            item.Visibility = item.Tag is ItsMode mode &&
-                              PerformanceModeAvailability.CanSelect(
-                                  mode,
-                                  isAcConnected) &&
-                              ItsModeDetector.IsModeSupported(mode, itsPath)
-                ? Visibility.Visible
-                : Visibility.Collapsed;
-        }
-        if (PerformanceModeAvailability.CanSelect(
-                snapshot.ItsMode,
-                isAcConnected) &&
-            ItsModeDetector.IsModeSupported(snapshot.ItsMode, itsPath))
-            Select(_itsMode, snapshot.ItsMode);
-        else
-            _itsMode.SelectedItem = null;
+        SyncPerformanceChoices(_itsMode, snapshot, itsPath, Runtime.IsChinese);
         foreach (var item in _gpuMode.Items.OfType<ComboBoxItem>())
             item.Visibility = item.Tag is GpuWorkingMode mode && snapshot.SupportedGpuModes.Contains(mode)
                 ? Visibility.Visible

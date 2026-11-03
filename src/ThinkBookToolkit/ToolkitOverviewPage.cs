@@ -46,6 +46,8 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
                 layout: Runtime.Settings.OverviewLayout, overviewPlugins: true);
             metrics.Margin = new Thickness(0, 0, 0, 12);
             root.Children.Add(metrics);
+            foreach (var action in Runtime.Plugins.Actions.Where(a => a.Action.QuickAccess.Contains("overview")))
+                root.Children.Add(Card(action.Plugin.Manifest.Name, PluginActionControls.Create(Runtime, action.Action)));
         }
         return root;
     }
@@ -564,26 +566,8 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
     {
         _syncingModes = true;
         var snapshot = Runtime.Snapshot;
-        var isAcConnected = snapshot.Battery?.IsAcConnected;
         var itsPath = new ItsModeDetector().GetControlPath();
-        foreach (var item in _itsMode.Items.OfType<ComboBoxItem>())
-        {
-            item.Visibility = item.Tag is ItsMode mode &&
-                              PerformanceModeAvailability.CanSelect(
-                                  mode,
-                                  isAcConnected) &&
-                              ItsModeDetector.IsModeSupported(mode, itsPath)
-                ? Visibility.Visible
-                : Visibility.Collapsed;
-        }
-        if (snapshot.ItsMode != ItsMode.Unknown &&
-            PerformanceModeAvailability.CanSelect(
-                snapshot.ItsMode,
-                isAcConnected) &&
-            ItsModeDetector.IsModeSupported(snapshot.ItsMode, itsPath))
-            Select(_itsMode, snapshot.ItsMode);
-        else
-            _itsMode.SelectedItem = null;
+        SyncPerformanceChoices(_itsMode, snapshot, itsPath, Runtime.IsChinese);
         foreach (var item in _gpuMode.Items.OfType<ComboBoxItem>())
         {
             item.Visibility = snapshot.SupportedGpuModes.Count == 0 ||

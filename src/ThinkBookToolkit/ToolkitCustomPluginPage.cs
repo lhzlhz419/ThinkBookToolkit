@@ -103,7 +103,9 @@ internal sealed class ToolkitCustomPluginPage : ToolkitPageBase
             var plugin = owner._plugin;
             var request = new PluginRequest("view", PluginHostBridge.Context(owner.Runtime, plugin.Manifest.Permissions),
                 plugin.Manifest.Settings.ToDictionary(s => s.Id, s => owner.Runtime.Plugins.SettingValue(plugin, s)));
-            State = new(request, owner.Runtime.IsDark, owner.Runtime.Settings.Language);
+            var palette = ToolkitPalette.For(owner.Runtime.IsDark);
+            State = new(request, owner.Runtime.IsDark, owner.Runtime.Settings.Language)
+            { Theme = new(palette.Surface, palette.SurfaceRaised, palette.Border, palette.Text, palette.Muted, palette.Accent) };
         }
         public Task SetSettingAsync(string id, JsonElement value)
         {
@@ -117,6 +119,31 @@ internal sealed class ToolkitCustomPluginPage : ToolkitPageBase
         }
         public Task ExecuteAsync(HostCommand command) => OnUiAsync(() =>
             PluginHostBridge.ExecuteAsync(owner.Runtime, owner._plugin.Manifest.Permissions, command));
+        public async Task<HostCommandResult> ExecuteWithResultAsync(HostCommand command)
+        {
+            HostCommandResult? result = null;
+            await OnUiAsync(async () => result = await owner.Runtime.Plugins.ExecuteCommandAsync(owner._plugin, command, Lifetime));
+            return result!;
+        }
+        public async Task<string?> InvokeActionAsync(string id, JsonElement arguments)
+        {
+            if (!owner._plugin.Manifest.Actions.Any(a => a.Id == id)) throw new ArgumentException("Action does not belong to this plugin.");
+            var copy = arguments.Clone(); string? error = null;
+            await OnUiAsync(async () => error = await owner.Runtime.Plugins.InvokeActionAsync(id, copy, Lifetime));
+            return error;
+        }
+        public async Task<bool> ConfirmAsync(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message) || message.Length > 4096) throw new ArgumentException("Invalid confirmation message.");
+            var accepted = false;
+            await OnUiAsync(() =>
+            {
+                accepted = ToolkitMessageBox.Show(Window.GetWindow(owner), message, owner._plugin.Manifest.Name,
+                    MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes;
+                return Task.CompletedTask;
+            });
+            return accepted;
+        }
         public async Task<bool> ShowToastAsync(string message, bool isError = false)
         {
             var accepted = false;

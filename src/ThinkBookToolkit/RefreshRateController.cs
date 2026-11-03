@@ -40,7 +40,7 @@ internal sealed record DisplayRefreshRateState(
             .ToArray();
 }
 
-internal static class RefreshRateController
+internal static partial class RefreshRateController
 {
     internal static bool TryReadState(
         out DisplayRefreshRateState? state,
@@ -494,9 +494,10 @@ internal static class RefreshRateController
         return available.Min();
     }
 
-    private static string? FindInternalDisplayDeviceName()
+    private static string? FindInternalDisplayDeviceName(bool allowFallback = true)
     {
         var internalIds = ReadInternalMonitorIds();
+        var matches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? primary = null;
         string? firstActive = null;
         for (uint adapterIndex = 0; ; adapterIndex++)
@@ -524,11 +525,12 @@ internal static class RefreshRateController
                 if ((monitor.StateFlags & DisplayDeviceActive) != 0 &&
                     internalIds.Contains(id))
                 {
-                    return adapter.DeviceName;
+                    if (allowFallback) return adapter.DeviceName;
+                    matches.Add(adapter.DeviceName);
                 }
             }
         }
-        return primary ?? firstActive;
+        return allowFallback ? primary ?? firstActive : matches.Count == 1 ? matches.Single() : null;
     }
 
     private static HashSet<string> ReadInternalMonitorIds()
@@ -551,7 +553,8 @@ internal static class RefreshRateController
                     var outputTechnology = Convert.ToUInt32(
                         item["VideoOutputTechnology"]);
                     if (outputTechnology != InternalOutputTechnology &&
-                        outputTechnology != EmbeddedDisplayPortTechnology)
+                        outputTechnology != EmbeddedDisplayPortTechnology &&
+                        outputTechnology is not (6 or 13)) // LVDS / embedded UDI
                     {
                         continue;
                     }

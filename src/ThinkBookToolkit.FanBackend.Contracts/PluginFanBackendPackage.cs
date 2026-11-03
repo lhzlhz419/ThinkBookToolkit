@@ -173,7 +173,7 @@ public static class PluginFanBackendPackage
         var manifestPath = Path.Combine(directory, "plugin.json");
         if (new FileInfo(manifestPath).Length > 1024 * 1024) throw new InvalidDataException("Manifest too large.");
         var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(manifestPath));
-        if (manifest?.Id != selection.PluginId || manifest.ApiVersion != PluginApiVersion.Current ||
+        if (manifest?.Id != selection.PluginId || manifest.ApiVersion is < 1 or > PluginApiVersion.LatestManifest ||
             manifest.Permissions?.Contains("fan.backend") != true || manifest.FanBackend?.Assembly != selection.Assembly ||
             manifest.FanBackend.Type != selection.Type || !File.Exists(Path.Combine(directory, selection.Assembly)))
             throw new InvalidDataException("Fan backend is not declared by the approved plugin.");

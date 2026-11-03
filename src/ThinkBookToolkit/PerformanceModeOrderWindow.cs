@@ -31,6 +31,15 @@ internal sealed class PerformanceModeOrderWindow : Window
         _enabled = PerformanceModeCycle.NormalizeEnabled(
                 runtime.Settings.FnPerformanceModeEnabled)
             .ToHashSet();
+        if (runtime.SupportsPerformanceSelection(ItsMode.QuietPerformance, new ItsModeDetector().GetControlPath()))
+        {
+            if (!_order.Contains(ItsMode.QuietPerformance)) _order.Add(ItsMode.QuietPerformance);
+        }
+        else
+        {
+            _order.Remove(ItsMode.QuietPerformance);
+            _enabled.Remove(ItsMode.QuietPerformance);
+        }
         Title = T("性能模式切换顺序", "Performance-mode switch order");
         Width = 620;
         SizeToContent = SizeToContent.Height;
@@ -228,6 +237,7 @@ internal sealed class PerformanceModeOrderWindow : Window
         ItsMode.PowerSaving => T("省电模式", "Cool"),
         ItsMode.Intelligent => T("智能模式", "Auto"),
         ItsMode.Performance => T("性能模式", "Performance"),
+        ItsMode.QuietPerformance => T("静音性能模式", "Quiet performance"),
         ItsMode.Geek => T("极客模式", "Geek"),
         _ => T("未知", "Unknown")
     };

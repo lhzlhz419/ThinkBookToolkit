@@ -49,6 +49,11 @@ internal sealed record ToolkitRuntimeSnapshot(
     string? Error)
 {
     public string PendingGpuModeSource { get; init; } = string.Empty;
+    public QuietPerformanceStatus QuietPerformance { get; init; } = QuietPerformanceStatus.Unsupported;
+    public ItsMode PerformanceMode => QuietPerformance.Selection(ItsMode);
+    internal bool SupportsSelection(ItsMode mode, ItsModeControlPath path) =>
+        mode == ItsMode.QuietPerformance ? path == ItsModeControlPath.ModernDispatcher && QuietPerformance.Available
+            : ItsModeDetector.IsModeSupported(mode, path);
     public PowerSettingsState? PowerSettings { get; init; }
     public WarrantySnapshot? Warranty { get; init; }
     public IReadOnlyList<PublishedPluginSensor> PluginSensors { get; init; } = [];
@@ -76,6 +81,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly DispatcherTimer _pollTimer = new();
     private readonly DispatcherTimer _powerSettingsLockTimer = new();
     private readonly SemaphoreSlim _powerSettingsGate = new(1, 1);
+    private readonly QuietPerformanceController _quietPerformance = new();
     private long _powerLockRevision;
     private readonly SemaphoreSlim _temperatureReadGate = new(1, 1);
     private readonly SemaphoreSlim _batteryReadGate = new(1, 1);
@@ -121,8 +127,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private readonly SemaphoreSlim _itsModeSwitchGate = new(1, 1);
     private bool _switchingPerformanceMode;
     private int _itsModeReadGeneration;
+    private readonly ResumePerformanceModePolicy _resumeMode = new();
     private ItsMode _lastConfirmedItsMode = ItsMode.Unknown;
-    private string _lastPowerSettingsLockError = string.Empty;
+    private readonly PowerLockFeedback _powerLockFeedback = new();
+    private string _powerLockFeedbackScope = "";
     private bool _disposed;
     private bool _systemThemeSubscribed;
     private bool _lastSystemThemeDark;
@@ -156,6 +164,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         LenovoDependencyDirectory.Configure(settings);
         Snapshot = ToolkitRuntimeSnapshot.Empty;
         Plugins = new ToolkitPluginManager(this, pluginOptions);
+        Plugins.AutomationSignal += signal => _ = RunPluginAutomationTriggersAsync(signal);
         _osdManager = new ToolkitOsdManager(this);
         _sensorRecording = new SensorRecordingService(this);
         _pollTimer.Tick += async (_, _) => await RefreshAsync();
@@ -561,6 +570,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public event EventHandler? ControlStateChanged;
 
     public event EventHandler? AutomationChanged;
+    internal AutomationExecutionQueue AutomationExecution => _automationRunner.Execution;
+    internal bool AutomationSessionLocked { get; private set; }
+    private int _automationResumePending;
+    private bool _automationSessionSubscribed;
+    private bool _automationStartupFired;
+    internal void CancelAutomation(string? id = null) => AutomationExecution.Cancel(id);
 
     public event EventHandler? MacroChanged;
 
@@ -597,6 +612,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         string automationId,
         CancellationToken cancellationToken = default)
     {
+        if (_disposed || IsSystemSessionEnding || ExitRequested)
+            return AutomationRunResult.Failure(L("程序正在退出，无法运行自动化。", "Toolkit is exiting; automation cannot run."));
         var dispatcher = Application.Current?.Dispatcher;
         if (dispatcher is not null && !dispatcher.CheckAccess())
         {
@@ -615,6 +632,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
         out string? error)
     {
         var values = automations.ToArray();
+        if (values.Any(a => a is null || a.Steps is null || a.Steps.Any(s => s is null || AutomationStepCatalog.Validate(s) is not null)))
+        {
+            error = L("自动化包含无效步骤参数，请检查后再保存。", "Automation contains invalid step parameters; review them before saving.");
+            return false;
+        }
         if (UniqueDefinitionNames.HasDuplicates(
                 values.Select(item => item.Name)))
         {
@@ -641,6 +663,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             CurveProfileStore.SaveSettings(Settings);
+            foreach (var state in AutomationExecution.States.Where(s => s.Phase is AutomationRunPhase.Running or AutomationRunPhase.Queued))
+                if (!Settings.Automations.Any(a => a.Enabled && a.Id.Equals(state.Id, StringComparison.OrdinalIgnoreCase))) CancelAutomation(state.Id);
             AutomationChanged?.Invoke(this, EventArgs.Empty);
             _lastAutomationGamesRunning = null;
             error = null;
@@ -664,6 +688,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         try
         {
             CurveProfileStore.SaveSettings(Settings);
+            if (!enabled) CancelAutomation();
             AutomationChanged?.Invoke(this, EventArgs.Empty);
             _lastAutomationGamesRunning = null;
             error = null;
@@ -848,8 +873,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
             item.Id.Equals(
                 automationId,
                 StringComparison.OrdinalIgnoreCase));
-        if (automation is null)
+        if (automation is null || !automation.Enabled)
             return false;
+        if (AutomationExecution.IsPending(automation.Id)) return true;
         ShowFnKeyNotification(
             L("自动化", "Automation"),
             automation.Name);
@@ -902,7 +928,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             ? Settings.FnKeyDoublePressAutomationBindings
             : Settings.FnKeyAutomationBindings;
         return bindings.TryGetValue(keyId, out var automationId) &&
-               Settings.Automations.Any(item => item.Id.Equals(
+               Settings.Automations.Any(item => item.Enabled && item.Id.Equals(
                    automationId,
                    StringComparison.OrdinalIgnoreCase));
     }
@@ -1012,6 +1038,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         LogStage("hybrid GPU protection initialization");
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         _powerModeSubscribed = true;
+        SystemEvents.SessionSwitch += OnAutomationSessionSwitch;
+        _automationSessionSubscribed = true;
 
         if (Report.IsAvailable(FeatureIds.FanControl))
         {
@@ -1070,16 +1098,26 @@ internal sealed class ToolkitRuntimeService : IDisposable
         LogStage("background refresh scheduling");
     }
 
+    internal void NotifyStartupReady()
+    {
+        if (!_automationStartupFired)
+        {
+            _automationStartupFired = true;
+            _ = RunAutomationTriggersAsync(AutomationTriggerKind.ToolkitStarted);
+        }
+    }
+
     public void AttachWindow(ToolkitMainWindow window, bool startToTrayRequested)
     {
         _window = window;
         InitializeTray();
-        if (startToTrayRequested && Settings.StartWithWindows && Settings.StartToTray)
-        {
-            window.Dispatcher.BeginInvoke(
-                DispatcherPriority.Loaded,
-                new Action(HideToTray));
-        }
+    }
+
+    internal void NotifyStartupFailure(string message)
+    {
+        ToolkitLog.Error(message);
+        try { _trayIcon?.ShowBalloonTip(5000, "ThinkBook Toolkit", message, Forms.ToolTipIcon.Error); }
+        catch (Exception ex) { ToolkitLog.Warning("Startup notification could not be shown: " + ex.Message); }
     }
 
     private void InitializeAlternativeFullSpeedMethod()
@@ -1122,8 +1160,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
             _window.Dispatcher.BeginInvoke(new Action(ShowMainWindow));
             return;
         }
-        _window.Show();
         _window.ShowInTaskbar = true;
+        _window.ShowActivated = true;
+        _window.Show();
         if (_window.WindowState == WindowState.Minimized)
             _window.WindowState = WindowState.Normal;
         _window.Activate();
@@ -1228,6 +1267,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public void RequestExit()
     {
         ExitRequested = true;
+        CancelAutomation();
         _window?.Close();
     }
 
@@ -1255,6 +1295,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         if (Interlocked.Exchange(ref _systemSessionEnding, 1) != 0)
             return;
 
+        CancelAutomation();
         ExitRequested = true;
         _pollTimer.Stop();
         _powerSettingsLockTimer.Stop();
@@ -1308,6 +1349,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public async Task RestoreForExitAsync()
     {
+        CancelAutomation();
+        _resumeMode.Cancel();
         if (IsSystemSessionEnding)
             return;
         _pollTimer.Stop();
@@ -2501,7 +2544,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 itsMode = await Task.Run(() => new ItsModeDetector().ReadMode());
             itsMode = ResolveItsModeForRefresh(itsMode, itsReadGeneration);
             // Backend handoff must select locks for the newly observed mode.
-            Snapshot = Snapshot with { ItsMode = itsMode };
+            var quiet = Snapshot.QuietPerformance;
+            if (!_switchingPerformanceMode && Report?.IsAvailable(FeatureIds.PerformanceMode) == true)
+            {
+                quiet = await Task.Run(() => ReadQuietStatus(new ItsModeDetector().GetControlPath(), force));
+                if (_switchingPerformanceMode || itsReadGeneration != Volatile.Read(ref _itsModeReadGeneration))
+                    quiet = Snapshot.QuietPerformance;
+            }
+            itsMode = ResolveItsModeForRefresh(itsMode, itsReadGeneration);
+            Snapshot = Snapshot with { ItsMode = itsMode, QuietPerformance = quiet };
             var temperatures = performance?.Temperatures;
             var fans = performance?.Fans;
             if (temperatures is null && _temperatureReader is not null)
@@ -2587,7 +2638,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
             gpuMode = _legacyGpuModeOverride ?? gpuMode;
 
             bool? automationGamesRunning = null;
-            if (ShouldMonitorAutomationGameEvents(Settings))
+            if (ShouldMonitorAutomationGameEvents(Settings) || Plugins.Installations.Any(p => p.Enabled && p.Error is null &&
+                p.Manifest.EventSubscriptions.Any(e => e is "game.started" or "game.stopped")))
             {
                 try
                 {
@@ -2623,6 +2675,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 null)
             {
                 PendingGpuModeSource = Settings.PendingGpuModeSource,
+                QuietPerformance = Snapshot.QuietPerformance,
                 PowerSettings = _cachedPowerSettings,
                 PluginSensors = Plugins.Sensors,
                 Warranty = _cachedWarranty
@@ -2668,24 +2721,24 @@ internal sealed class ToolkitRuntimeService : IDisposable
         bool? acConnected,
         bool? gamesRunning)
     {
-        foreach (var trigger in ResolveAutomationTransitions(
+        var triggers = ResolveAutomationTransitions(
                      _lastAutomationAcConnected,
                      acConnected,
                      _lastAutomationGamesRunning,
-                     gamesRunning))
-            _ = RunAutomationTriggersAsync(trigger);
+                     gamesRunning);
         if (acConnected.HasValue)
             _lastAutomationAcConnected = acConnected.Value;
         if (gamesRunning.HasValue)
             _lastAutomationGamesRunning = gamesRunning.Value;
+        foreach (var trigger in triggers) _ = RunAutomationTriggersAsync(trigger);
     }
 
     internal static bool ShouldMonitorAutomationGameEvents(
         AppSettings settings) =>
         settings.AutomationEnabled &&
         settings.Automations.Any(automation =>
-            automation.Triggers.Contains(AutomationTriggerKind.GameStarted) ||
-            automation.Triggers.Contains(AutomationTriggerKind.GameStopped));
+            automation.Enabled && (automation.Triggers.Contains(AutomationTriggerKind.GameStarted) ||
+            automation.Triggers.Contains(AutomationTriggerKind.GameStopped)));
 
     internal static IReadOnlyList<AutomationTriggerKind>
         ResolveAutomationTransitions(
@@ -2715,19 +2768,41 @@ internal sealed class ToolkitRuntimeService : IDisposable
     private async Task RunAutomationTriggersAsync(
         AutomationTriggerKind trigger)
     {
-        if (!Settings.AutomationEnabled)
+        Plugins.NotifyEvent(trigger switch
+        {
+            AutomationTriggerKind.AcAdapterConnected => "power.connected",
+            AutomationTriggerKind.AcAdapterDisconnected => "power.disconnected",
+            AutomationTriggerKind.GameStarted => "game.started",
+            AutomationTriggerKind.GameStopped => "game.stopped",
+            AutomationTriggerKind.ToolkitStarted => "host.started",
+            AutomationTriggerKind.SystemResumed => "host.resume",
+            AutomationTriggerKind.SessionLocked => "session.locked",
+            _ => "session.unlocked"
+        });
+        if (!Settings.AutomationEnabled || _disposed || IsSystemSessionEnding || ExitRequested)
             return;
         var automations = Settings.Automations
-            .Where(automation => automation.Triggers.Contains(trigger))
+            .Where(automation => automation.Enabled && automation.Triggers.Contains(trigger) && !AutomationExecution.IsPending(automation.Id))
             .Select(automation => automation.Id)
             .ToArray();
-        foreach (var automationId in automations)
+        var runs = automations.Select(automationId => RunAutomationAsync(automationId)).ToArray();
+        for (var i = 0; i < runs.Length; i++)
         {
             ToolkitLog.Info(
-                $"Automation trigger {trigger} matched {automationId}.");
-            var result = await RunAutomationAsync(automationId);
-            if (!result.Success)
+                $"Automation trigger {trigger} matched {automations[i]}.");
+            var result = await runs[i];
+            if (!result.Success && !result.Cancelled)
                 SetStatus(result.Error);
+        }
+    }
+
+    private async Task RunPluginAutomationTriggersAsync(string signal)
+    {
+        if (!Settings.AutomationEnabled || _disposed || IsSystemSessionEnding || ExitRequested) return;
+        foreach (var automation in Settings.Automations.Where(a => a.Enabled && a.PluginTriggers.Contains(signal) && !AutomationExecution.IsPending(a.Id)).ToArray())
+        {
+            var result = await RunAutomationAsync(automation.Id);
+            if (!result.Success && !result.Cancelled) SetStatus(result.Error);
         }
     }
 
@@ -2759,10 +2834,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return;
         }
 
-        var current = await Task.Run(() => new ItsModeDetector().ReadMode());
+        var (raw, quiet) = await Task.Run(ReadPerformanceState);
+        // A pre-upgrade shutdown record described only the ITS base. Do not
+        // treat that old "Performance" record as consent to clear a BIOS flag.
+        var baseOnly = savedMode == ItsMode.Performance && Settings.ShutdownQuietPerformanceEnabled is null;
         string? error = null;
-        if (current != savedMode)
-            error = await SetItsModeAsync(savedMode);
+        if (!(baseOnly ? raw == savedMode : quiet.ConfirmsSelection(raw, savedMode)))
+            error = await SetPerformanceSelectionAsync(savedMode, baseOnly);
         if (!string.IsNullOrWhiteSpace(error))
         {
             ToolkitLog.Warning(
@@ -2771,6 +2849,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
 
         Settings.ShutdownPerformanceMode = string.Empty;
+        Settings.ShutdownQuietPerformanceEnabled = null;
         TrySaveSettingsAfterBackgroundChange(
             "shutdown performance-mode restore");
         ToolkitLog.Info(
@@ -2779,12 +2858,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     private void RecordShutdownPerformanceMode()
     {
-        var mode = Snapshot.ItsMode;
+        var quiet = Snapshot.QuietPerformance;
+        var mode = Snapshot.PerformanceMode;
         if (!PerformanceModeCycle.IsSelectableMode(mode))
         {
             try
             {
-                mode = new ItsModeDetector().ReadMode();
+                var observed = ReadPerformanceState();
+                quiet = observed.Quiet;
+                mode = quiet.Selection(observed.Base);
             }
             catch (Exception ex)
             {
@@ -2796,6 +2878,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
         if (!PerformanceModeCycle.IsSelectableMode(mode))
             return;
         Settings.ShutdownPerformanceMode = mode.ToString();
+        Settings.ShutdownQuietPerformanceEnabled = quiet.Available && mode is ItsMode.Performance or ItsMode.QuietPerformance
+            ? mode == ItsMode.QuietPerformance : null;
         TrySaveSettingsAfterBackgroundChange(
             "shutdown performance-mode capture");
         ToolkitLog.Info(
@@ -2828,13 +2912,30 @@ internal sealed class ToolkitRuntimeService : IDisposable
             ? _confirmedPerformanceModeDuringRefresh ?? Snapshot.ItsMode : observed;
     }
 
-    public async Task<string?> SetItsModeAsync(ItsMode mode)
+    private QuietPerformanceStatus ReadQuietStatus(ItsModeControlPath path, bool force) =>
+        path == ItsModeControlPath.ModernDispatcher ? _quietPerformance.Read(force) : QuietPerformanceStatus.Unsupported;
+
+    private (ItsMode Base, QuietPerformanceStatus Quiet) ReadPerformanceState()
     {
+        var detector = new ItsModeDetector();
+        var path = detector.GetControlPath();
+        return (detector.ReadMode(path), ReadQuietStatus(path, force: true));
+    }
+
+    internal bool SupportsPerformanceSelection(ItsMode mode, ItsModeControlPath path) =>
+        Snapshot.SupportsSelection(mode, path);
+
+    public Task<string?> SetItsModeAsync(ItsMode mode) => SetPerformanceSelectionAsync(mode, baseOnly: false);
+
+    private async Task<string?> SetPerformanceSelectionAsync(ItsMode mode, bool baseOnly)
+    {
+        // Explicit/automation commands take priority over a pending wake restore.
+        _resumeMode.Cancel();
         await _itsModeSwitchGate.WaitAsync();
         try
         {
             _switchingPerformanceMode = true;
-            return await SetItsModeCoreAsync(mode);
+            return await SetItsModeCoreAsync(mode, baseOnly);
         }
         finally
         {
@@ -2843,11 +2944,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
-    private async Task<string?> SetItsModeCoreAsync(ItsMode mode)
+    private async Task<string?> SetItsModeCoreAsync(ItsMode mode, bool baseOnly = false)
     {
         var detector = new ItsModeDetector();
         var controlPath = detector.GetControlPath();
-        if (!ItsModeDetector.IsModeSupported(mode, controlPath))
+        var quietRequested = mode == ItsMode.QuietPerformance;
+        if (quietRequested ? controlPath != ItsModeControlPath.ModernDispatcher : !ItsModeDetector.IsModeSupported(mode, controlPath))
         {
             return controlPath == ItsModeControlPath.LegacyLitssvc &&
                    mode == ItsMode.Geek
@@ -2874,12 +2976,57 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         try
         {
-            await Task.Run(() => ItsModeController.SetMode(mode, controlPath));
+            var compositeConfirmed = false;
+            if (!baseOnly && controlPath == ItsModeControlPath.ModernDispatcher && mode is ItsMode.Performance or ItsMode.QuietPerformance)
+            {
+                var initial = await Task.Run(() => _quietPerformance.Read(force: true));
+                if (quietRequested || initial.State != QuietSwitch.Unsupported)
+                {
+                    if (!initial.Available)
+                    {
+                        Snapshot = Snapshot with { QuietPerformance = initial };
+                        SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                        return L("静音性能开关不可用：", "Quiet performance switch unavailable: ") + (initial.Detail ?? "PE_SpecialPowerMode");
+                    }
+                    bool baseChanged;
+                    try
+                    {
+                        var (changed, verified) = await Task.Run(() => _quietPerformance.Set(quietRequested, initial));
+                        baseChanged = changed;
+                        Snapshot = Snapshot with { QuietPerformance = verified };
+                    }
+                    catch
+                    {
+                        try
+                        {
+                            var observed = await Task.Run(ReadPerformanceState);
+                            _lastConfirmedItsMode = observed.Base;
+                            Interlocked.Increment(ref _itsModeReadGeneration);
+                            Snapshot = Snapshot with { ItsMode = observed.Base, QuietPerformance = observed.Quiet };
+                            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                        }
+                        catch (Exception readError) { ToolkitLog.Warning("Quiet performance recovery read failed: " + readError.Message); }
+                        throw;
+                    }
+                    mode = ItsMode.Performance;
+                    if (!baseChanged)
+                    {
+                        // Only the BIOS overlay changed. Do not reapply fan or power profiles.
+                        _lastConfirmedItsMode = mode;
+                        Interlocked.Increment(ref _itsModeReadGeneration);
+                        Snapshot = Snapshot with { ItsMode = mode };
+                        SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                        return null;
+                    }
+                    compositeConfirmed = true;
+                }
+            }
+            if (!compositeConfirmed) await Task.Run(() => ItsModeController.SetMode(mode, controlPath));
             var deadline = DateTimeOffset.UtcNow.AddSeconds(
                 controlPath == ItsModeControlPath.LegacyLitssvc ? 10 : 3);
-            var confirmed = false;
+            var confirmed = compositeConfirmed;
             var lastReadMode = ItsMode.Unknown;
-            while (DateTimeOffset.UtcNow < deadline)
+            while (!confirmed && DateTimeOffset.UtcNow < deadline)
             {
                 lastReadMode = await Task.Run(() => detector.ReadMode(controlPath));
                 if (lastReadMode == mode)
@@ -2922,7 +3069,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
             _lastConfirmedItsMode = mode;
             Interlocked.Increment(ref _itsModeReadGeneration);
-            Snapshot = Snapshot with { ItsMode = mode };
+            var switchState = compositeConfirmed ? Snapshot.QuietPerformance : await Task.Run(() => ReadQuietStatus(controlPath, force: true));
+            Snapshot = Snapshot with { ItsMode = mode, QuietPerformance = switchState };
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             _confirmedPerformanceModeDuringRefresh = mode;
             _lastFanLinkedPerformanceMode = mode;
@@ -3013,7 +3161,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         {
             isAcConnected = currentAcState;
         }
-        var current = Snapshot.ItsMode;
+        var current = Snapshot.PerformanceMode;
         if (!PerformanceModeCycle.IsSelectableMode(current))
             current = await Task.Run(() => new ItsModeDetector().ReadMode());
         var next = PerformanceModeCycle.Next(
@@ -3021,7 +3169,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             Settings.FnPerformanceModeEnabled,
             current,
             isAcConnected,
-            ItsModeController.IsModeSupported);
+            candidate => SupportsPerformanceSelection(candidate, new ItsModeDetector().GetControlPath()));
         if (!PerformanceModeCycle.IsSelectableMode(next))
             return;
         ShowFnKeyNotification(
@@ -3225,6 +3373,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
         ItsMode.PowerSaving => L("省电模式", "Cool"),
         ItsMode.Intelligent => L("智能模式", "Auto"),
         ItsMode.Performance => L("性能模式", "Performance"),
+        ItsMode.QuietPerformance => L("静音性能模式", "Quiet performance"),
         ItsMode.Geek => L("极客模式", "Geek"),
         _ => L("未知", "Unknown")
     };
@@ -4474,8 +4623,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return;
         }
 
+        var scope = $"{Snapshot.ItsMode}/{IntelMmioCpuPowerEnabled}/{AmdZenStatesCpuPowerEnabled}/{NvApiGpuPowerEnabled}";
+        if (_powerLockFeedbackScope != scope) { _powerLockFeedbackScope = scope; _powerLockFeedback.Reset(); }
+        if (!_powerLockFeedback.CanAttempt(DateTimeOffset.UtcNow)) return;
+
         _powerSettingsLockBusy = true;
         await _powerSettingsGate.WaitAsync();
+        var failureSelection = CurrentPowerSettingsLocks with { };
+        var failureStage = PowerLockStage.Read;
+        var failureCpuKind = BetaCpuPowerKind;
         try
         {
             var modeLock = CurrentPowerModeLock(create: false);
@@ -4500,16 +4656,47 @@ internal sealed class ToolkitRuntimeService : IDisposable
             }
             if (!PowerSettingsController.IsValidLockConfiguration(
                     effectiveSelection,
-                    target))
+                    desiredTarget))
             {
                 return;
             }
 
+            failureSelection = effectiveSelection with { };
             var current = await Task.Run(ReadPowerSettingsCore);
+            failureCpuKind = current.BetaCpuPowerKind ?? failureCpuKind;
             var active = CurrentPowerModeLock(create: false);
             if (revision != _powerLockRevision || !ReferenceEquals(active, modeLock) || active?.Locks != selection || active?.Target != desiredTarget)
             {
                 return;
+            }
+
+            var readback = PowerLockAcceptancePolicy.Inspect(current, effectiveSelection);
+            var latestReadback = current;
+            var issues = readback.Issues.ToList();
+            var companionImpact = "";
+            effectiveSelection = readback.Readable;
+            // CPU Beta writes use a combined PL1/PL2/time (or PPT/TDC/EDC)
+            // operation. Never fill unreadable companion values with zero.
+            if ((IntelMmioCpuPowerEnabled || AmdZenStatesCpuPowerEnabled) &&
+                (effectiveSelection.CpuPl1 || effectiveSelection.CpuPl2 || effectiveSelection.CpuTurboTimeLimit ||
+                 AmdZenStatesCpuPowerEnabled && effectiveSelection.CpuTemperatureLimit))
+            {
+                var companion = PowerLockAcceptancePolicy.Inspect(current, new PowerSettingsLockSelection
+                    { CpuPl1 = true, CpuPl2 = true, CpuTurboTimeLimit = true });
+                if (companion.Issues.Count > 0)
+                {
+                    issues.AddRange(companion.Issues);
+                    var impacted = PowerLockOperationException.Select(effectiveSelection,
+                        PowerSetting.CpuPl1, PowerSetting.CpuPl2, PowerSetting.CpuTurboTimeLimit);
+                    if (AmdZenStatesCpuPowerEnabled) impacted.CpuTemperatureLimit = effectiveSelection.CpuTemperatureLimit;
+                    companionImpact = L("（CPU 组合接口受影响的锁定项：", " (CPU grouped-operation affected locks: ") +
+                        PowerLockOperationException.Names(impacted, IsChinese, failureCpuKind) + (IsChinese ? "）" : ")");
+                    effectiveSelection = effectiveSelection with
+                    {
+                        CpuPl1 = false, CpuPl2 = false, CpuTurboTimeLimit = false,
+                        CpuTemperatureLimit = IntelMmioCpuPowerEnabled && effectiveSelection.CpuTemperatureLimit
+                    };
+                }
             }
 
             if (PowerSettingsController.RequiresLockReapply(
@@ -4522,6 +4709,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     target!,
                     effectiveSelection);
                 Exception? wmiLockError = null;
+                failureStage = PowerLockStage.Write;
+                failureSelection = effectiveSelection with { };
                 await Task.Run(() =>
                 {
                     var wmiSelection = effectiveSelection;
@@ -4539,83 +4728,115 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     {
                         try
                         {
-                            PowerSettingsController.WriteLockedState(
+                            PowerLockOperationException.Run(() => PowerSettingsController.WriteLockedState(
                                 current,
                                 target!,
-                                wmiSelection);
+                                wmiSelection,
+                                desiredTarget), "Lenovo WMI", wmiSelection);
                         }
                         catch (Exception ex)
                         {
                             wmiLockError = ex;
                         }
                     }
-                    if (IntelMmioCpuPowerEnabled &&
-                        (effectiveSelection.CpuPl1 || effectiveSelection.CpuPl2 ||
-                         effectiveSelection.CpuTurboTimeLimit))
-                        _ = IntelMmioPowerController.Write(
-                            restored.CpuPl1, restored.CpuPl2,
-                            restored.CpuTurboTimeLimit);
-                    else if (AmdZenStatesCpuPowerEnabled &&
-                             (effectiveSelection.CpuPl1 || effectiveSelection.CpuPl2 ||
-                              effectiveSelection.CpuTurboTimeLimit ||
-                              effectiveSelection.CpuTemperatureLimit))
+                    var cpuSelection = PowerLockOperationException.Select(effectiveSelection,
+                        PowerSetting.CpuPl1, PowerSetting.CpuPl2, PowerSetting.CpuTurboTimeLimit,
+                        PowerSetting.CpuTemperatureLimit);
+                    try
                     {
-                        var names = BetaCpuPowerKind == ThinkBookToolkit.BetaCpuPowerKind.AmdPbo
-                            ? new[] { "ppt", "tdc", "edc" }
-                            : new[] { "stapm", "fast", "slow" };
-                        _ = AmdZenStatesPowerController.Write(names[0], restored.CpuPl1);
-                        _ = AmdZenStatesPowerController.Write(names[1], restored.CpuPl2);
-                        _ = AmdZenStatesPowerController.Write(names[2], restored.CpuTurboTimeLimit);
-                        if (effectiveSelection.CpuTemperatureLimit)
-                            _ = AmdZenStatesPowerController.Write("tctlmax", restored.CpuTemperatureLimit);
+                        if (IntelMmioCpuPowerEnabled &&
+                            (effectiveSelection.CpuPl1 || effectiveSelection.CpuPl2 ||
+                             effectiveSelection.CpuTurboTimeLimit))
+                            PowerLockOperationException.Run(() => IntelMmioPowerController.Write(
+                                restored.CpuPl1, restored.CpuPl2,
+                                restored.CpuTurboTimeLimit), "Intel MMIO",
+                                cpuSelection with { CpuTemperatureLimit = false }, cpuKind: failureCpuKind);
+                        else if (AmdZenStatesCpuPowerEnabled &&
+                                 (effectiveSelection.CpuPl1 || effectiveSelection.CpuPl2 ||
+                                  effectiveSelection.CpuTurboTimeLimit ||
+                                  effectiveSelection.CpuTemperatureLimit))
+                        {
+                            var names = BetaCpuPowerKind == ThinkBookToolkit.BetaCpuPowerKind.AmdPbo
+                                ? new[] { "ppt", "tdc", "edc" }
+                                : new[] { "stapm", "fast", "slow" };
+                            PowerLockOperationException.Run(() => AmdZenStatesPowerController.Write(names[0], restored.CpuPl1),
+                                "AMD ZenStates", cpuSelection, PowerSetting.CpuPl1, failureCpuKind);
+                            PowerLockOperationException.Run(() => AmdZenStatesPowerController.Write(names[1], restored.CpuPl2),
+                                "AMD ZenStates", cpuSelection, PowerSetting.CpuPl2, failureCpuKind);
+                            PowerLockOperationException.Run(() => AmdZenStatesPowerController.Write(names[2], restored.CpuTurboTimeLimit),
+                                "AMD ZenStates", cpuSelection, PowerSetting.CpuTurboTimeLimit, failureCpuKind);
+                            if (effectiveSelection.CpuTemperatureLimit)
+                                PowerLockOperationException.Run(() => AmdZenStatesPowerController.Write("tctlmax", restored.CpuTemperatureLimit),
+                                    "AMD ZenStates", cpuSelection, PowerSetting.CpuTemperatureLimit, failureCpuKind);
+                        }
+                        if (NvApiGpuPowerEnabled &&
+                            (effectiveSelection.NvPcfAcTargetTppLimit ||
+                             effectiveSelection.NvPcfAcDefaultGpuLimit ||
+                             effectiveSelection.NvPcfAcMinGpuLimit ||
+                             effectiveSelection.NvPcfAcMaxGpuLimit ||
+                             effectiveSelection.NvPcfDynamicBoost ||
+                             effectiveSelection.NvApiGpuTemperatureLimit))
+                        {
+                            PowerLockOperationException.Run(() => NvPcfPowerController.WriteAndRead(
+                                restored,
+                                effectiveSelection), "NVIDIA NVAPI", PowerLockOperationException.Select(effectiveSelection,
+                                    PowerSetting.NvPcfAcTargetTppLimit, PowerSetting.NvPcfAcDefaultGpuLimit,
+                                    PowerSetting.NvPcfAcMinGpuLimit, PowerSetting.NvPcfAcMaxGpuLimit,
+                                    PowerSetting.NvPcfDynamicBoost, PowerSetting.NvApiGpuTemperatureLimit));
+                        }
                     }
-                    if (NvApiGpuPowerEnabled &&
-                        (effectiveSelection.NvPcfAcTargetTppLimit ||
-                         effectiveSelection.NvPcfAcDefaultGpuLimit ||
-                         effectiveSelection.NvPcfAcMinGpuLimit ||
-                         effectiveSelection.NvPcfAcMaxGpuLimit ||
-                         effectiveSelection.NvPcfDynamicBoost ||
-                         effectiveSelection.NvApiGpuTemperatureLimit))
+                    catch (Exception ex) when (wmiLockError is not null)
                     {
-                        _ = NvPcfPowerController.WriteAndRead(
-                            restored,
-                            effectiveSelection);
+                        throw new AggregateException(wmiLockError, ex);
                     }
                 });
                 if (wmiLockError is not null)
                 {
-                    throw new InvalidOperationException(
-                        "NVAPI GPU locks were applied, but Lenovo WMI power " +
-                        "locks could not be restored.",
-                        wmiLockError);
+                    throw wmiLockError;
                 }
                 // Do not report the requested state as hardware confirmation.
                 // A backend can accept a write yet clamp it to a different value.
+                failureStage = PowerLockStage.Readback;
                 restored = await Task.Run(ReadPowerSettingsCore);
+                latestReadback = restored;
                 if (revision != _powerLockRevision || !ReferenceEquals(modeLock, CurrentPowerModeLock(create: false)) ||
                     modeLock!.Locks != selection || modeLock.Target != desiredTarget) return;
-                if (!PowerLockAcceptancePolicy.Accept(modeLock, restored, effectiveSelection))
-                    throw new InvalidOperationException("Locked power values could not be confirmed by hardware readback.");
+                var after = PowerLockAcceptancePolicy.Inspect(restored, effectiveSelection);
+                issues.AddRange(after.Issues);
+                var previousAccepted = modeLock.AcceptedTarget;
+                PowerLockAcceptancePolicy.Accept(modeLock, restored, effectiveSelection);
+                if (previousAccepted != modeLock.AcceptedTarget)
+                    ToolkitLog.Info("Power lock hardware readback accepted: " + PowerLockValues(selection, desiredTarget, target, restored));
                 _cachedPowerSettings = restored;
                 Snapshot = Snapshot with { PowerSettings = restored };
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                CurveProfileStore.SaveSettings(Settings);
+                if (previousAccepted != modeLock.AcceptedTarget)
+                {
+                    failureStage = PowerLockStage.Save;
+                    CurveProfileStore.SaveSettings(Settings);
+                }
             }
-            _lastPowerSettingsLockError = string.Empty;
+            _powerLockFeedback.ReadSucceeded();
+            var uniqueIssues = issues.DistinctBy(issue => issue.Setting).ToArray();
+            var problem = uniqueIssues.Length == 0 ? "" : L(
+                "部分功耗锁定参数暂无法确认：", "Some locked power parameters cannot be confirmed: ") +
+                PowerLockAcceptancePolicy.Describe(uniqueIssues, IsChinese, failureCpuKind) + companionImpact + L(
+                    "。可用参数继续锁定，未确认项保留原目标，稍后自动重试。",
+                    ". Available parameters remain locked; unconfirmed targets are preserved and will be retried.");
+            if (problem != _powerLockFeedback.LastProblem && problem.Length > 0)
+                ToolkitLog.Warning(problem + " " + PowerLockValues(selection, desiredTarget, target, latestReadback));
+            if (_powerLockFeedback.ShouldNotify(problem, DateTimeOffset.UtcNow)) SetStatus(problem);
         }
         catch (Exception ex)
         {
+            _powerLockFeedback.Failed(DateTimeOffset.UtcNow);
             var message = L(
                 "恢复锁定的功耗参数失败：",
-                "Failed to restore locked power parameters: ") + ex.Message;
-            if (!string.Equals(
-                    message,
-                    _lastPowerSettingsLockError,
-                    StringComparison.Ordinal))
-            {
-                _lastPowerSettingsLockError = message;
-                SetStatus(message);
-            }
+                "Failed to restore locked power parameters: ") +
+                PowerLockOperationException.Describe(ex, failureSelection, failureStage, failureCpuKind, IsChinese) + L(
+                    "（已延后重试，最多间隔 30 秒）", " (retry delayed, up to 30 seconds)");
+            if (message != _powerLockFeedback.LastProblem) ToolkitLog.Error(message, ex);
+            if (_powerLockFeedback.ShouldNotify(message, DateTimeOffset.UtcNow)) SetStatus(message);
         }
         finally
         {
@@ -4624,9 +4845,17 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    private static string PowerLockValues(PowerSettingsLockSelection selection, PowerSettingsState? desired,
+        PowerSettingsState? effective, PowerSettingsState actual) => string.Join("; ", Enum.GetValues<PowerSetting>()
+        .Where(selection.IsLocked).Select(setting =>
+            $"{setting}: requested={(desired is null ? null : PowerSettingsController.Value(desired, setting))}, " +
+            $"effective={(effective is null ? null : PowerSettingsController.Value(effective, setting))}, " +
+            $"actual={(actual.IsAvailable(setting) ? PowerSettingsController.Value(actual, setting)?.ToString() ?? "missing" : "unavailable")}"));
+
     private void ResetAcceptedPowerLimits()
     {
         _powerLockRevision++;
+        _powerLockFeedback.Reset();
         PowerLockAcceptancePolicy.Clear(Settings);
     }
 
@@ -4772,6 +5001,11 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
         if (args.Mode == PowerModes.Suspend)
         {
+            Plugins.NotifyEvent("host.suspend");
+            Interlocked.Exchange(ref _automationResumePending, 1);
+            CancelAutomation();
+            _resumeMode.Capture(PerformanceModeCycle.IsSelectableMode(Snapshot.PerformanceMode)
+                ? Snapshot.PerformanceMode : Snapshot.QuietPerformance.Selection(_lastConfirmedItsMode));
             ToolkitLog.Info(
                 "Windows suspend event received; pausing GPU telemetry.");
             _hybridAutoGpu.Suspend();
@@ -4789,12 +5023,14 @@ internal sealed class ToolkitRuntimeService : IDisposable
             DispatcherPriority.Send,
             new Action(() =>
             {
-                _ = HandlePowerModeChangedAsync();
+                _ = HandlePowerModeChangedAsync(args.Mode == PowerModes.Resume);
             }));
     }
 
-    private async Task HandlePowerModeChangedAsync()
+    private async Task HandlePowerModeChangedAsync(bool resumed = false)
     {
+        var runResumeAutomation = resumed && Interlocked.Exchange(ref _automationResumePending, 0) == 1;
+        var ticket = resumed ? _resumeMode.Take() : null;
         try
         {
             await RefreshHybridGpuProtectionAsync(
@@ -4806,6 +5042,73 @@ internal sealed class ToolkitRuntimeService : IDisposable
             ToolkitLog.Error(
                 "Hybrid GPU power-event handling failed.",
                 ex);
+        }
+        if (ticket is not null) await RestoreResumePerformanceModeAsync(ticket);
+        if (runResumeAutomation) await RunAutomationTriggersAsync(AutomationTriggerKind.SystemResumed);
+    }
+
+    private void OnAutomationSessionSwitch(object sender, SessionSwitchEventArgs args)
+    {
+        if (_disposed) return;
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.HasShutdownStarted) return;
+        dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_disposed) return;
+            if (args.Reason == SessionSwitchReason.SessionLock && !AutomationSessionLocked)
+            {
+                AutomationSessionLocked = true;
+                _ = RunAutomationTriggersAsync(AutomationTriggerKind.SessionLocked);
+            }
+            else if (args.Reason == SessionSwitchReason.SessionUnlock && AutomationSessionLocked)
+            {
+                AutomationSessionLocked = false;
+                _ = RunAutomationTriggersAsync(AutomationTriggerKind.SessionUnlocked);
+            }
+        }));
+    }
+
+    private async Task RestoreResumePerformanceModeAsync(ResumePerformanceModePolicy.Ticket ticket)
+    {
+        string? error = null;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            if (attempt > 0) await Task.Delay(1000);
+            if (_disposed || IsSystemSessionEnding || !_resumeMode.IsCurrent(ticket)) return;
+            await _itsModeSwitchGate.WaitAsync();
+            try
+            {
+                if (_disposed || !_resumeMode.IsCurrent(ticket)) return;
+                _switchingPerformanceMode = true;
+                var (raw, quiet) = await Task.Run(ReadPerformanceState);
+                if (!_resumeMode.IsCurrent(ticket)) return;
+                if (quiet.ConfirmsSelection(raw, ticket.Mode))
+                {
+                    _lastConfirmedItsMode = raw;
+                    Interlocked.Increment(ref _itsModeReadGeneration);
+                    Snapshot = Snapshot with { ItsMode = raw, QuietPerformance = quiet };
+                    SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                    error = null;
+                }
+                else error = await SetItsModeCoreAsync(ticket.Mode);
+                if (string.IsNullOrWhiteSpace(error))
+                {
+                    ToolkitLog.Info($"Restored pre-suspend performance mode: {ticket.Mode}.");
+                    return;
+                }
+                // The setter has already requested cache repair and waited for
+                // readback. Do not keep rewriting an already-correct BIOS flag.
+                if (Snapshot.ItsMode == ItsMode.Performance && Snapshot.QuietPerformance.Available &&
+                    Snapshot.PerformanceMode == ticket.Mode && !Snapshot.QuietPerformance.ConfirmsSelection(Snapshot.ItsMode, ticket.Mode))
+                    break;
+            }
+            catch (Exception ex) { error = ex.GetBaseException().Message; }
+            finally { _switchingPerformanceMode = false; _itsModeSwitchGate.Release(); }
+        }
+        if (_resumeMode.IsCurrent(ticket))
+        {
+            ToolkitLog.Warning("Resume performance-mode restore failed: " + error);
+            SetStatus(L("唤醒后恢复性能模式失败：", "Could not restore performance mode after resume: ") + error);
         }
     }
 
@@ -5012,6 +5315,24 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
         _trayMenu.Items.Add(new Forms.ToolStripSeparator());
         var show = new Forms.ToolStripMenuItem(L("显示主窗口", "Show main window"));
+        foreach (var entry in Plugins.Actions.Where(a => a.Action.QuickAccess.Contains("tray")))
+        {
+            var action = entry.Action;
+            var item = new Forms.ToolStripMenuItem(entry.Plugin.Manifest.Name + " · " + action.Title.Resolve(IsChinese));
+            item.Click += async (_, _) =>
+            {
+                item.Enabled = false;
+                try
+                {
+                    var defaults = System.Text.Json.JsonSerializer.SerializeToElement(action.Parameters.ToDictionary(p => p.Id, p => p.DefaultValue));
+                    var error = await Plugins.InvokeActionAsync(action.Id, defaults);
+                    if (error is not null) SetStatus(error);
+                }
+                catch (Exception ex) { SetStatus(ex.GetBaseException().Message); }
+                finally { if (!item.IsDisposed) item.Enabled = true; }
+            };
+            _trayMenu.Items.Add(item);
+        }
         show.Click += (_, _) =>
             Application.Current.Dispatcher.BeginInvoke(new Action(ShowMainWindow));
         _trayMenu.Items.Add(show);
@@ -5095,6 +5416,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
         if (_disposed)
             return;
         _disposed = true;
+        AutomationExecution.Dispose();
+        if (_automationSessionSubscribed) SystemEvents.SessionSwitch -= OnAutomationSessionSwitch;
+        _resumeMode.Cancel();
         _pollTimer.Stop();
         _powerSettingsLockTimer.Stop();
         if (_systemThemeSubscribed)

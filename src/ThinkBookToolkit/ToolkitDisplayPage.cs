@@ -11,7 +11,7 @@ using Microsoft.Win32;
 
 namespace ThinkBookToolkit;
 
-internal sealed class ToolkitDisplayPage : ToolkitPageBase,
+internal sealed partial class ToolkitDisplayPage : ToolkitPageBase,
     IControlStateRefreshable
 {
     private readonly DisplayViewModel _viewModel;
@@ -61,39 +61,7 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase,
         WireEvents();
         var root = new StackPanel();
         var report = Runtime.Report;
-
-        if (report?.IsAvailable(FeatureIds.DisplayRefreshRate) != false)
-        {
-            var control = new Grid
-            {
-                MinWidth = 340,
-                HorizontalAlignment = HorizontalAlignment.Stretch
-            };
-            control.ColumnDefinitions.Add(new ColumnDefinition
-            {
-                Width = new GridLength(1, GridUnitType.Star)
-            });
-            control.ColumnDefinitions.Add(new ColumnDefinition
-            {
-                Width = GridLength.Auto
-            });
-            _refreshRate.HorizontalAlignment = HorizontalAlignment.Stretch;
-            control.Children.Add(_refreshRate);
-            _refreshRateSettings.Margin = new Thickness(10, 0, 0, 0);
-            Grid.SetColumn(_refreshRateSettings, 1);
-            control.Children.Add(_refreshRateSettings);
-            root.Children.Add(Card(
-                L("笔记本屏幕刷新率", "Laptop display refresh rate"),
-                SettingRow(
-                    L("刷新率", "Refresh rate"),
-                    L(
-                        "直接切换笔记本内置屏幕的刷新率；设置中的选项也用于 Fn+R 循环。",
-                        "Switch the laptop panel refresh rate. Enabled rates are also used by the Fn+R cycle."),
-                    control,
-                    "\uE7F4"),
-                null,
-                "\uE7F4"));
-        }
+        root.Children.Add(BuildPanelLayoutCard());
 
         if (report?.IsAvailable(FeatureIds.VantageEyeCare) != false)
         {
@@ -291,6 +259,7 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase,
 
     private async Task LoadAsync()
     {
+        await ReloadPanelLayoutAsync();
         if (!_loadedOnce)
         {
             _loadedOnce = true;
@@ -312,6 +281,7 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase,
         try
         {
             await _viewModel.LoadAsync();
+            await ReloadPanelLayoutAsync();
             SyncControls();
         }
         finally
@@ -390,6 +360,7 @@ internal sealed class ToolkitDisplayPage : ToolkitPageBase,
         try
         {
             await _viewModel.ReloadRefreshRateAsync();
+            await ReloadPanelLayoutAsync();
             SyncControls();
         }
         finally

@@ -3,7 +3,12 @@ using System.Text.Json;
 
 namespace ThinkBookToolkit.PluginApi;
 
-public static class PluginApiVersion { public const int Current = 1; }
+public static class PluginApiVersion
+{
+    public const int Current = 1;
+    // Wire/assembly remain v1; older hosts reject manifest v2 explicitly.
+    public const int LatestManifest = 2;
+}
 
 public sealed record PluginText(string Chinese, string English)
 {
@@ -21,6 +26,11 @@ public sealed record PluginSetting(string Id, string PageId, PluginText Title, s
     public string? GroupId { get; init; }
     public PluginText? Description { get; init; }
     public string? Glyph { get; init; }
+    public bool AllowExternalWrite { get; init; }
+    public string? Editor { get; init; }
+    public PluginSettingCondition? VisibleWhen { get; init; }
+    public PluginSettingCondition? EnabledWhen { get; init; }
+    public PluginText? DisabledReason { get; init; }
 }
 public sealed record PluginSettingGroup(string Id, string PageId, PluginText Title,
     PluginText? Description = null, string? Glyph = null, int Order = 100);
@@ -45,23 +55,59 @@ public sealed record PluginManifest(string Id, string Name, string Version, int 
     public PluginFanBackend? FanBackend { get; init; }
     public PluginOverviewItem[] OverviewItems { get; init; } = [];
     public PluginSensorCategory[] SensorCategories { get; init; } = [];
+    public string[] RequiredCapabilities { get; init; } = [];
+    public string? MinimumHostVersion { get; init; }
+    public PluginDependency[] Dependencies { get; init; } = [];
+    public int RefreshIntervalMilliseconds { get; init; } = 1000;
+    public int TransientRetryLimit { get; init; }
+    public string[] EventSubscriptions { get; init; } = [];
+    // Null retains the v1 full data snapshot. An empty array requests none.
+    public string[]? DataSubscriptions { get; init; }
+    public PluginAction[] Actions { get; init; } = [];
+    public PluginSignal[] Triggers { get; init; } = [];
+    public PluginSignal[] Conditions { get; init; } = [];
+    public PluginSettingAccess[] WritableSettings { get; init; } = [];
+    public int SettingsVersion { get; init; }
+    public PluginSettingRename[] SettingRenames { get; init; } = [];
 }
 public sealed record SensorReading(string Id, double? Value, string Unit, DateTimeOffset Timestamp, string Source,
     string Quality = "valid");
-public sealed record HostOperation(string Id, IReadOnlyDictionary<string, string> Parameters);
+public sealed record HostOperation(string Id, IReadOnlyDictionary<string, string> Parameters)
+{
+    public string Permission { get; init; } = "host.control";
+    public string[]? OptionalParameters { get; init; }
+}
 public sealed record PluginContext(DateTimeOffset Timestamp, IReadOnlyDictionary<string, SensorReading> Sensors,
-    JsonElement Data, JsonElement Settings, IReadOnlyList<HostOperation> Operations);
+    JsonElement Data, JsonElement Settings, IReadOnlyList<HostOperation> Operations)
+{
+    public string[] Capabilities { get; init; } = [];
+}
 public sealed record PluginRequest(string Operation, PluginContext Context,
-    IReadOnlyDictionary<string, JsonElement> PluginSettings, string? Action = null, JsonElement? Argument = null);
-public sealed record HostCommand(string Id, IReadOnlyDictionary<string, JsonElement> Arguments);
+    IReadOnlyDictionary<string, JsonElement> PluginSettings, string? Action = null, JsonElement? Argument = null)
+{
+    public PluginEvent[] Events { get; init; } = [];
+    public HostCommandResult[] CommandResults { get; init; } = [];
+    public string? RequestId { get; init; }
+}
+public sealed record HostCommand(string Id, IReadOnlyDictionary<string, JsonElement> Arguments)
+{
+    public string? RequestId { get; init; }
+}
 public sealed record PluginToast(string Message, bool IsError = false);
 public sealed record PluginResult(IReadOnlyDictionary<string, double?> Values,
     string[]? VisibleSensors = null, HostCommand[]? Commands = null)
 {
     public IReadOnlyDictionary<string, string?>? OverviewValues { get; init; }
     public PluginToast? Toast { get; init; }
+    public string[]? TriggerSignals { get; init; }
+    public IReadOnlyDictionary<string, bool>? ConditionValues { get; init; }
+    public string? ActionError { get; init; }
+    public IReadOnlyDictionary<string, string[]>? AvailableChoices { get; init; }
 }
-public sealed record PluginResponse(bool Success, PluginResult? Result = null, string? Error = null);
+public sealed record PluginResponse(bool Success, PluginResult? Result = null, string? Error = null)
+{
+    public string? ErrorKind { get; init; }
+}
 
 /// <summary>Logic-only contract. No WPF types or main-application assembly references.</summary>
 public interface IToolkitPlugin : IAsyncDisposable

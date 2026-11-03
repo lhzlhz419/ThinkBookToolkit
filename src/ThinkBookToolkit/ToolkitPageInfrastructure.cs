@@ -83,13 +83,43 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
     protected string L(string chinese, string english) =>
         Runtime.L(chinese, english);
 
+    internal static void SyncPerformanceChoices(ComboBox selector, ToolkitRuntimeSnapshot state, ItsModeControlPath path, bool chinese)
+    {
+        var quietItem = selector.Items.OfType<ComboBoxItem>().FirstOrDefault(i => Equals(i.Tag, ItsMode.QuietPerformance));
+        if (state.SupportsSelection(ItsMode.QuietPerformance, path))
+        {
+            if (quietItem is null)
+            {
+                var ordinary = selector.Items.OfType<ComboBoxItem>().First(i => Equals(i.Tag, ItsMode.Performance));
+                selector.Items.Insert(selector.Items.IndexOf(ordinary) + 1, new ComboBoxItem
+                {
+                    Content = chinese ? "静音性能模式" : "Quiet performance", Tag = ItsMode.QuietPerformance
+                });
+            }
+        }
+        else if (quietItem is not null) selector.Items.Remove(quietItem);
+        foreach (var item in selector.Items.OfType<ComboBoxItem>())
+        {
+            var available = item.Tag is ItsMode mode && state.SupportsSelection(mode, path) &&
+                PerformanceModeAvailability.CanSelect(mode, state.Battery?.IsAcConnected);
+            item.IsEnabled = available;
+            item.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
+        }
+        selector.SelectedItem = selector.Items.OfType<ComboBoxItem>().FirstOrDefault(i =>
+            i.Visibility == Visibility.Visible && Equals(i.Tag, state.PerformanceMode));
+    }
+
     internal IEnumerable<UIElement> BuildPluginSettings(PluginInstallation plugin,
         IEnumerable<ThinkBookToolkit.PluginApi.PluginSetting> settings)
     {
         var rows = settings.ToArray();
-        UIElement Row(ThinkBookToolkit.PluginApi.PluginSetting setting) => SettingRow(
-            setting.Title.Resolve(Runtime.IsChinese), setting.Description?.Resolve(Runtime.IsChinese) ?? "",
-            PluginSettingControl.Create(Runtime, plugin, setting, showTitle: false), setting.Glyph);
+        UIElement Row(ThinkBookToolkit.PluginApi.PluginSetting setting)
+        {
+            var row = SettingRow(setting.Title.Resolve(Runtime.IsChinese), setting.Description?.Resolve(Runtime.IsChinese) ?? "",
+                PluginSettingControl.Create(Runtime, plugin, setting, showTitle: false), setting.Glyph);
+            PluginSettingControl.BindConditions(row, Runtime, plugin, setting);
+            return row;
+        }
         foreach (var setting in rows.Where(s => s.GroupId is null)) yield return Row(setting);
         foreach (var group in plugin.Manifest.SettingGroups.OrderBy(g => g.Order))
         {

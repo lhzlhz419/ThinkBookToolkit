@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 
@@ -6,6 +7,16 @@ namespace ThinkBookToolkit;
 
 internal static class PluginBuiltinSettings
 {
+    internal static bool ValidExternalValue(string id, JsonElement value) => id switch
+    {
+        "toolkit.setting.IntervalSeconds" => value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var seconds) && double.IsFinite(seconds) && seconds is >= 0.5 and <= 3600,
+        "toolkit.setting.LogRetentionDays" => value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var days) && FileRetentionPolicy.Days.Contains(days),
+        "toolkit.setting.Language" => value.ValueKind == JsonValueKind.String && value.GetString() is "zh-CN" or "en-US",
+        "toolkit.setting.Theme" => value.ValueKind == JsonValueKind.String && value.GetString() is "light" or "dark" or "system",
+        "toolkit.setting.LogLevel" => value.ValueKind == JsonValueKind.String && value.GetString() is "INFO" or "WARN" or "ERROR" or "NONE",
+        "toolkit.setting.OverviewPageMode" => value.ValueKind == JsonValueKind.String && Enum.TryParse<OverviewPageMode>(value.GetString(), out var mode) && Enum.IsDefined(mode),
+        _ => false
+    };
     internal static string? Kind(string id) => id switch
     {
         "toolkit.setting.IntervalSeconds" or "toolkit.setting.LogRetentionDays" => "number",

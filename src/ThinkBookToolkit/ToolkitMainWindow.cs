@@ -20,7 +20,9 @@ internal sealed class ToolkitMainWindow : Window
     private readonly ToolkitRuntimeService _runtime;
     private readonly bool _ownsRuntime;
     private readonly bool _enableHardwareDetection;
-    private readonly bool _startToTrayRequested;
+    internal bool StartHiddenAtLaunch { get; }
+    private bool _pendingFanStartupNotice;
+    private string? _pendingStartupError;
     private readonly Dictionary<string, Button> _navigation = [];
     private readonly Dictionary<string, Border> _indicators = [];
     private readonly Dictionary<string, ToolkitPageBase> _pages = [];
@@ -88,7 +90,9 @@ internal sealed class ToolkitMainWindow : Window
         _runtime = runtime;
         _ownsRuntime = ownsRuntime;
         _enableHardwareDetection = enableHardwareDetection;
-        _startToTrayRequested = startToTrayRequested;
+        StartHiddenAtLaunch = ShouldStartHidden(runtime.Settings, startToTrayRequested);
+        ShowInTaskbar = !StartHiddenAtLaunch;
+        ShowActivated = !StartHiddenAtLaunch;
         Title = $"ThinkBook Toolkit v{ApplicationUpdateService.CurrentVersionText}";
         Width = 1380;
         Height = 880;
@@ -130,6 +134,18 @@ internal sealed class ToolkitMainWindow : Window
     internal string SelectedPage => _selectedPage;
     internal bool ToastVisibleForTesting => _toast.Visibility == Visibility.Visible;
     internal string ToastTextForTesting => _toastText.Text;
+
+    internal static bool ShouldStartHidden(AppSettings settings, bool requested) =>
+        requested && settings.StartWithWindows && settings.StartToTray;
+
+    internal void QueueHiddenStartup()
+    {
+        if (!StartHiddenAtLaunch) throw new InvalidOperationException("This window was not configured for tray startup.");
+        // Create only the HWND, not a visible window. Initialization must not
+        // depend on Loaded, which normally requires showing the main window.
+        _ = new WindowInteropHelper(this).EnsureHandle();
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(async () => await InitializeForStartupAsync()));
+    }
 
     internal void NavigateForTesting(string page) => NavigateTo(page);
     internal void UpdateResponsiveForTesting(double width) =>
@@ -612,7 +628,9 @@ internal sealed class ToolkitMainWindow : Window
         var extra = _runtime.Plugins.Installations.Where(p => p.Enabled && p.Error is null &&
                 (page != "overview" || _runtime.Settings.OverviewPageMode != OverviewPageMode.Compact))
             .SelectMany(p => p.Manifest.Settings.Where(s => s.PageId == page && s.Replaces is null).Select(s => (p, s))).ToArray();
-        if (extra.Length > 0 && ToolkitPluginManager.BuiltinPages.Contains(page))
+        var actions = _runtime.Plugins.Actions.Where(a => a.Action.PageId == page &&
+            (page != "overview" || _runtime.Settings.OverviewPageMode != OverviewPageMode.Compact && !a.Action.QuickAccess.Contains("overview"))).ToArray();
+        if ((extra.Length > 0 || actions.Length > 0) && ToolkitPluginManager.BuiltinPages.Contains(page))
         {
             var root = new StackPanel();
             var original = view.Content as UIElement; view.Content = null;
@@ -620,6 +638,8 @@ internal sealed class ToolkitMainWindow : Window
             foreach (var group in extra.GroupBy(x => x.p))
                 foreach (var element in view.BuildPluginSettings(group.Key, group.Select(x => x.s)))
                     root.Children.Add(element);
+            foreach (var action in actions)
+                root.Children.Add(PluginActionControls.Create(_runtime, action.Action));
             view.Content = root;
         }
         return view;
@@ -735,9 +755,11 @@ internal sealed class ToolkitMainWindow : Window
             : new Thickness(6, 18, 22, 16);
     }
 
-    private async void OnLoaded(object sender, RoutedEventArgs args)
+    private async void OnLoaded(object sender, RoutedEventArgs args) => await InitializeForStartupAsync();
+
+    internal async Task InitializeForStartupAsync()
     {
-        if (_initialized) return;
+        if (_initialized || _disposed || _runtime.ExitRequested || _runtime.IsSystemSessionEnding) return;
         _initialized = true;
         if (!_enableHardwareDetection)
         {
@@ -755,22 +777,35 @@ internal sealed class ToolkitMainWindow : Window
             await Dispatcher.InvokeAsync(
                 () => { },
                 DispatcherPriority.ContextIdle);
+            if (_disposed || _runtime.ExitRequested) return;
             await _runtime.InitializeAsync();
+            if (_disposed || _runtime.ExitRequested) return;
             await _runtime.Plugins.InitializeAsync(Environment.GetCommandLineArgs().Contains("--disable-plugins"));
+            if (_disposed || _runtime.ExitRequested) return;
+            _runtime.NotifyStartupReady();
             _backgroundLoadingEnabled = true;
-            ShowFanBackendStartupNotice();
+            if (StartHiddenAtLaunch && !IsVisible) _pendingFanStartupNotice = true;
+            else ShowFanBackendStartupNotice();
             MediaMemoryCleanup.CollectAndTrim(
                 "startup initialization completed");
-            if (_startToTrayRequested && _runtime.Settings.StartWithWindows && _runtime.Settings.StartToTray)
-                _runtime.HideToTray();
-            else
+            if (IsVisible)
                 ApplyBackgroundImage();
         }
         catch (Exception ex)
         {
+            if (_disposed || _runtime.ExitRequested) return;
             _backgroundLoadingEnabled = true;
-            ApplyBackgroundImage();
-            ShowToast(L("初始化失败：", "Initialization failed: ") + ex.Message, isError: true);
+            var message = L("初始化失败：", "Initialization failed: ") + ex.Message;
+            if (IsVisible)
+            {
+                ApplyBackgroundImage();
+                ShowToast(message, isError: true);
+            }
+            else
+            {
+                _pendingStartupError = message;
+                _runtime.NotifyStartupFailure(message);
+            }
         }
     }
 
@@ -1141,6 +1176,26 @@ internal sealed class ToolkitMainWindow : Window
             RestoreWindowHardwareRendering();
             ApplyBackgroundImage();
             _backgroundImage?.SetPlaybackActive(true);
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                if (_disposed || !IsVisible) return;
+                if (_pendingStartupError is { } error)
+                {
+                    _pendingStartupError = null;
+                    ShowToast(error, isError: true);
+                }
+                if (_pendingFanStartupNotice)
+                {
+                    _pendingFanStartupNotice = false;
+                    try { ShowFanBackendStartupNotice(); }
+                    catch (Exception ex)
+                    {
+                        _pendingFanStartupNotice = true;
+                        ToolkitLog.Error("Deferred fan-backend startup notice failed.", ex);
+                        ShowToast(L("后端启动提示显示失败：", "Could not display the backend startup notice: ") + ex.Message, isError: true);
+                    }
+                }
+            }));
         }
         else
         {

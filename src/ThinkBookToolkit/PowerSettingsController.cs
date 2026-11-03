@@ -375,9 +375,10 @@ internal static class PowerSettingsController
     public static void WriteLockedState(
         PowerSettingsState current,
         PowerSettingsState target,
-        PowerSettingsLockSelection selection)
+        PowerSettingsLockSelection selection,
+        PowerSettingsState? requestedTarget = null)
     {
-        if (!IsValidLockConfiguration(selection, target))
+        if (!IsValidLockWriteTarget(selection, target, requestedTarget))
             throw new ArgumentException("The power lock configuration is invalid.");
         lock (IoSync)
         {
@@ -391,11 +392,17 @@ internal static class PowerSettingsController
                     Value(target, setting) is int targetValue &&
                     currentValue != targetValue)
                 {
-                    WriteSetting(other, setting, targetValue, CurrentProfile);
+                    PowerLockOperationException.Run(() => WriteSetting(other, setting, targetValue, CurrentProfile),
+                        "Lenovo WMI", new PowerSettingsLockSelection().With(setting, true), setting);
                 }
             }
         }
     }
+
+    internal static bool IsValidLockWriteTarget(PowerSettingsLockSelection selection, PowerSettingsState target,
+        PowerSettingsState? requestedTarget = null) =>
+        IsValidLockConfiguration(selection, requestedTarget ?? target) &&
+        (requestedTarget is null || PowerLockAcceptancePolicy.Inspect(target, selection).Issues.Count == 0);
 
     internal static PowerSettingAvailability Flag(PowerSetting setting) =>
         (PowerSettingAvailability)(1 << (int)setting);

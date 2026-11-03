@@ -40,7 +40,16 @@ public enum AutomationStepKind
     RunMacro = 31,
     OsdEnabled = 32,
     OsdLockPosition = 33,
-    SensorRecordingEnabled = 34
+    SensorRecordingEnabled = 34,
+    Resolution = 35,
+    DpiScale = 36,
+    RestoreKeyboardBacklight = 37,
+    IntelCpuPowerBeta = 38,
+    AmdCpuPowerBeta = 39,
+    NvApiGpuPowerBeta = 40,
+    PowerValue = 41,
+    PowerLock = 42,
+    PluginAction = 43
 }
 
 public enum AutomationTriggerKind
@@ -48,7 +57,11 @@ public enum AutomationTriggerKind
     AcAdapterConnected,
     AcAdapterDisconnected,
     GameStarted,
-    GameStopped
+    GameStopped,
+    ToolkitStarted = 4,
+    SystemResumed = 5,
+    SessionLocked = 6,
+    SessionUnlocked = 7
 }
 
 public sealed record AutomationStep
@@ -61,10 +74,13 @@ public sealed record AutomationStep
 
 public sealed record AutomationDefinition
 {
+    public bool Enabled { get; set; } = true;
     public string Id { get; init; } = Guid.NewGuid().ToString("D");
     public string Name { get; set; } = string.Empty;
     public List<AutomationStep> Steps { get; set; } = [];
     public List<AutomationTriggerKind> Triggers { get; set; } = [];
+    public List<string> PluginTriggers { get; set; } = [];
+    public List<string> PluginConditions { get; set; } = [];
 }
 
 internal static class FnAutomationKeyIds
@@ -163,6 +179,7 @@ internal static class AutomationSettingsDefaults
         var result = new List<AutomationDefinition>();
         foreach (var automation in automations ?? [])
         {
+            if (automation is null) continue;
             var id = Guid.TryParse(automation.Id, out var parsed)
                 ? parsed.ToString("D")
                 : Guid.NewGuid().ToString("D");
@@ -177,8 +194,11 @@ internal static class AutomationSettingsDefaults
             {
                 Id = id,
                 Name = name,
+                Enabled = automation.Enabled,
+                PluginTriggers = (automation.PluginTriggers ?? []).Where(s => !string.IsNullOrWhiteSpace(s) && s.Length <= 180).Distinct().Take(64).ToList(),
+                PluginConditions = (automation.PluginConditions ?? []).Where(s => !string.IsNullOrWhiteSpace(s) && s.Length <= 180).Distinct().Take(64).ToList(),
                 Steps = (automation.Steps ?? [])
-                    .Where(step => Enum.IsDefined(step.Kind))
+                    .Where(step => step is not null && Enum.IsDefined(step.Kind))
                     .Select(step =>
                     {
                         var kind = NormalizeStepKind(step);
@@ -187,7 +207,9 @@ internal static class AutomationSettingsDefaults
                             Id = Guid.TryParse(step.Id, out var stepId)
                                 ? stepId.ToString("D")
                                 : Guid.NewGuid().ToString("D"),
-                            Kind = kind
+                            Kind = kind,
+                            Value = step.Value ?? string.Empty,
+                            SecondaryValue = step.SecondaryValue ?? string.Empty
                         };
                     })
                     .ToList(),

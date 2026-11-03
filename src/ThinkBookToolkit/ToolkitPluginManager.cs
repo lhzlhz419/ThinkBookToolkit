@@ -26,7 +26,9 @@ internal sealed class PluginInstallation(string directory, PluginManifest manife
     public string Fingerprint { get; } = fingerprint;
     public bool Enabled { get; set; }
     public bool PendingUninstall { get; set; }
+    public bool PendingUpdate { get; set; }
     public string? Error { get; set; }
+    internal string? SettingsLoadError;
     internal PluginProcessClient? Client;
     internal Dictionary<string, JsonElement> Settings = new();
     internal PublishedPluginSensor[] Values = [];
@@ -34,22 +36,37 @@ internal sealed class PluginInstallation(string directory, PluginManifest manife
     internal DateTimeOffset LastResultAt;
     internal long LastToastTimestamp;
     internal string? LastToastKey;
+    internal readonly SemaphoreSlim IoGate = new(1, 1);
+    internal Task? RefreshTask;
+    internal long Generation;
+    internal DateTimeOffset NextRefresh;
+    internal int ConsecutiveFailures;
+    internal int RestartCount;
+    internal double LastDurationMs;
+    internal string? LastFailure;
+    internal readonly Queue<HostCommandResult> Results = new();
+    internal readonly Dictionary<string, HostCommandResult> CompletedCommands = new();
+    internal readonly Queue<PluginEvent> Events = new();
+    internal readonly Dictionary<string, bool> Conditions = new();
+    internal readonly Dictionary<string, DateTimeOffset> LastSignals = new();
+    internal readonly Dictionary<string, PluginThresholdState> Thresholds = new();
+    internal IReadOnlyDictionary<string, string[]> AvailableChoices = new Dictionary<string, string[]>();
 }
 internal sealed record PluginToastNotification(string PluginId, string PluginName, string Message, bool IsError);
 internal sealed record PluginPreference(bool Enabled, string Fingerprint);
 internal sealed record PluginManagerOptions(string? PluginRoot = null, string? StateRoot = null, string? HostPath = null, string? BundledRoot = null);
 
-internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
+internal sealed partial class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
 {
     private readonly ToolkitRuntimeService _runtime;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _stop = new();
-    private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly List<PluginInstallation> _plugins = [];
     private readonly List<string> _discoveryErrors = [];
     private Dictionary<string, PluginPreference> _preferences = new();
     private bool _disposed;
-    private bool _busy;
+    private readonly SemaphoreSlim _evaluationSlots = new(4, 4);
     private bool _initialized;
     private bool _discovered;
     private Task? _discoveryTask;
@@ -75,7 +92,8 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
     {
         _runtime = runtime;
         _options = options ?? new();
-        _timer.Tick += async (_, _) => await RefreshAsync();
+        CurveProfileStore.SettingsSaved += OnHostSettingsSaved;
+        _timer.Tick += async (_, _) => await RefreshAsync(force: false);
     }
 
     internal async Task InitializeAsync(bool safeMode = false)
@@ -98,6 +116,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         if (_discovered) return;
         _discovered = true;
         ProcessPendingRemovals();
+        ProcessPackageUpdates(safeMode);
         if (safeMode) return;
         try { _preferences = JsonSerializer.Deserialize<Dictionary<string, PluginPreference>>(File.ReadAllText(Path.Combine(StateRoot, "enabled.json"))) ?? new(); } catch { }
         foreach (var root in new[] { _options.BundledRoot ?? Path.Combine(AppContext.BaseDirectory, "Plugins"), Root }.Distinct(StringComparer.OrdinalIgnoreCase))
@@ -119,7 +138,10 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
                     LoadPluginSettings(plugin);
                     plugin.Enabled = _preferences.TryGetValue(manifest.Id, out var pref)
                         && pref.Enabled && pref.Fingerprint == fingerprint;
+                    if (plugin.SettingsLoadError is not null) plugin.Enabled = false;
                     plugin.PendingUninstall = _pendingRemovals.Any(r => r.PluginId == manifest.Id && Removals.Matches(r, directory));
+                    plugin.PendingUpdate = _updates.Any(u => u.Id == manifest.Id);
+                    if (plugin.PendingUpdate) plugin.Enabled = false;
                     if (plugin.PendingUninstall) plugin.Enabled = false;
                     _plugins.Add(plugin);
                     if (plugin.Enabled && FindConflict(plugin) is { } conflict) { plugin.Enabled = false; plugin.Error = conflict; }
@@ -210,7 +232,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         catch (Exception ex) { _discoveryErrors.Add("Cannot update uninstall journal: " + ex.Message); }
     }
 
-    internal bool RequiresRestart(PluginInstallation plugin) => plugin.PendingUninstall ||
+    internal bool RequiresRestart(PluginInstallation plugin) => plugin.PendingUninstall || plugin.PendingUpdate ||
         plugin.Manifest.FanBackend is not null && plugin.Enabled != (ActiveFanBackend?.PluginId == plugin.Manifest.Id);
 
     internal async Task<bool> UninstallAsync(PluginInstallation plugin, bool? loadedForTesting = null)
@@ -221,6 +243,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         try
         {
             if (!_plugins.Contains(plugin)) throw new InvalidOperationException("Plugin is not installed.");
+            if (plugin.PendingUpdate) throw new PluginRestartRequiredException("插件更新待完成，请先重启。 / Restart to finish the pending update.");
             if (plugin.PendingUninstall) return true;
             record = Removals.Plan(plugin);
             restart = loadedForTesting ?? (PluginUiLoader.IsLoaded(plugin.Directory) || ActiveFanBackend?.PluginId == plugin.Manifest.Id);
@@ -230,7 +253,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
             try { Removals.Save(_pendingRemovals.Append(record).ToArray()); }
             catch { SaveJson(Path.Combine(StateRoot, "enabled.json"), previous); throw; }
             _preferences = next; _pendingRemovals.Add(record);
-            plugin.Enabled = false; plugin.PendingUninstall = true; plugin.Error = null;
+            plugin.Generation++; plugin.Enabled = false; plugin.PendingUninstall = true; plugin.Error = null;
             plugin.Client?.Dispose(); plugin.Client = null; plugin.Values = [];
             plugin.OverviewValues = new Dictionary<string, string?>();
         }
@@ -257,12 +280,15 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
 
     internal async Task SuspendForExitAsync()
     {
+        NotifyEvent("host.exiting");
         _timer.Stop(); _exitSuspended = true;
+        foreach (var plugin in _plugins) plugin.Generation++;
+        await Task.WhenAll(_plugins.Where(p => p.Enabled && p.Error is null).Select(DeliverExitEventAsync));
         await _gate.WaitAsync();
         try { foreach (var plugin in _plugins) { plugin.Client?.Dispose(); plugin.Client = null; } }
         finally { _gate.Release(); }
     }
-    internal void ResumeAfterCancelledExit() { if (!_disposed) { _exitSuspended = false; if (_initialized) _timer.Start(); } }
+    internal void ResumeAfterCancelledExit() { if (!_disposed) { _exitSuspended = false; NotifyEvent("state.resync"); if (_initialized) _timer.Start(); } }
 
     internal async Task PrepareFanBackendAsync(bool safeMode = false, Action<string, PluginFanBackendSelection>? stageForTesting = null)
     {
@@ -275,7 +301,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         FanController.SelectedPlugin = ActiveFanBackend;
         FanController.PluginPreparationError = null;
         if (plugin is null) return;
-        try { await Task.Run(() => (stageForTesting ?? PluginFanBackendPackage.Stage)(plugin.Directory, ActiveFanBackend!)); }
+        try { ValidateDependencies(plugin); await Task.Run(() => (stageForTesting ?? PluginFanBackendPackage.Stage)(plugin.Directory, ActiveFanBackend!)); }
         catch (Exception ex)
         {
             plugin.Error = "风扇后端准备失败 / Fan backend preparation failed: " + ex.GetBaseException().Message;
@@ -294,7 +320,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
 
     internal static void ValidateManifest(PluginManifest manifest, string directory)
     {
-        if (manifest.ApiVersion != PluginApiVersion.Current) throw new InvalidDataException("Unsupported plugin API version.");
+        if (manifest.ApiVersion is < 1 or > PluginApiVersion.LatestManifest) throw new InvalidDataException("Unsupported plugin API version.");
         if (!Regex.IsMatch(manifest.Id, @"^[a-z0-9][a-z0-9._-]{0,100}$")) throw new InvalidDataException("Invalid plugin ID.");
         if (Path.GetFileName(manifest.EntryAssembly) != manifest.EntryAssembly || !manifest.EntryAssembly.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
             !File.Exists(Path.Combine(directory, manifest.EntryAssembly))) throw new InvalidDataException("Invalid entry assembly.");
@@ -307,7 +333,8 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
             manifest.Sensors.Any(s => s.Name.Chinese.Length > 160 || s.Name.English.Length > 160 || s.Unit.Length > 32)) throw new InvalidDataException("Invalid metadata length.");
         if (manifest.Sensors.Any(s => !PluginSensorChartPolicy.ValidBounds(s.ChartMinimum, s.ChartMaximum)))
             throw new InvalidDataException("传感器绘图范围无效：上下限必须是有限数字，且下限小于上限。 / Invalid sensor chart range: bounds must be finite and minimum must be less than maximum.");
-        if (manifest.Permissions.Except(new[] { "sensors.read", "data.read", "settings.read", "host.control", "replace", "fan.backend", "ui.custom", "ui.toast" }).Any()) throw new InvalidDataException("Unknown permission.");
+        if (manifest.Permissions.Except(new[] { "sensors.read", "data.read", "settings.read", "host.control", "replace", "fan.backend", "ui.custom", "ui.toast", "settings.write" }).Any()) throw new InvalidDataException("Unknown permission.");
+        PluginExtensionPolicy.Validate(manifest);
         foreach (var page in manifest.Pages.Where(p => p.View is not null))
         {
             var view = page.View!;
@@ -415,30 +442,43 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
         .Concat(manifest.Sensors.Where(x => x.Replaces is not null).Select(x => "sensor:" + x.Replaces))
         .Concat(manifest.OverviewItems.Where(x => x.Action != "add").Select(x => "overview:" + x.CardId + "/" + x.Target))
         .Concat(manifest.FanBackend is null ? Array.Empty<string>() : new[] { "fan-backend" });
-    private string? FindConflict(PluginInstallation candidate) => _plugins.Where(p => p != candidate && p.Enabled)
-        .Any(p => Targets(p.Manifest).Intersect(Targets(candidate.Manifest)).Any()) ? "替换目标已被另一插件占用。 / Replacement target already has an owner." : null;
+    private string? FindConflict(PluginInstallation candidate)
+    {
+        foreach (var other in _plugins.Where(p => p != candidate && p.Enabled))
+            if (Targets(other.Manifest).Intersect(Targets(candidate.Manifest)).FirstOrDefault() is { } target)
+                return $"{target} 已被 {other.Manifest.Name} ({other.Manifest.Id}) 占用。 / Replacement target already has an owner.";
+        return null;
+    }
 
     internal async Task SetEnabledAsync(PluginInstallation plugin, bool enabled)
     {
         await _gate.WaitAsync();
         try
         {
-            if (plugin.PendingUninstall || !_plugins.Contains(plugin)) throw new InvalidOperationException("插件待卸载或已移除，无法启用。 / Plugin is pending uninstall or has been removed.");
+            if (plugin.PendingUninstall || plugin.PendingUpdate || !_plugins.Contains(plugin)) throw new InvalidOperationException("插件有待处理的更新或卸载，请先重启。 / Restart to finish pending plugin changes.");
             if (enabled && FindConflict(plugin) is { } conflict) throw new InvalidOperationException(conflict);
+            if (enabled && plugin.SettingsLoadError is not null) throw new InvalidOperationException(plugin.SettingsLoadError);
             if (enabled && Fingerprint(plugin.Directory) != plugin.Fingerprint) throw new InvalidOperationException("插件文件已改变，请重启后重新授权。 / Plugin files changed; restart and review permissions again.");
+            if (enabled) ValidateDependencies(plugin);
             _preferences[plugin.Manifest.Id] = new(enabled, plugin.Fingerprint);
             SaveJson(Path.Combine(StateRoot, "enabled.json"), _preferences);
+            plugin.Generation++; plugin.NextRefresh = default; plugin.ConsecutiveFailures = 0;
+            plugin.Results.Clear(); plugin.CompletedCommands.Clear(); plugin.Events.Clear(); plugin.Conditions.Clear(); plugin.Thresholds.Clear(); plugin.LastSignals.Clear();
             plugin.Enabled = enabled; plugin.Error = null; plugin.Values = [];
+            plugin.AvailableChoices = new Dictionary<string, string[]>();
             plugin.OverviewValues = new Dictionary<string, string?>();
             plugin.Client?.Dispose(); plugin.Client = null;
         }
         finally { _gate.Release(); }
         Publish(); CatalogChanged?.Invoke(this, EventArgs.Empty);
-        await RefreshAsync();
+        NotifyEvent(enabled ? "plugin.enabled" : "plugin.disabled", plugin.Manifest.Id);
+        if (enabled) await RefreshAsync(only: plugin);
     }
     internal async Task SetSettingAsync(PluginInstallation plugin, PluginSetting setting, JsonElement value)
     {
         if (!plugin.Enabled || !ValidSetting(setting, value)) throw new ArgumentException("Invalid plugin setting.");
+        if (plugin.AvailableChoices.TryGetValue(setting.Id, out var choices) && !choices.Contains(value.GetString()))
+            throw new ArgumentException("该选项当前不可用。 / This option is currently unavailable.");
         await _gate.WaitAsync();
         try
         {
@@ -451,7 +491,8 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
             }
         }
         finally { _gate.Release(); }
-        await RefreshAsync();
+        NotifyEvent("settings.changed", "user", new { PluginId = plugin.Manifest.Id, SettingId = setting.Id });
+        await RefreshAsync(only: plugin);
     }
     internal JsonElement SettingValue(PluginInstallation plugin, PluginSetting setting) =>
         setting.Replaces is { } slot ? PluginBuiltinSettings.Read(_runtime, slot) : plugin.Settings[setting.Id];
@@ -470,45 +511,6 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
     }
     internal string OverrideText(string sensorId, string original) => Sensors.FirstOrDefault(s => s.Replaces == sensorId && s.Value.HasValue)?.Text ?? original;
 
-    internal async Task RefreshAsync()
-    {
-        if (_disposed || _busy || _exitSuspended) return;
-        _busy = true;
-        await _gate.WaitAsync();
-        var catalogChanged = false;
-        try
-        {
-            foreach (var plugin in _plugins.Where(p => p.Enabled && p.Error is null))
-            {
-                try
-                {
-                    plugin.Client ??= new(plugin.Directory, plugin.Manifest, _options.HostPath);
-                    var context = PluginHostBridge.Context(_runtime, plugin.Manifest.Permissions);
-                    var settings = plugin.Manifest.Settings.ToDictionary(s => s.Id, s => SettingValue(plugin, s));
-                    var result = await plugin.Client.EvaluateAsync(new("refresh", context, settings), _stop.Token);
-                    if (_exitSuspended || !plugin.Enabled || plugin.Error is not null) continue;
-                    plugin.Values = ValidateResult(plugin, result, context.Timestamp);
-                    plugin.OverviewValues = result.OverviewValues ?? new Dictionary<string, string?>();
-                    plugin.LastResultAt = context.Timestamp;
-                    foreach (var command in result.Commands ?? [])
-                        await PluginHostBridge.ExecuteAsync(_runtime, plugin.Manifest.Permissions, command);
-                    if (result.Toast is { } toast) ShowToast(plugin, toast);
-                }
-                catch (Exception ex)
-                {
-                    if (_exitSuspended) continue;
-                    plugin.Error ??= ex.GetBaseException().Message; plugin.Values = [];
-                    plugin.OverviewValues = new Dictionary<string, string?>();
-                    plugin.Client?.Dispose(); plugin.Client = null; catalogChanged = true;
-                    ToolkitLog.Error("Plugin suspended: " + plugin.Manifest.Id, ex);
-                }
-            }
-        }
-        finally { _gate.Release(); _busy = false; }
-        if (_disposed) return;
-        Publish();
-        if (catalogChanged) CatalogChanged?.Invoke(this, EventArgs.Empty);
-    }
     internal static PublishedPluginSensor[] ValidateResult(PluginInstallation plugin, PluginResult result, DateTimeOffset timestamp)
     {
         if (result.Toast is { } toast) ValidateToast(plugin, toast);
@@ -569,18 +571,47 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
             _runtime.SetStatus(plugin.Error ?? "");
         }));
     }
-    private string SettingsPath(PluginInstallation plugin) => Path.Combine(StateRoot, plugin.Manifest.Id + ".json");
+    private string SettingsPath(PluginInstallation plugin) => SettingsPath(plugin.Manifest.Id);
+
+    private string SettingsPath(string id)
+    {
+        // These two v1 filenames belong to the manager. Preserve existing
+        // plugin setting paths for all other IDs.
+        var directory = id is "enabled" or "pending-uninstall" ? Path.Combine(StateRoot, "plugin-data") : StateRoot;
+        return Path.Combine(directory, id + ".json");
+    }
     private void LoadPluginSettings(PluginInstallation plugin)
     {
         foreach (var setting in plugin.Manifest.Settings) plugin.Settings[setting.Id] = setting.DefaultValue.Clone();
         try
         {
-            var saved = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(SettingsPath(plugin)));
+            var path = SettingsPath(plugin);
+            if (!File.Exists(path)) return;
+            var saved = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(path));
+            if (saved is not null && plugin.Manifest.SettingsVersion > 0)
+            {
+                var versionPath = SchemaPath(plugin.Manifest.Id);
+                var previousVersion = File.Exists(versionPath) ? JsonSerializer.Deserialize<int>(File.ReadAllText(versionPath)) : 0;
+                if (previousVersion < plugin.Manifest.SettingsVersion)
+                {
+                    var backup = Path.Combine(StateRoot, "migration-backups", plugin.Manifest.Id + "-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + ".json");
+                    Directory.CreateDirectory(Path.GetDirectoryName(backup)!); File.Copy(path, backup, false);
+                    foreach (var rename in plugin.Manifest.SettingRenames)
+                        if (!saved.ContainsKey(rename.To) && saved.TryGetValue(rename.From, out var value) && ValidSetting(plugin.Manifest.Settings.Single(s => s.Id == rename.To), value))
+                            saved[rename.To] = value.Clone();
+                    SaveJson(path, saved);
+                    SaveJson(versionPath, plugin.Manifest.SettingsVersion);
+                }
+            }
             foreach (var pair in saved ?? [])
                 if (plugin.Manifest.Settings.FirstOrDefault(s => s.Id == pair.Key) is { } descriptor && ValidSetting(descriptor, pair.Value))
                     plugin.Settings[pair.Key] = pair.Value.Clone();
         }
-        catch { }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning("Plugin settings could not be loaded/migrated: " + plugin.Manifest.Id + ": " + ex.Message);
+            if (plugin.Manifest.SettingsVersion > 0) plugin.Error = plugin.SettingsLoadError = "Plugin settings migration failed; restore the backup and restart, or roll back the plugin. " + ex.Message;
+        }
     }
     private static void SaveJson<T>(string path, T value)
     {
@@ -591,6 +622,7 @@ internal sealed class ToolkitPluginManager : IDisposable, INotifyPropertyChanged
     private static string Fingerprint(string directory) => PluginFanBackendPackage.Fingerprint(directory);
     public void Dispose()
     {
+        CurveProfileStore.SettingsSaved -= OnHostSettingsSaved;
         _disposed = true; _timer.Stop(); _stop.Cancel();
         foreach (var plugin in _plugins) plugin.Client?.Dispose();
     }

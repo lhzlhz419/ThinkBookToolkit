@@ -27,6 +27,12 @@ internal static class FanBackendPluginTests
         Reject(() => ToolkitPluginManager.ValidateManifest(manifest with { FanBackend = new("../outside.dll", "Test") }, directory));
         var selection = Selection(directory, manifest);
         PluginFanBackendPackage.ValidatePackage(directory, selection);
+        var modernDirectory = directory + "-v2";
+        Directory.CreateDirectory(modernDirectory);
+        var modern = CreatePackage(modernDirectory) with { ApiVersion = 2 };
+        File.WriteAllText(Path.Combine(modernDirectory, "plugin.json"), JsonSerializer.Serialize(modern));
+        ToolkitPluginManager.ValidateManifest(modern, modernDirectory);
+        PluginFanBackendPackage.ValidatePackage(modernDirectory, Selection(modernDirectory, modern));
         Reject(() => PluginFanBackendPackage.ValidateSelection(selection with { Fingerprint = "../test" }));
         Reject(() => PluginFanBackendPackage.ValidatePackage(directory, selection with { Type = "Other.Type" }));
         var aclFactory = typeof(PluginFanBackendPackage).GetMethod("DirectorySecurity", BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -121,7 +127,9 @@ internal static class FanBackendPluginTests
 
     private static PluginManifest CreatePackage(string directory, string id = "toolkit.plugin-test")
     {
-        File.Copy(Path.Combine(AppContext.BaseDirectory, "fixtures", "ThinkBookToolkit.FanBackend.dll"), Path.Combine(directory, "ThinkBookToolkit.FanBackend.dll"));
+        var fixture = Environment.GetEnvironmentVariable("TBT_TEST_LEGACY_FAN_BACKEND") ??
+            Path.Combine(AppContext.BaseDirectory, "fixtures", "ThinkBookToolkit.FanBackend.dll");
+        File.Copy(fixture, Path.Combine(directory, "ThinkBookToolkit.FanBackend.dll"));
         File.Copy(typeof(AverageFanPlugin).Assembly.Location, Path.Combine(directory, "ThinkBookToolkit.PluginTest.dll"));
         var manifest = new PluginManifest(id, "Fan and page test", "1.0", 1, "ThinkBookToolkit.PluginTest.dll", typeof(AverageFanPlugin).FullName!,
             ["fan.backend", "sensors.read"], [new(id + ".page", new("测试", "Test"))],

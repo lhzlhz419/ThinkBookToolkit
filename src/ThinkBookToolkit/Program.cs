@@ -132,7 +132,12 @@ public static class Program
                         () => app.Dispatcher.BeginInvoke(
                             new Action(runtime.RequestExit)));
                     app.MainWindow = window;
-                    app.Run(window);
+                    if (window.StartHiddenAtLaunch)
+                    {
+                        window.QueueHiddenStartup();
+                        app.Run(); // Run(window) would implicitly show it.
+                    }
+                    else app.Run(window);
                     restartRequested = runtime.ApplicationRestartRequested && !runtime.IsSystemSessionEnding;
                 }
                 finally

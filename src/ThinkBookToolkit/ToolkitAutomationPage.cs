@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
@@ -21,6 +22,16 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
     private readonly ComboBox _option = new() { MinWidth = 210 };
     private readonly TextBox _value = new() { MinWidth = 210 };
     private readonly TextBox _arguments = new() { MinWidth = 180 };
+    private readonly StackPanel _pluginArguments = new();
+    private PluginParameterEditor? _pluginParameterEditor;
+    private readonly StackPanel _pluginSignals = new();
+    private readonly Dictionary<string, CheckBox> _pluginTriggerToggles = new();
+    private readonly Dictionary<string, CheckBox> _pluginConditionToggles = new();
+    private readonly ComboBox _secondaryOption = new() { MinWidth = 140 };
+    private readonly TextBlock _executionInfo = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly Expander _executionDetails = new() { IsExpanded = false, Margin = new Thickness(0, 12, 0, 0), Visibility = Visibility.Collapsed };
+    private Button _cancelRuns = null!;
+    private bool _disposed;
     private readonly TextBlock _argumentsLabel = new();
     private readonly Button _browse;
     private readonly Button _addStep;
@@ -51,6 +62,9 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
         Content = BuildLayout();
         RenderAutomations();
         Runtime.MacroChanged += OnMacroChanged;
+        Runtime.AutomationChanged += OnExecutionChanged;
+        Runtime.AutomationExecution.Changed += OnExecutionChanged;
+        OnExecutionChanged(this, EventArgs.Empty);
     }
 
     private UIElement BuildLayout()
@@ -111,6 +125,23 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
                 "Combine device controls, application actions, and delays in any order, then run them manually or bind them to Fn keys."),
             "\uE771",
             headerAction: headerActions));
+        _cancelRuns = ActionButton(L("取消全部运行", "Cancel all runs"), danger: true);
+        _cancelRuns.HorizontalAlignment = HorizontalAlignment.Right;
+        _cancelRuns.Click += (_, _) => Runtime.CancelAutomation();
+        var executionBody = new StackPanel { Margin = new Thickness(4, 10, 4, 0) };
+        executionBody.Children.Add(_cancelRuns);
+        _executionInfo.Margin = new Thickness(0, 6, 0, 0);
+        _executionInfo.Foreground = Brush(Palette.Text);
+        executionBody.Children.Add(_executionInfo);
+        executionBody.Children.Add(new TextBlock
+        {
+            Text = L("取消后停止后续步骤；已开始的硬件操作可能完成。", "Cancellation stops subsequent steps; an in-flight hardware operation may finish."),
+            Foreground = Brush(Palette.Muted), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0)
+        });
+        _executionDetails.Header = L("运行记录", "Run history");
+        _executionDetails.Foreground = Brush(Palette.Muted);
+        _executionDetails.Content = executionBody;
+        _automationDetails.Children.Add(_executionDetails);
         root.Children.Add(Card(
             L("键盘宏", "Keyboard macros"),
             _macroPanel,
@@ -130,7 +161,7 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
             L("名称", "Name"),
             L("用于列表和 Fn 快捷键映射。", "Used in the list and Fn-key mappings."),
             _name));
-        var triggers = new WrapPanel { Orientation = Orientation.Horizontal };
+        var triggers = new WrapPanel { Orientation = Orientation.Horizontal, MaxWidth = 440 };
         foreach (var trigger in Enum.GetValues<AutomationTriggerKind>())
         {
             var toggle = new CheckBox
@@ -155,6 +186,7 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
             Margin = new Thickness(2, 12, 2, 8)
         });
         _editor.Children.Add(_stepRows);
+        _editor.Children.Add(_pluginSignals);
 
         var addGrid = new Grid { Margin = new Thickness(0, 10, 0, 0) };
         addGrid.ColumnDefinitions.Add(new ColumnDefinition
@@ -179,7 +211,22 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
         valueHost.Children.Add(_value);
         Grid.SetColumn(valueHost, 2);
         addGrid.Children.Add(valueHost);
+        for (var row = 0; row < 3; row++) addGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        addGrid.SizeChanged += (_, _) =>
+        {
+            var stacked = addGrid.ActualWidth < 700;
+            var controls = new FrameworkElement[] { _category, _action, valueHost };
+            for (var index = 0; index < controls.Length; index++)
+            {
+                Grid.SetRow(controls[index], stacked ? index : 0);
+                Grid.SetColumn(controls[index], stacked ? 0 : index);
+                Grid.SetColumnSpan(controls[index], stacked ? 3 : 1);
+                controls[index].Margin = stacked ? new Thickness(0, 0, 0, 8) : new Thickness(0, 0, index < 2 ? 8 : 0, 0);
+            }
+        };
         _editor.Children.Add(addGrid);
+        _editor.Children.Add(_pluginArguments);
+        _option.SelectionChanged += (_, _) => ConfigurePluginArguments();
 
         var appDetails = new WrapPanel
         {
@@ -194,6 +241,11 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
         _argumentsLabel.Margin = new Thickness(0, 0, 6, 0);
         appDetails.Children.Add(_argumentsLabel);
         appDetails.Children.Add(_arguments);
+        _secondaryOption.Items.Add(new ComboBoxItem { Content = L("锁定", "Lock"), Tag = "true" });
+        _secondaryOption.Items.Add(new ComboBoxItem { Content = L("解除锁定", "Unlock"), Tag = "false" });
+        _secondaryOption.Items.Add(new ComboBoxItem { Content = L("切换锁定", "Toggle lock"), Tag = "toggle" });
+        _secondaryOption.SelectedIndex = 0;
+        appDetails.Children.Add(_secondaryOption);
         appDetails.Children.Add(_addStep);
         _editor.Children.Add(appDetails);
 
@@ -254,13 +306,14 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
         _option.Items.Clear();
         _value.Text = string.Empty;
         _arguments.Text = string.Empty;
+        _secondaryOption.SelectedIndex = 0;
         if (_action.SelectedItem is not ComboBoxItem
             {
                 Tag: AutomationStepKind kind
             })
             return;
         var metadata = AutomationStepCatalog.Metadata(kind);
-        _option.Visibility = metadata.InputKind == AutomationStepInputKind.Options
+        _option.Visibility = metadata.InputKind is AutomationStepInputKind.Options or AutomationStepInputKind.OptionsWithValue or AutomationStepInputKind.OptionsWithSwitch or AutomationStepInputKind.PluginAction
             ? Visibility.Visible
             : Visibility.Collapsed;
         _value.Visibility = metadata.InputKind is
@@ -272,8 +325,11 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
             AutomationStepInputKind.ApplicationPath
             ? Visibility.Visible
             : Visibility.Collapsed;
-        _arguments.Visibility = _browse.Visibility;
-        _argumentsLabel.Visibility = _browse.Visibility;
+        _arguments.Visibility = metadata.InputKind is AutomationStepInputKind.ApplicationPath or AutomationStepInputKind.OptionsWithValue ? Visibility.Visible : Visibility.Collapsed;
+        _secondaryOption.Visibility = metadata.InputKind == AutomationStepInputKind.OptionsWithSwitch ? Visibility.Visible : Visibility.Collapsed;
+        _argumentsLabel.Visibility = metadata.InputKind is AutomationStepInputKind.ApplicationPath or AutomationStepInputKind.OptionsWithValue or AutomationStepInputKind.OptionsWithSwitch ? Visibility.Visible : Visibility.Collapsed;
+        _argumentsLabel.Text = metadata.InputKind == AutomationStepInputKind.ApplicationPath ? L("启动参数", "Arguments") : L("参数值 / 锁定", "Value / lock");
+        _arguments.ToolTip = L("使用当前功耗接口的单位（W、°C、秒；AMD PBO 的 TDC/EDC 为 A）。", "Use the active power interface's units (W, °C, seconds; AMD PBO TDC/EDC use A).");
         foreach (var option in AutomationStepCatalog.Options(kind, Runtime))
         {
             _option.Items.Add(new ComboBoxItem
@@ -288,6 +344,7 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
             _option.SelectedIndex = 0;
         if (metadata.InputKind == AutomationStepInputKind.Integer)
             _value.Text = "0.5";
+        ConfigurePluginArguments();
     }
 
     private void BrowseApplication()
@@ -315,7 +372,7 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
         var value = metadata.InputKind switch
         {
             AutomationStepInputKind.None => string.Empty,
-            AutomationStepInputKind.Options =>
+            AutomationStepInputKind.Options or AutomationStepInputKind.OptionsWithValue or AutomationStepInputKind.OptionsWithSwitch or AutomationStepInputKind.PluginAction =>
                 (_option.SelectedItem as ComboBoxItem)?.Tag?.ToString() ??
                 string.Empty,
             _ => _value.Text.Trim()
@@ -335,18 +392,24 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
              seconds is < 0 or > 86400))
         {
             _status.Text = L(
-                "延迟必须是 0–86400 秒的整数。",
-                "Delay must be an integer from 0 to 86400 seconds.");
+                "延迟必须是 0–86400 秒的有限数值，可以使用小数。",
+                "Delay must be a finite value from 0 to 86400 seconds; fractions are allowed.");
             return;
         }
         var newStep = new AutomationStep
         {
             Kind = kind,
             Value = value,
-            SecondaryValue = kind == AutomationStepKind.OpenApplication
-                ? _arguments.Text.Trim()
-                : string.Empty
+            SecondaryValue = kind == AutomationStepKind.PowerLock
+                ? (_secondaryOption.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? ""
+                : kind is AutomationStepKind.OpenApplication or AutomationStepKind.PowerValue ? _arguments.Text.Trim() : string.Empty
         };
+        if (kind == AutomationStepKind.PluginAction)
+        {
+            try { newStep.SecondaryValue = _pluginParameterEditor?.Read().GetRawText() ?? "{}"; }
+            catch (Exception ex) { _status.Text = ex.Message; return; }
+        }
+        if (AutomationStepCatalog.Validate(newStep) is { } invalid) { _status.Text = invalid; return; }
         if (_editingStepIndex is { } editingIndex &&
             editingIndex >= 0 && editingIndex < _draft.Steps.Count)
         {
@@ -380,6 +443,7 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
             }
             : Clone(source);
         _name.Text = _draft.Name;
+        BuildPluginSignals();
         foreach (var pair in _triggerToggles)
             pair.Value.IsChecked = _draft.Triggers.Contains(pair.Key);
         ResetStepEditor();
@@ -409,8 +473,9 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
 
     private IEnumerable<AutomationStepMetadata> AvailableCatalogItems() =>
         AutomationStepCatalog.Items.Where(item =>
-            item.Kind != AutomationStepKind.RunMacro ||
-            Runtime.Settings.Macros.Count > 0);
+            AutomationStepCatalog.IsAvailableForCpu(item.Kind, CpuVendorDetector.Manufacturer()) &&
+            (item.Kind != AutomationStepKind.PluginAction || Runtime.Plugins.Actions.Any()) &&
+            (item.Kind != AutomationStepKind.RunMacro || Runtime.Settings.Macros.Count > 0));
 
     private void OnMacroChanged(object? sender, EventArgs args)
     {
@@ -459,6 +524,9 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
             return;
         }
         _draft.Name = name;
+        _draft.PluginTriggers = _pluginTriggerToggles.Where(p => p.Value.IsChecked == true).Select(p => p.Key).ToList();
+        _draft.PluginConditions = _pluginConditionToggles.Where(p => p.Value.IsChecked == true).Select(p => p.Key).ToList();
+        _draft.Enabled = Runtime.Settings.Automations.FirstOrDefault(a => a.Id == _draft.Id)?.Enabled ?? _draft.Enabled;
         _draft.Triggers = _triggerToggles
             .Where(pair => pair.Value.IsChecked == true)
             .Select(pair => pair.Key)
@@ -484,14 +552,28 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
         _automationRows.Children.Clear();
         foreach (var automation in Runtime.Settings.Automations)
         {
-            var actions = new StackPanel { Orientation = Orientation.Horizontal };
+            var actions = new WrapPanel { Orientation = Orientation.Horizontal };
             var run = ActionButton(L("运行", "Run"), primary: true);
+            var pending = Runtime.AutomationExecution.IsPending(automation.Id);
+            run.IsEnabled = automation.Enabled && !pending;
+            var enabled = new CheckBox { IsChecked = automation.Enabled, Content = L("启用", "Enabled"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
+            enabled.Click += (_, _) =>
+            {
+                var updated = Runtime.Settings.Automations.Select(a => a.Id == automation.Id ? a with { Enabled = enabled.IsChecked == true } : a);
+                if (!Runtime.TrySaveAutomations(updated, out var error)) { enabled.IsChecked = automation.Enabled; _status.Text = error; }
+            };
+            var stop = ActionButton(L("取消运行", "Cancel run"), danger: true);
+            stop.IsEnabled = pending;
+            stop.Visibility = pending ? Visibility.Visible : Visibility.Collapsed;
+            stop.Click += (_, _) => Runtime.CancelAutomation(automation.Id);
             var edit = ActionButton(L("编辑", "Edit"));
             var delete = ActionButton(L("删除", "Delete"), danger: true);
             run.Click += async (_, _) => await RunAsync(automation, run);
             edit.Click += (_, _) => BeginEdit(automation);
             delete.Click += (_, _) => Delete(automation);
             actions.Children.Add(run);
+            actions.Children.Insert(0, enabled);
+            actions.Children.Add(stop);
             actions.Children.Add(edit);
             actions.Children.Add(delete);
             _automationRows.Children.Add(SettingRow(
@@ -569,6 +651,18 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
         if (_draft is null || index < 0 || index >= _draft.Steps.Count)
             return;
         var step = _draft.Steps[index];
+        if (step.Kind == AutomationStepKind.PluginAction && !Runtime.Plugins.Actions.Any(a => a.Action.Id == step.Value))
+        {
+            ResetStepEditor();
+            _status.Text = L("插件动作不可用。已保留原参数，启用对应插件后可继续编辑。", "Plugin action unavailable. Its saved arguments can be edited when the provider is enabled.");
+            return;
+        }
+        if (!AutomationStepCatalog.IsAvailableForCpu(step.Kind, CpuVendorDetector.Manufacturer()))
+        {
+            ResetStepEditor();
+            _status.Text = L("该步骤不适用于当前处理器，原配置已保留；可删除或替换此步骤。", "This step does not match the current CPU. Its configuration is preserved; remove or replace the step.");
+            return;
+        }
         var metadata = AutomationStepCatalog.Metadata(step.Kind);
         _editingStepIndex = index;
         _category.SelectedItem = Runtime.IsChinese
@@ -578,7 +672,7 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
             .OfType<ComboBoxItem>()
             .FirstOrDefault(item => Equals(item.Tag, step.Kind));
         ConfigureStepInput();
-        if (metadata.InputKind == AutomationStepInputKind.Options)
+        if (metadata.InputKind is AutomationStepInputKind.Options or AutomationStepInputKind.OptionsWithValue or AutomationStepInputKind.OptionsWithSwitch or AutomationStepInputKind.PluginAction)
         {
             _option.SelectedItem = _option.Items
                 .OfType<ComboBoxItem>()
@@ -586,12 +680,23 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
                     item.Tag?.ToString(),
                     step.Value,
                     StringComparison.OrdinalIgnoreCase));
+            if (_option.SelectedItem is null)
+            {
+                var unavailable = new ComboBoxItem { Content = L("当前不可用：", "Currently unavailable: ") + step.Value, Tag = step.Value };
+                _option.Items.Add(unavailable); _option.SelectedItem = unavailable;
+            }
         }
         else
         {
             _value.Text = step.Value;
         }
         _arguments.Text = step.SecondaryValue;
+        if (step.Kind == AutomationStepKind.PluginAction)
+        {
+            try { using var args = JsonDocument.Parse(step.SecondaryValue); ConfigurePluginArguments(args.RootElement); }
+            catch (JsonException) { _status.Text = L("原插件参数无效，请重新填写。", "Saved plugin arguments are invalid; enter them again."); }
+        }
+        _secondaryOption.SelectedItem = _secondaryOption.Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Tag?.ToString() == step.SecondaryValue);
         _addStep.Content = L("更新步骤", "Update step");
     }
 
@@ -643,9 +748,46 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
         {
             Id = source.Id,
             Name = source.Name,
+            Enabled = source.Enabled,
+            PluginTriggers = source.PluginTriggers.ToList(),
+            PluginConditions = source.PluginConditions.ToList(),
             Steps = source.Steps.Select(step => step with { }).ToList(),
             Triggers = source.Triggers.ToList()
         };
+
+    private void ConfigurePluginArguments(JsonElement? saved = null)
+    {
+        _pluginArguments.Children.Clear(); _pluginParameterEditor = null;
+        if ((_action.SelectedItem as ComboBoxItem)?.Tag is not AutomationStepKind.PluginAction) return;
+        var id = (_option.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        var action = Runtime.Plugins.Actions.FirstOrDefault(a => a.Action.Id == id).Action;
+        if (action is null) return;
+        _pluginParameterEditor = new(action.Parameters, Runtime.IsChinese, saved);
+        _pluginArguments.Children.Add(_pluginParameterEditor);
+    }
+
+    private void BuildPluginSignals()
+    {
+        _pluginSignals.Children.Clear(); _pluginTriggerToggles.Clear(); _pluginConditionToggles.Clear();
+        if (_draft is null) return;
+        foreach (var conditions in new[] { false, true })
+        {
+            var selected = conditions ? _draft.PluginConditions : _draft.PluginTriggers;
+            var available = Runtime.Plugins.Installations.Where(p => p.Enabled && p.Error is null).SelectMany(p =>
+                (conditions ? p.Manifest.Conditions : p.Manifest.Triggers).Select(s => (s.Id, Title: p.Manifest.Name + " · " + s.Title.Resolve(Runtime.IsChinese)))).ToDictionary(p => p.Id, p => p.Title);
+            var ids = available.Keys.Concat(selected).Distinct().ToArray();
+            if (ids.Length == 0) continue;
+            var row = new WrapPanel { MaxWidth = 440 };
+            foreach (var id in ids)
+            {
+                var toggle = new CheckBox { Content = available.GetValueOrDefault(id, L("不可用：", "Unavailable: ") + id), IsChecked = selected.Contains(id), Margin = new Thickness(0, 4, 14, 4) };
+                (conditions ? _pluginConditionToggles : _pluginTriggerToggles)[id] = toggle;
+                row.Children.Add(toggle);
+            }
+            _pluginSignals.Children.Add(SettingRow(conditions ? L("插件条件", "Plugin conditions") : L("插件事件", "Plugin triggers"),
+                conditions ? L("运行前必须全部满足；不可用或过期时不执行。", "All must be true before running; unavailable/stale conditions block execution.") : L("插件停用后保留配置，事件不再触发。", "Settings are retained when a plugin is disabled."), row));
+        }
+    }
 
     private string TriggerName(AutomationTriggerKind trigger) => trigger switch
     {
@@ -655,6 +797,10 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
             L("电源适配器断开", "AC adapter disconnected"),
         AutomationTriggerKind.GameStarted => L("游戏开启", "Game started"),
         AutomationTriggerKind.GameStopped => L("游戏结束", "Game stopped"),
+        AutomationTriggerKind.ToolkitStarted => L("Toolkit 启动完成", "Toolkit started"),
+        AutomationTriggerKind.SystemResumed => L("睡眠 / 休眠唤醒", "Resume from sleep / hibernation"),
+        AutomationTriggerKind.SessionLocked => L("锁屏", "Session locked"),
+        AutomationTriggerKind.SessionUnlocked => L("解锁", "Session unlocked"),
         _ => trigger.ToString()
     };
 
@@ -668,8 +814,36 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
 
     public override void Dispose()
     {
+        _disposed = true;
+        Runtime.AutomationExecution.Changed -= OnExecutionChanged;
+        Runtime.AutomationChanged -= OnExecutionChanged;
         Runtime.MacroChanged -= OnMacroChanged;
         _macroPanel.Dispose();
         base.Dispose();
     }
+
+    private void OnExecutionChanged(object? sender, EventArgs args)
+    {
+        if (_disposed) return;
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(() => OnExecutionChanged(sender, args))); return; }
+        _automationEnabled.IsChecked = Runtime.Settings.AutomationEnabled;
+        RenderAutomations();
+        var allStates = Runtime.AutomationExecution.States;
+        var active = allStates.Count(s => s.Phase is AutomationRunPhase.Running or AutomationRunPhase.Queued);
+        _executionDetails.Visibility = allStates.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _executionDetails.Header = active > 0 ? L($"运行记录 · {active} 项进行中", $"Run history · {active} active") : L("运行记录", "Run history");
+        _cancelRuns.IsEnabled = active > 0;
+        _cancelRuns.Visibility = active > 0 ? Visibility.Visible : Visibility.Collapsed;
+        var states = allStates.Take(8).ToArray();
+        _executionInfo.Text = states.Length == 0 ? L("尚无运行记录。", "No runs yet.") : string.Join("\n", states.Select(state =>
+            $"{state.Name} · {RunPhase(state.Phase)} · {state.Step}/{state.Total}" + (state.Error.Length == 0 ? "" : " · " + state.Error)));
+    }
+    private string RunPhase(AutomationRunPhase phase) => phase switch
+    {
+        AutomationRunPhase.Queued => L("排队中", "Queued"),
+        AutomationRunPhase.Running => L("运行中", "Running"),
+        AutomationRunPhase.Completed => L("已完成", "Completed"),
+        AutomationRunPhase.Cancelled => L("已取消", "Cancelled"),
+        _ => L("失败", "Failed")
+    };
 }

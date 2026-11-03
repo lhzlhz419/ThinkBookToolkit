@@ -77,5 +77,5 @@ internal static class PerformanceModeCycle
 
     internal static bool IsSelectableMode(ItsMode mode) =>
         mode is ItsMode.PowerSaving or ItsMode.Intelligent or
-            ItsMode.Performance or ItsMode.Geek;
+            ItsMode.Performance or ItsMode.Geek or ItsMode.QuietPerformance;
 }

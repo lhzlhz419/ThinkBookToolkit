@@ -301,6 +301,7 @@ public static class CurveProfileStore
                     out var shutdownMode)
                     ? shutdownMode.ToString()
                     : string.Empty;
+            defaults.ShutdownQuietPerformanceEnabled = loaded.ShutdownQuietPerformanceEnabled;
             defaults.DisableControlOnSleep =
                 !settingsJson.Contains(nameof(AppSettings.DisableControlOnSleep), StringComparison.OrdinalIgnoreCase) ||
                 loaded.DisableControlOnSleep;
@@ -468,6 +469,8 @@ public static class CurveProfileStore
         }
     }
 
+    internal static event Action<AppSettings>? SettingsSaved;
+
     public static void SaveSettings(AppSettings settings)
     {
         settings.ConfigurationVersion = CurrentConfigurationVersion;
@@ -540,6 +543,7 @@ public static class CurveProfileStore
         WriteTextAtomically(
             SettingsPath,
             JsonSerializer.Serialize(settings, JsonOptions));
+        SettingsSaved?.Invoke(settings);
     }
 
     private static void ApplyDeviceDefaults(
@@ -611,7 +615,7 @@ public static class CurveProfileStore
             {
                 Locks = locks,
                 Target = pair.Value.Target,
-                AcceptedTarget = PowerSettingsController.IsValidState(pair.Value.AcceptedTarget) ? pair.Value.AcceptedTarget : null
+                AcceptedTarget = PowerLockAcceptancePolicy.NormalizeAccepted(pair.Value.Target, pair.Value.AcceptedTarget, locks)
             };
         }
         return normalized;

@@ -11,14 +11,15 @@ namespace ThinkBookToolkit;
 
 internal sealed record AutomationRunResult(bool Success, string Error)
 {
+    public bool Cancelled { get; init; }
     public static AutomationRunResult Ok() => new(true, string.Empty);
     public static AutomationRunResult Failure(string error) => new(false, error);
 }
 
-internal sealed class AutomationRunner
+internal sealed partial class AutomationRunner
 {
     private readonly ToolkitRuntimeService _runtime;
-    private readonly SemaphoreSlim _executionGate = new(1, 1);
+    internal AutomationExecutionQueue Execution { get; } = new();
 
     public AutomationRunner(ToolkitRuntimeService runtime)
     {
@@ -40,22 +41,21 @@ internal sealed class AutomationRunner
                 _runtime.L("自动化不存在。", "The automation does not exist."));
         }
 
-        if (_executionGate.CurrentCount == 0)
+        return await Execution.RunAsync(automation, RunCoreAsync, cancellationToken);
+    }
+
+    private async Task<AutomationRunResult> RunCoreAsync(AutomationDefinition automation, CancellationToken cancellationToken)
+    {
+        foreach (var condition in automation.PluginConditions)
+            if (!_runtime.Plugins.Condition(condition)) return AutomationRunResult.Failure("插件条件不满足或不可用 / Plugin condition false or unavailable: " + condition);
+        for (var index = 0; index < automation.Steps.Count; index++)
         {
-            ToolkitLog.Info(
-                $"Automation queued: {automation.Name} ({automation.Id}).");
-        }
-        try
-        {
-            await _executionGate.WaitAsync(cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            ToolkitLog.Warning(
-                $"Automation cancelled while queued: {automation.Name} " +
-                $"({automation.Id}).");
-            return AutomationRunResult.Failure(
-                _runtime.L("自动化已取消。", "The automation was cancelled."));
+            if (automation.Steps[index].Kind == AutomationStepKind.PluginAction && !_runtime.Plugins.Actions.Any(a => a.Action.Id == automation.Steps[index].Value))
+                return AutomationRunResult.Failure("插件动作不可用 / Plugin action unavailable: " + automation.Steps[index].Value);
+            if (!AutomationStepCatalog.IsAvailableForCpu(automation.Steps[index].Kind, CpuVendorDetector.Manufacturer()))
+                return AutomationRunResult.Failure(_runtime.L($"步骤 {index + 1} 的功耗 Beta 接口不适用于当前处理器。", $"The power Beta interface in step {index + 1} is incompatible with this CPU."));
+            if (AutomationStepCatalog.Validate(automation.Steps[index]) is { } invalid)
+                return AutomationRunResult.Failure(_runtime.L($"步骤 {index + 1} 参数无效：", $"Invalid parameters in step {index + 1}: ") + invalid);
         }
         var runTimer = Stopwatch.StartNew();
         try
@@ -67,6 +67,7 @@ internal sealed class AutomationRunner
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var step = automation.Steps[index];
+                Execution.Progress(automation.Id, index + 1);
                 var stepTimer = Stopwatch.StartNew();
                 ToolkitLog.Info(
                     $"Automation step started: automation={automation.Id}; " +
@@ -76,6 +77,7 @@ internal sealed class AutomationRunner
                     step,
                     cancellationToken,
                     $"automation:{automation.Id}:step:{index + 1}");
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!string.IsNullOrWhiteSpace(error))
                 {
                     var message = _runtime.L(
@@ -115,10 +117,6 @@ internal sealed class AutomationRunner
                 ex);
             return AutomationRunResult.Failure(ex.GetBaseException().Message);
         }
-        finally
-        {
-            _executionGate.Release();
-        }
     }
 
     private async Task<string?> ExecuteStepAsync(
@@ -128,6 +126,24 @@ internal sealed class AutomationRunner
     {
         switch (step.Kind)
         {
+            case AutomationStepKind.PluginAction:
+                using (var args = System.Text.Json.JsonDocument.Parse(step.SecondaryValue))
+                    return await _runtime.Plugins.InvokeActionAsync(step.Value, args.RootElement, cancellationToken);
+            case AutomationStepKind.Resolution:
+            case AutomationStepKind.DpiScale:
+                return await SetPanelLayoutAsync(step, cancellationToken);
+            case AutomationStepKind.PowerValue:
+            case AutomationStepKind.PowerLock:
+                return await SetPowerParameterAsync(step, cancellationToken);
+            case AutomationStepKind.RestoreKeyboardBacklight:
+                return await ApplyBooleanAsync(step, value => Task.FromResult(
+                    _runtime.TrySetKeyboardBacklightRestoreOnStartup(value, out var error) ? null : error));
+            case AutomationStepKind.IntelCpuPowerBeta:
+                return await ApplyBooleanAsync(step, value => Task.FromResult(_runtime.SetBetaCpuPowerEnabled(true, value)));
+            case AutomationStepKind.AmdCpuPowerBeta:
+                return await ApplyBooleanAsync(step, value => Task.FromResult(_runtime.SetBetaCpuPowerEnabled(false, value)));
+            case AutomationStepKind.NvApiGpuPowerBeta:
+                return await ApplyBooleanAsync(step, _runtime.SetNvApiGpuPowerEnabledAsync);
             case AutomationStepKind.PerformanceMode:
                 return ParseEnum<ItsMode>(step.Value, out var itsMode)
                     ? await _runtime.SetItsModeAsync(itsMode)
@@ -383,6 +399,10 @@ internal sealed class AutomationRunner
     {
         switch (kind)
         {
+            case AutomationStepKind.RestoreKeyboardBacklight: return _runtime.Settings.RestoreKeyboardBacklightOnStartup;
+            case AutomationStepKind.IntelCpuPowerBeta: return _runtime.Settings.UseIntelMmioCpuPower;
+            case AutomationStepKind.AmdCpuPowerBeta: return _runtime.Settings.UseAmdZenStatesCpuPower;
+            case AutomationStepKind.NvApiGpuPowerBeta: return _runtime.NvApiGpuPowerEnabled;
             case AutomationStepKind.GpuOverclockEnabled:
                 return _runtime.Settings.GpuOverclock.Enabled;
             case AutomationStepKind.FanFullSpeed:

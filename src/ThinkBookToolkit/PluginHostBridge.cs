@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Threading;
 using ThinkBookToolkit.PluginApi;
 
 namespace ThinkBookToolkit;
@@ -22,15 +23,8 @@ internal static class PluginHostBridge
         _ when key.Contains("Utilization", StringComparison.OrdinalIgnoreCase) => "%",
         _ => ""
     };
-    private static readonly MethodInfo[] Commands = typeof(ToolkitRuntimeService)
-        .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-        .Where(m => (m.IsPublic || m.IsAssembly) && !m.IsGenericMethod &&
-            (m.Name.StartsWith("Set", StringComparison.Ordinal) || m.Name.StartsWith("TrySet", StringComparison.Ordinal) || m.Name.StartsWith("Apply", StringComparison.Ordinal)) &&
-            !m.Name.Contains("ForTesting", StringComparison.Ordinal) &&
-            m.GetParameters().All(p => p.IsOut || (!typeof(Delegate).IsAssignableFrom(p.ParameterType) &&
-                !(p.ParameterType.Namespace?.StartsWith("System.Windows", StringComparison.Ordinal) ?? false))))
-        .ToArray();
-    internal static PluginContext Context(ToolkitRuntimeService runtime, string[] permissions)
+    private static readonly MethodInfo[] Commands = PluginCommandCatalog.Methods;
+    internal static PluginContext Context(ToolkitRuntimeService runtime, string[] permissions, string[]? subscriptions = null)
     {
         var now = DateTimeOffset.UtcNow;
         var sensors = new Dictionary<string, SensorReading>();
@@ -47,22 +41,59 @@ internal static class PluginHostBridge
                     Unit(pair.Key), timestamp, "toolkit", quality);
             }
         }
-        return new(now, sensors,
-            permissions.Contains("data.read") ? JsonSerializer.SerializeToElement(new
-            {
-                runtime.Snapshot, Features = runtime.Report?.Items, Fps = runtime.CurrentFps,
-                Profiles = CurveProfileStore.Load(), Paths = ToolkitStoragePaths.Current,
-                Recording = runtime.CurrentBufferedSensorRecordingSamples
-            }, SnapshotJson) : JsonSerializer.SerializeToElement(new { }),
+        var data = new Dictionary<string, object?>();
+        bool Wants(string key) => permissions.Contains("data.read") && (subscriptions is null || subscriptions.Contains(key));
+        if (Wants("Snapshot")) data["Snapshot"] = runtime.Snapshot;
+        if (Wants("Features")) data["Features"] = runtime.Report?.Items;
+        if (Wants("Fps")) data["Fps"] = runtime.CurrentFps;
+        if (Wants("Profiles")) data["Profiles"] = CurveProfileStore.Load();
+        if (Wants("Paths")) data["Paths"] = ToolkitStoragePaths.Current;
+        if (Wants("Recording")) data["Recording"] = runtime.CurrentBufferedSensorRecordingSamples;
+        return new(now, sensors, JsonSerializer.SerializeToElement(data, SnapshotJson),
             permissions.Contains("settings.read") ? JsonSerializer.SerializeToElement(runtime.Settings, SnapshotJson) : JsonSerializer.SerializeToElement(new { }),
             Commands.Select(m => new HostOperation(m.Name, m.GetParameters().Where(p => !p.IsOut)
-                .ToDictionary(p => p.Name!, p => p.ParameterType.Name))).ToArray());
+                .ToDictionary(p => p.Name!, p => p.ParameterType.Name))
+                { OptionalParameters = m.GetParameters().Where(p => p.HasDefaultValue).Select(p => p.Name!).ToArray() })
+                .Concat(PluginCommandCatalog.Aliases.Select(a => new HostOperation(a.Key,
+                    Commands.First(m => m.Name == a.Value).GetParameters().Where(p => !p.IsOut).ToDictionary(p => p.Name!, p => p.ParameterType.Name))))
+                .Concat(new HostOperation[] {
+                    new("toolkit.settings.write", new Dictionary<string, string> { ["pluginId"] = "String", ["settingId"] = "String", ["value"] = "JsonElement", ["expectedValue"] = "JsonElement" }) { Permission = "settings.write", OptionalParameters = ["expectedValue"] },
+                    new("toolkit.settings.writeBatch", new Dictionary<string, string> { ["changes"] = "PluginSettingWrite[]" }) { Permission = "settings.write" },
+                    new("toolkit.recording.query", new Dictionary<string, string> { ["count"] = "Int32" }) { Permission = "data.read", OptionalParameters = ["count"] }
+                })
+                .ToArray()) { Capabilities = PluginExtensionPolicy.Capabilities };
     }
     internal static async Task ExecuteAsync(ToolkitRuntimeService runtime, string[] permissions, HostCommand command)
+        => _ = await ExecuteCoreAsync(runtime, permissions, command);
+
+    internal static async Task<HostCommandResult> ExecuteWithResultAsync(ToolkitRuntimeService runtime, string[] permissions,
+        HostCommand command, string source, CancellationToken cancellationToken = default)
+    {
+        var id = command.RequestId ?? Guid.NewGuid().ToString("N");
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var operation = ExecuteCoreAsync(runtime, permissions, command);
+            _ = operation.ContinueWith(t => { _ = t.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            var result = await operation.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            ToolkitLog.Info($"Plugin command completed: plugin={source}; request={id}; command={command.Id}.");
+            return new(id, command.Id, "completed", Result: result is null ? null : JsonSerializer.SerializeToElement(result, SnapshotJson));
+        }
+        catch (Exception ex)
+        {
+            ToolkitLog.Warning($"Plugin command failed: plugin={source}; request={id}; command={command.Id}; {ex.GetBaseException().Message}");
+            return new(id, command.Id, ex is TimeoutException ? "timed-out" : ex is OperationCanceledException ? "cancelled" : ex is UnauthorizedAccessException ? "denied" : "failed",
+                ex is TimeoutException or OperationCanceledException ? "Waiting stopped. An already-started hardware operation may still complete; do not automatically replay it." : ex.GetBaseException().Message);
+        }
+    }
+
+    private static async Task<object?> ExecuteCoreAsync(ToolkitRuntimeService runtime, string[] permissions, HostCommand command)
     {
         if (runtime.Plugins.IsSuspendedForExit) throw new InvalidOperationException("Toolkit is exiting; plugin commands are suspended.");
         if (!permissions.Contains("host.control")) throw new UnauthorizedAccessException("Plugin has no host.control permission.");
-        var method = Commands.FirstOrDefault(m => m.Name == command.Id &&
+        var methodId = PluginCommandCatalog.Aliases.TryGetValue(command.Id, out var alias) ? alias : command.Id;
+        var method = Commands.FirstOrDefault(m => m.Name == methodId &&
             m.GetParameters().Where(p => !p.IsOut && !p.HasDefaultValue).All(p => command.Arguments.ContainsKey(p.Name!)) &&
             command.Arguments.Keys.All(key => m.GetParameters().Any(p => !p.IsOut && p.Name == key)))
             ?? throw new InvalidOperationException("Unknown host operation or arguments: " + command.Id);
@@ -80,6 +111,7 @@ internal static class PluginHostBridge
         }
         if (result is string error && !string.IsNullOrEmpty(error)) throw new InvalidOperationException(error);
         if (result is false) throw new InvalidOperationException(arguments.LastOrDefault() as string ?? "Host operation rejected.");
+        return result;
     }
     internal static string? MetricKey(OsdSensor sensor) => SensorRecordingService.BuildSample(
         ToolkitRuntimeSnapshot.Empty, FpsTelemetrySnapshot.Empty, [sensor]).Values.Keys.FirstOrDefault();

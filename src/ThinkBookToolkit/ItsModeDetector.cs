@@ -13,7 +13,7 @@ internal enum ItsModeControlPath
 
 public sealed class ItsModeDetector
 {
-    private const string ModernPath = @"SYSTEM\CurrentControlSet\Services\LenovoProcessManagement\Performance\PowerSlider";
+    internal const string ModernPath = @"SYSTEM\CurrentControlSet\Services\LenovoProcessManagement\Performance\PowerSlider";
     private const string LegacyPath = @"SYSTEM\CurrentControlSet\Services\LITSSVC\LNBITS\IC\MMC";
     private const string LegacyBasePath = @"SYSTEM\CurrentControlSet\Services\LITSSVC\LNBITS\IC";
     private const int DispatcherVersion3 = 8192;
@@ -82,7 +82,7 @@ public sealed class ItsModeDetector
         ItsModeControlPath path) => path switch
     {
         ItsModeControlPath.ModernDispatcher =>
-            PerformanceModeCycle.IsSelectableMode(mode),
+            mode is ItsMode.Intelligent or ItsMode.PowerSaving or ItsMode.Performance or ItsMode.Geek,
         ItsModeControlPath.LegacyLitssvc =>
             mode is ItsMode.Intelligent or ItsMode.PowerSaving or
                 ItsMode.Performance or ItsMode.Geek,
@@ -107,7 +107,7 @@ public sealed class ItsModeDetector
 
     internal static ItsMode ReadLegacyBaseMode() => ReadLegacyMode(includeGeekOverlay: false);
 
-    private static ItsMode ReadModernMode()
+    internal static ItsMode ReadModernMode()
     {
         using var key = Registry.LocalMachine.OpenSubKey(ModernPath, writable: false);
         if (key is null)

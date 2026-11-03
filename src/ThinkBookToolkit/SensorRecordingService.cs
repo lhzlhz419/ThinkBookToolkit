@@ -150,6 +150,7 @@ internal sealed class SensorRecordingService : IDisposable
     private readonly List<SensorRecordingSample> _buffer = [];
     private StreamWriter? _writer;
     private IReadOnlyList<string> _metricKeys = [];
+    private string _pluginMetadata = "";
     private bool _writing;
     private readonly RecordingCompressionQueue _compression = new();
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
@@ -181,7 +182,8 @@ internal sealed class SensorRecordingService : IDisposable
             var desiredKeys = KeysForSelectedSensors(
                 _runtime.Settings.SensorRecording.Sensors);
             desiredKeys = SensorRecordingFormat.OrderKeys(desiredKeys.Concat(PluginSensorSelection.RecordingSensors(_runtime).Where(s => s.Replaces is null).Select(s => "plugin:" + s.Id)));
-            if (_writer is null || !_metricKeys.SequenceEqual(desiredKeys))
+            var metadata = System.Text.Json.JsonSerializer.Serialize(PluginRecordingMetadata.Capture(_runtime.Plugins.Installations, desiredKeys));
+            if (_writer is null || !_metricKeys.SequenceEqual(desiredKeys) || _pluginMetadata != metadata)
                 StartNewFile();
             _timer.Interval = TimeSpan.FromSeconds(
                 _runtime.Settings.SensorRecording.IntervalSeconds);
@@ -217,6 +219,8 @@ internal sealed class SensorRecordingService : IDisposable
             _runtime.Settings.SensorRecording.Sensors);
         _metricKeys = SensorRecordingFormat.OrderKeys(_metricKeys.Concat(PluginSensorSelection.RecordingSensors(_runtime).Where(s => s.Replaces is null).Select(s => "plugin:" + s.Id)));
         _writer.WriteLine(SensorRecordingFormat.Header(_metricKeys));
+        _pluginMetadata = System.Text.Json.JsonSerializer.Serialize(PluginRecordingMetadata.Capture(_runtime.Plugins.Installations, _metricKeys));
+        _writer.WriteLine(_pluginMetadata);
         _runtime.Settings.LastSensorRecordingPath = CurrentPath;
         SaveRecordingPath();
         ToolkitLog.Info("Sensor recording started: " + CurrentPath);
@@ -324,7 +328,7 @@ internal sealed class SensorRecordingService : IDisposable
                 !ReferenceEquals(_writer, recordingWriter))
                 return;
             var keys = SensorRecordingFormat.OrderKeys(sample.Values.Keys);
-            if (!_metricKeys.SequenceEqual(keys))
+            if (!_metricKeys.SequenceEqual(keys) || _pluginMetadata != System.Text.Json.JsonSerializer.Serialize(PluginRecordingMetadata.Capture(_runtime.Plugins.Installations, keys)))
             {
                 Sync();
             }

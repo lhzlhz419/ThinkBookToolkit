@@ -32,6 +32,8 @@ internal static class Program
         }
         if (args.Length == 2 && args[0] == "--nvpcf-test-worker")
             return NvPcfIsolationTests.RunFakeWorker(args[1]);
+        if (args.Length == 2 && args[0] == "--gpu-monitor-test-worker")
+            return GpuMonitorRecoveryTests.RunWorker(args[1]);
         if (args.Length == 1 && args[0] == "--test-nvpcf-isolation")
         {
             try
@@ -48,6 +50,17 @@ internal static class Program
         Environment.SetEnvironmentVariable("TBT_STORAGE_LOCATIONS", JsonSerializer.Serialize(new StorageLocations(
             Path.Combine(storageRoot, "dependency"), Path.Combine(storageRoot, "configuration"),
             Path.Combine(storageRoot, "logs"), Path.Combine(storageRoot, "downloads"), Path.Combine(storageRoot, "recordings"))));
+        if (args.Contains("--test-tray-startup")) return TrayStartupTests.Run(args.Contains("--open-early"));
+        if (args.Contains("--test-gpu-monitor-recovery"))
+        {
+            try
+            {
+                GpuMonitorRecoveryTests.Run();
+                Console.WriteLine("GPU monitor broken-pipe, timeout, cleanup and recovery tests passed.");
+                return 0;
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+        }
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         try
         {
@@ -72,6 +85,9 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        AutomationCompletionTests.Run();
+        PowerLockReadbackTests.Run();
+        DisplayAndResumeTests.Run();
         AuditFixTests.Run();
         StartupAndSettingGroupTests.Run();
         PluginToastTests.Run();
@@ -471,7 +487,7 @@ internal static class Program
         var refreshSettings = GetPrivateField<Button>(
             displayPage,
             "_refreshRateSettings");
-        Assert(ContainsText(displayPage, "笔记本屏幕刷新率") &&
+        Assert(ContainsText(displayPage, "笔记本屏幕") &&
                LogicalTreeHelper.GetParent(refreshSelector) is Grid refreshLayout &&
                refreshLayout.ColumnDefinitions.Count == 2 &&
                refreshLayout.ColumnDefinitions[0].Width.IsStar &&
@@ -3307,13 +3323,15 @@ internal static class Program
                        "输入",
                        "应用",
                        "延迟",
-                       "宏"
+                       "宏",
+                       "插件"
                    ]) &&
                (int)AutomationStepKind.Delay == 30 &&
                (int)AutomationStepKind.RunMacro == 31 &&
                (int)AutomationStepKind.OsdEnabled == 32 &&
                (int)AutomationStepKind.OsdLockPosition == 33 &&
-               (int)AutomationStepKind.SensorRecordingEnabled == 34,
+               (int)AutomationStepKind.SensorRecordingEnabled == 34 &&
+               (int)AutomationStepKind.PluginAction == 43,
             "The automation step catalog is incomplete or not grouped in the required second-level order.");
         using var catalogRuntime = new ToolkitRuntimeService(new AppSettings());
         Assert(!catalogRuntime.Settings.AutomationEnabled &&
@@ -3624,7 +3642,7 @@ internal static class Program
                    Kind: AutomationStepKind.Delay,
                    Value: "0.5"
                } &&
-               triggerToggles.Count == 4,
+               triggerToggles.Count == Enum.GetValues<AutomationTriggerKind>().Length,
             "Adding a second automation step does not insert an editable 0.5-second delay.");
         var beginStepEdit = typeof(ToolkitAutomationPage).GetMethod(
             "BeginStepEdit",

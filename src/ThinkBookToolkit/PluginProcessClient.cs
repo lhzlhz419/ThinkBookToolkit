@@ -37,19 +37,23 @@ internal sealed class PluginProcessClient : IDisposable
                 _process = Process.Start(start) ?? throw new IOException("Plugin host did not start.");
                 _job = new ChildProcessJob(); _job.Assign(_process);
                 await _pipe.WaitForConnectionAsync(timeout.Token);
-                if (await PluginWire.ReadAsync<string>(_pipe, timeout.Token) != "TBT_PLUGIN_1") throw new IOException("Incompatible plugin host.");
+                if (await PluginWire.ReadAsync<string>(_pipe, timeout.Token) != "TBT_PLUGIN_1") throw new InvalidDataException("Incompatible plugin host.");
             }
             await PluginWire.WriteAsync(_pipe!, request, timeout.Token);
             var response = await PluginWire.ReadAsync<PluginResponse>(_pipe!, timeout.Token);
-            return response.Success && response.Result is not null ? response.Result : throw new IOException(response.Error ?? "Plugin failed.");
+            if (!response.Success && response.ErrorKind == "timeout") throw new TimeoutException(response.Error ?? "Plugin evaluation timed out.");
+            return response.Success && response.Result is not null ? response.Result : throw new InvalidOperationException(response.Error ?? "Plugin failed.");
         }
         catch { Dispose(); throw; }
     }
     public void Dispose()
     {
-        _pipe?.Dispose(); _pipe = null;
+        var pipe = _pipe; _pipe = null;
+        try { pipe?.Dispose(); } catch { }
         try { if (_process is { HasExited: false } && !_process.WaitForExit(250)) _process.Kill(entireProcessTree: true); } catch { }
-        _job?.Dispose(); _job = null;
-        _process?.Dispose(); _process = null;
+        var job = _job; _job = null;
+        try { job?.Dispose(); } catch { }
+        var process = _process; _process = null;
+        try { process?.Dispose(); } catch { }
     }
 }

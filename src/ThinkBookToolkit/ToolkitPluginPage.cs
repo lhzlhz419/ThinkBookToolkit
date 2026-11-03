@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -16,6 +17,8 @@ internal sealed class ToolkitPluginPage : ToolkitPageBase
         var panel = new StackPanel();
         foreach (var element in BuildPluginSettings(plugin, plugin.Manifest.Settings.Where(s => s.PageId == page.Id)))
             panel.Children.Add(element);
+        foreach (var action in plugin.Manifest.Actions.Where(a => a.PageId == page.Id))
+            panel.Children.Add(PluginActionControls.Create(runtime, action));
         panel.Children.Add(new PluginSensorPanel(runtime, pluginId: plugin.Manifest.Id));
         Content = panel;
     }
@@ -50,13 +53,59 @@ internal static class PluginSettingControl
         else if (setting.Kind == "choice")
         {
             var control = new ComboBox { MinWidth = 150, ItemsSource = setting.Choices, SelectedItem = current.GetString() };
-            reload = () => { updating = true; try { control.SelectedItem = runtime.Plugins.SettingValue(plugin, setting).GetString(); } finally { updating = false; } };
+            reload = () =>
+            {
+                updating = true;
+                try
+                {
+                    var selected = runtime.Plugins.SettingValue(plugin, setting).GetString();
+                    var available = plugin.AvailableChoices.TryGetValue(setting.Id, out var choices) ? choices : setting.Choices ?? [];
+                    var visible = selected is null ? available : available.Append(selected).Distinct().ToArray();
+                    if (!(control.ItemsSource as System.Collections.Generic.IEnumerable<string> ?? []).SequenceEqual(visible)) control.ItemsSource = visible;
+                    control.SelectedItem = selected;
+                    control.ToolTip = selected is not null && !available.Contains(selected) ? runtime.L("已保存的选项当前不可用。", "The saved option is currently unavailable.") : null;
+                }
+                finally { updating = false; }
+            };
             control.SelectionChanged += (_, _) => { if (!updating && control.SelectedItem is string value) Save(JsonSerializer.SerializeToElement(value)); };
             root.Children.Add(control);
         }
+        else if (setting.Editor == "slider")
+        {
+            var control = new Slider { Minimum = setting.Minimum!.Value, Maximum = setting.Maximum!.Value, Value = current.GetDouble(), MinWidth = 180 };
+            var number = new TextBlock { Text = control.Value.ToString("0.##") };
+            control.ValueChanged += (_, _) => number.Text = control.Value.ToString("0.##");
+            var apply = new Button { Content = runtime.L("应用", "Apply"), Margin = new Thickness(0, 6, 0, 0) };
+            apply.Click += (_, _) => Save(JsonSerializer.SerializeToElement(control.Value));
+            reload = () => { if (!control.IsKeyboardFocusWithin && !control.IsMouseCaptureWithin) control.Value = runtime.Plugins.SettingValue(plugin, setting).GetDouble(); };
+            root.Children.Add(control); root.Children.Add(number); root.Children.Add(apply);
+        }
         else
         {
-            var control = new TextBox { Text = current.ToString(), MinWidth = 180 };
+            var control = new TextBox { Text = current.ToString(), MinWidth = 180, AcceptsReturn = setting.Editor == "multiline", TextWrapping = setting.Editor == "multiline" ? TextWrapping.Wrap : TextWrapping.NoWrap };
+            if (setting.Editor is "file" or "folder" or "color")
+            {
+                var browse = new Button { Content = runtime.L("选择…", "Choose…"), Margin = new Thickness(0, 6, 0, 0) };
+                browse.Click += (_, _) =>
+                {
+                    if (setting.Editor == "folder")
+                    {
+                        var picker = new Microsoft.Win32.OpenFolderDialog();
+                        if (picker.ShowDialog(Window.GetWindow(root)) == true) control.Text = picker.FolderName;
+                    }
+                    else if (setting.Editor == "file")
+                    {
+                        var picker = new Microsoft.Win32.OpenFileDialog();
+                        if (picker.ShowDialog(Window.GetWindow(root)) == true) control.Text = picker.FileName;
+                    }
+                    else
+                    {
+                        var picker = new ToolkitColorPickerWindow(control.Text, runtime.Settings.Language, runtime.IsDark) { Owner = Window.GetWindow(root) };
+                        if (picker.ShowDialog() == true) control.Text = "#" + picker.SelectedHex;
+                    }
+                };
+                root.Children.Add(browse);
+            }
             reload = () => { if (!control.IsKeyboardFocusWithin) control.Text = runtime.Plugins.SettingValue(plugin, setting).ToString(); };
             var apply = new Button { Content = runtime.L("应用", "Apply"), Margin = new Thickness(0, 6, 0, 0) };
             apply.Click += (_, _) =>
@@ -75,6 +124,23 @@ internal static class PluginSettingControl
         root.Loaded += (_, _) => { if (!subscribed) runtime.SnapshotChanged += changed; subscribed = true; };
         root.Unloaded += (_, _) => { runtime.SnapshotChanged -= changed; subscribed = false; };
         root.Children.Add(status); return root;
+    }
+
+    internal static void BindConditions(FrameworkElement row, ToolkitRuntimeService runtime, PluginInstallation plugin, PluginSetting setting)
+    {
+        if (setting.VisibleWhen is null && setting.EnabledWhen is null) return;
+        bool Matches(PluginSettingCondition? condition) => condition is null || plugin.Manifest.Settings.FirstOrDefault(s => s.Id == condition.SettingId) is { } descriptor &&
+            JsonElement.DeepEquals(runtime.Plugins.SettingValue(plugin, descriptor), condition.EqualsValue);
+        void Refresh()
+        {
+            row.Visibility = Matches(setting.VisibleWhen) ? Visibility.Visible : Visibility.Collapsed;
+            row.IsEnabled = Matches(setting.EnabledWhen);
+            row.ToolTip = row.IsEnabled ? null : setting.DisabledReason?.Resolve(runtime.IsChinese);
+        }
+        EventHandler changed = (_, _) => Refresh();
+        row.Loaded += (_, _) => { runtime.Plugins.ValuesChanged -= changed; runtime.Plugins.ValuesChanged += changed; Refresh(); };
+        row.Unloaded += (_, _) => runtime.Plugins.ValuesChanged -= changed;
+        Refresh();
     }
 }
 
@@ -200,12 +266,12 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
         };
         root.Children.Add(Surface(intro));
         root.Children.Add(importStatus);
-        if (runtime.Plugins.HasPendingUninstalls)
+        if (runtime.Plugins.HasPendingUninstalls || runtime.Plugins.HasPendingUpdates)
         {
             var pending = new StackPanel();
-            pending.Children.Add(Text(L("有插件等待卸载完成。重启 Toolkit 后会继续清理，插件设置将保留。", "Plugin uninstalls are pending. Restart Toolkit to finish cleanup; plugin settings are retained."), 12));
+            pending.Children.Add(Text(L("有插件更新、回退或卸载等待完成。重启 Toolkit 后继续处理，旧包或配置备份会保留。", "Plugin changes are pending. Restart Toolkit to finish; package/settings backups are retained."), 12));
             var restart = ActionButton(L("重启 Toolkit", "Restart Toolkit")); restart.HorizontalAlignment = HorizontalAlignment.Left; restart.Margin = new Thickness(0, 10, 0, 0);
-            restart.Click += (_, _) => AskRestart(Window.GetWindow(this), L("需要重启 Toolkit 才能完成插件卸载。", "Restart Toolkit to finish uninstalling plugins."));
+            restart.Click += (_, _) => AskRestart(Window.GetWindow(this), L("需要重启 Toolkit 才能完成插件变更。", "Restart Toolkit to finish plugin changes."));
             pending.Children.Add(restart); root.Children.Add(Surface(pending));
         }
         root.Children.Add(Text(L($"已安装插件 · {runtime.Plugins.Installations.Count}", $"Installed plugins · {runtime.Plugins.Installations.Count}"), 13, muted: true));
@@ -217,7 +283,7 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
             root.Children.Add(Surface(Text(L("尚未安装插件。点击“导入插件”选择 ZIP 压缩包，或手动放入插件目录后重启。", "No plugins installed. Import a ZIP archive, or manually copy a plugin into the plugin folder and restart."), 14, muted: true)));
         var help = new StackPanel();
         help.Children.Add(Text(L("安装与更新", "Install and update"), 13, strong: true));
-        help.Children.Add(Text(L("导入 ZIP 后可直接审核并启用；不会自动运行或覆盖已有插件。手动安装或更新需重启，更新后重新授权。", "Imported ZIPs are ready for review without restarting. Import never runs code or overwrites installed plugins. Manual installs and updates require a restart and approval."), 12, muted: true, top: 5));
+        help.Children.Add(Text(L("导入 ZIP 后可审核启用。已有插件使用“更新插件”选择新版 ZIP，重启后切换并重新审核；“回退版本”可恢复备份的旧包和配置。", "Import a ZIP for review. Use Update plugin for an installed plugin, then restart and review it. Roll back restores the backed-up package and settings."), 12, muted: true, top: 5));
         help.Children.Add(Text(L("无法正常启动时，可使用 --disable-plugins 跳过插件加载。", "If startup fails, use --disable-plugins to skip plugin loading."), 12, muted: true, top: 5));
         root.Children.Add(Surface(help));
         Content = root;
@@ -247,7 +313,7 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
             badges.Children.Add(Badge(L("后端切换需重启", "Backend change needs restart"), Palette.Warning));
         identity.Children.Add(badges); Grid.SetColumn(identity, 1); header.Children.Add(identity);
         var toggle = new CheckBox { Content = L("启用插件", "Enable plugin"), IsChecked = plugin.Enabled,
-            IsEnabled = !plugin.PendingUninstall, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right };
+            IsEnabled = !plugin.PendingUninstall && !plugin.PendingUpdate, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right };
         Grid.SetColumn(toggle, 2); header.Children.Add(toggle);
         header.SizeChanged += (_, _) =>
         {
@@ -303,8 +369,51 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
         var footer = new Grid(); footer.ColumnDefinitions.Add(new ColumnDefinition()); footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         footer.Children.Add(details);
         var uninstall = ActionButton(L("卸载", "Uninstall"), danger: true); uninstall.MinWidth = 76;
-        uninstall.IsEnabled = !plugin.PendingUninstall; uninstall.VerticalAlignment = VerticalAlignment.Top; uninstall.Margin = new Thickness(14, 10, 0, 0);
+        uninstall.IsEnabled = !plugin.PendingUninstall && !plugin.PendingUpdate; uninstall.VerticalAlignment = VerticalAlignment.Top; uninstall.Margin = new Thickness(14, 10, 0, 0);
         Grid.SetColumn(uninstall, 1); footer.Children.Add(uninstall); body.Children.Add(footer);
+        var packageActions = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+        var update = ActionButton(L("更新插件", "Update plugin"));
+        var rollback = ActionButton(L("回退版本", "Roll back"));
+        update.IsEnabled = !plugin.PendingUninstall && !plugin.PendingUpdate;
+        rollback.IsEnabled = update.IsEnabled && Runtime.Plugins.CanRollback(plugin);
+        bool ConfirmPackage(PluginManifest next, bool reverting) => ToolkitMessageBox.Show(Window.GetWindow(this),
+            L(reverting ? "回退插件版本" : "更新插件版本", reverting ? "Roll back plugin" : "Update plugin") + $"：{manifest.Version} → {next.Version}\n\n" +
+            L("重启后切换，并保留旧包和配置备份。切换后插件默认停用，需要重新审核。\n请求权限：", "Applies after restart and preserves package/settings backups. The plugin will be disabled pending review.\nRequested permissions: ") +
+            string.Join(", ", next.Permissions) + "\n" + string.Join("\n", next.WritableSettings.Select(s => s.PluginId + " / " + s.SettingId)),
+            manifest.Name, MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
+        async Task ChangePackage(bool reverting)
+        {
+            string? archive = null;
+            if (!reverting)
+            {
+                var picker = new Microsoft.Win32.OpenFileDialog { Filter = "ZIP (*.zip)|*.zip", CheckFileExists = true };
+                if (picker.ShowDialog(Window.GetWindow(this)) != true) return;
+                archive = picker.FileName;
+            }
+            update.IsEnabled = rollback.IsEnabled = false;
+            try
+            {
+                var changed = reverting ? await Runtime.Plugins.StageRollbackAsync(plugin, next => ConfirmPackage(next, true))
+                    : await Runtime.Plugins.StageUpdateAsync(plugin, archive!, next => ConfirmPackage(next, false));
+                if (changed) AskRestart(Window.GetWindow(this), L("插件文件将在重启后切换。", "Plugin files will be switched after restart."));
+            }
+            catch (Exception ex) { Runtime.SetStatus(ex.GetBaseException().Message); }
+            finally { update.IsEnabled = !plugin.PendingUpdate && !plugin.PendingUninstall; rollback.IsEnabled = update.IsEnabled && Runtime.Plugins.CanRollback(plugin); }
+        }
+        update.Click += async (_, _) => await ChangePackage(false);
+        rollback.Click += async (_, _) => await ChangePackage(true);
+        packageActions.Children.Add(update); packageActions.Children.Add(rollback); body.Children.Add(packageActions);
+        if (plugin.PendingUpdate)
+        {
+            body.Children.Add(Text(L("更新 / 回退已安排，请重启 Toolkit。", "Update / rollback pending; restart Toolkit."), 12, top: 8));
+            var cancelUpdate = ActionButton(L("取消待处理变更", "Cancel pending change"));
+            cancelUpdate.Click += async (_, _) =>
+            {
+                try { await Runtime.Plugins.CancelPendingUpdateAsync(plugin); }
+                catch (Exception ex) { Runtime.SetStatus(ex.GetBaseException().Message); }
+            };
+            packageActions.Children.Add(cancelUpdate);
+        }
         uninstall.Click += async (_, _) =>
         {
             var owner = Window.GetWindow(this);
@@ -331,7 +440,9 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
             if (enabled && ToolkitMessageBox.Show(Window.GetWindow(this),
                 L("仅启用你信任的插件。插件继承宿主权限，权限声明不是操作系统沙箱。\n\n", "Enable only trusted plugins. Plugins inherit host privileges; permission declarations are not an OS sandbox.\n\n") +
                 (manifest.FanBackend is null ? "" : FanWarning + "\n\n") +
-                (manifest.Permissions.Contains("ui.custom") ? CustomUiWarning + "\n\n" : "") + technical,
+                (manifest.Permissions.Contains("ui.custom") ? CustomUiWarning + "\n\n" : "") +
+                (manifest.Permissions.Contains("settings.write") ? L("此插件可修改以下本体或其他插件设置，可能改变设备行为：\n", "This plugin can change these host/other-plugin settings and affect device behavior:\n") +
+                    string.Join("\n", manifest.WritableSettings.Select(s => s.PluginId + " / " + s.SettingId)) + "\n\n" : "") + technical,
                 manifest.Name, MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
             { toggle.IsChecked = plugin.Enabled; return; }
             toggle.IsEnabled = false;
@@ -364,6 +475,7 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
     {
         "sensors.read" => L("读取传感器", "Read sensors"), "data.read" => L("读取运行数据", "Read runtime data"),
         "settings.read" => L("读取设置", "Read settings"), "host.control" => L("控制宿主", "Control host"),
+        "settings.write" => L("修改本体 / 其他插件设置", "Modify host / other plugin settings"),
         "ui.custom" => L("自绘页面（进程内）", "Custom UI (in-process)"),
         "ui.toast" => L("显示右下角提示", "Show in-app notifications"),
         "replace" => L("替换内置内容", "Replace built-in content"), "fan.backend" => L("风扇后端", "Fan backend"), _ => permission
@@ -376,6 +488,9 @@ internal sealed class ToolkitPluginsPage : ToolkitPageBase
             "Assembly: " + m.EntryAssembly, "Entry type: " + m.EntryType, "Permissions: " + string.Join(", ", m.Permissions),
             L("目录：", "Folder: ") + plugin.Directory };
         if (!string.IsNullOrWhiteSpace(m.Author)) lines.Insert(1, L("作者：", "Author: ") + m.Author.Trim());
+        lines.Add($"Refresh: {m.RefreshIntervalMilliseconds} ms; Last: {plugin.LastDurationMs:0} ms; Retries: {plugin.RestartCount}");
+        if (plugin.LastFailure is { } failure) lines.Add("Last failure: " + failure);
+        lines.AddRange(m.Dependencies.Select(d => "Dependency: " + d.Id + " >= " + d.MinimumVersion + " < " + d.MaximumVersionExclusive));
         lines.AddRange(m.Pages.Where(p => p.Replaces is not null).Select(p => "page: " + p.Replaces));
         lines.AddRange(m.Pages.Where(p => p.View is not null).Select(p => "view: " + p.Id + " · " + p.View!.Assembly + " · " + p.View.Type));
         lines.AddRange(m.Settings.Where(s => s.Replaces is not null).Select(s => "setting: " + s.Replaces));

@@ -37,6 +37,7 @@ internal static class PluginSystemTests
 
     private static async Task RunAsync(string? hostPath)
     {
+        await PluginExtensionTests.RunAsync(hostPath);
         await NvApiAvailabilityTests.RunAsync();
         await CustomPluginPageTests.RunAsync(hostPath);
         await PluginToastTests.RunWorkerAsync(hostPath);

@@ -85,7 +85,8 @@ public enum ItsMode
     PowerSaving,
     Intelligent,
     Performance,
-    Geek
+    Geek,
+    QuietPerformance // Toolkit selection: performance ITS base + verified BIOS switch.
 }
 
 public enum OverviewPageMode
@@ -364,6 +365,7 @@ public sealed class AppSettings
     public List<ItsMode> FnPerformanceModeEnabled { get; set; } =
         PerformanceModeCycle.DefaultOrder.ToList();
     public string ShutdownPerformanceMode { get; set; } = "";
+    public bool? ShutdownQuietPerformanceEnabled { get; set; }
     public bool DisableControlOnSleep { get; set; } = true;
     public bool AttemptDisableControlOnSleepWhenUnsupported { get; set; }
     public double? FanReadMinimumIntervalSeconds { get; set; }

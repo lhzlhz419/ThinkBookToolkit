@@ -83,6 +83,21 @@ restores firmware-automatic fan control before normal exit and before actions
 that restart the computer.
 
 
+## Startup to tray
+
+When startup to tray is enabled, Toolkit initializes without showing its main
+window or a taskbar button. Opening it from the tray during initialization will
+not be undone when initialization completes. Mandatory first-run/version risk
+confirmation is still shown; informational backend notices wait until the main
+window is opened, and startup failures are reported through the tray.
+
+## Automation
+
+Automation supports ordered device-control steps, event/Fn triggers, per-rule enable
+switches, cancellation, and execution history. Display resolution/DPI steps retain
+timed confirmation; power actions use the active backend's validation. See the
+[automation guide](docs/automation.md) for supported actions and trigger semantics.
+
 ## Local software integration through plugins
 
 The built-in localhost HTTP integration has been removed. A trusted plugin can
