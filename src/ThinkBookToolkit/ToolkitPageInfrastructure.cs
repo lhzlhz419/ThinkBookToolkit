@@ -1156,7 +1156,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                 ? Brush(color)
                 : Brush(Palette.SurfaceRaised),
             Foreground = primary || danger
-                ? Brushes.White
+                ? danger ? Brushes.White : Brush(Palette.AccentText)
                 : Brush(Palette.Text),
             BorderBrush = Brush(primary || danger ? color : Palette.Border),
             FontWeight = primary ? FontWeights.SemiBold : FontWeights.Normal,

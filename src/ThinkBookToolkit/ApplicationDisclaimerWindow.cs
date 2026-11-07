@@ -16,6 +16,11 @@ internal static class ApplicationDisclaimerPreference
     public static string CurrentVersion =>
         ApplicationUpdateService.CurrentVersionText;
 
+    // Prior versions only persisted acceptance after the exact sentence was
+    // entered with paste disabled, so this also recognizes existing users.
+    internal static bool AllowsPaste(AppSettings settings) =>
+        !string.IsNullOrWhiteSpace(settings.AcceptedDisclaimerVersion);
+
     public static bool RequiresConfirmation(AppSettings settings) =>
         !string.Equals(
             settings.AcceptedDisclaimerVersion,
@@ -44,6 +49,7 @@ internal static class ApplicationDisclaimerPreference
 internal sealed class ApplicationDisclaimerWindow : Window
 {
     private readonly bool _isDark;
+    private readonly bool _allowPaste;
     private readonly ComboBox _language = new();
     private readonly TextBlock _title = new();
     private readonly TextBlock _body = new();
@@ -52,14 +58,17 @@ internal sealed class ApplicationDisclaimerWindow : Window
     private readonly TextBlock _status = new();
     private readonly Button _continue = new();
     private readonly Button _exit = new();
+    private readonly Button _copy = new();
     private ToolkitPalette _palette;
     private bool _isChinese;
 
     public ApplicationDisclaimerWindow(
         string language,
-        bool isDark)
+        bool isDark,
+        bool allowPaste = false)
     {
         _isDark = isDark;
+        _allowPaste = allowPaste;
         _isChinese = language != "en-US";
         _palette = ToolkitPalette.For(isDark);
         Width = 780;
@@ -106,12 +115,29 @@ internal sealed class ApplicationDisclaimerWindow : Window
         _instruction.TextWrapping = TextWrapping.Wrap;
         _instruction.Margin = new Thickness(0, 20, 0, 8);
         content.Children.Add(_instruction);
+        _copy.HorizontalAlignment = HorizontalAlignment.Left;
+        _copy.Margin = new Thickness(0, 0, 0, 10);
+        _copy.MinHeight = 34;
+        _copy.Visibility = _allowPaste ? Visibility.Visible : Visibility.Collapsed;
+        _copy.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(RequiredConfirmation);
+                _status.Text = string.Empty;
+            }
+            catch (Exception ex)
+            {
+                _status.Text = (_isChinese ? "复制失败：" : "Could not copy: ") + ex.Message;
+            }
+        };
+        content.Children.Add(_copy);
         _confirmation.MinHeight = 42;
         _confirmation.Padding = new Thickness(10, 7, 10, 7);
         _confirmation.AllowDrop = false;
         DataObject.AddPastingHandler(
             _confirmation,
-            (_, args) => args.CancelCommand());
+            (_, args) => { if (!_allowPaste) args.CancelCommand(); });
         _confirmation.TextChanged += (_, _) => SyncContinueState();
         content.Children.Add(_confirmation);
         _status.Foreground = Brush(_palette.Danger);
@@ -164,8 +190,12 @@ internal sealed class ApplicationDisclaimerWindow : Window
         _continue.IsDefault = true;
         _continue.Background = Brush(_palette.Accent);
         _continue.BorderBrush = Brush(_palette.Accent);
-        _continue.Foreground = Brushes.White;
-        _continue.Click += (_, _) => DialogResult = true;
+        _continue.Foreground = Brush(_palette.AccentText);
+        _continue.Click += (_, _) =>
+        {
+            if (string.Equals(_confirmation.Text, RequiredConfirmation, StringComparison.Ordinal))
+                DialogResult = true;
+        };
         buttons.Children.Add(_exit);
         buttons.Children.Add(_continue);
         Grid.SetColumn(buttons, 1);
@@ -188,9 +218,12 @@ internal sealed class ApplicationDisclaimerWindow : Window
               "This software reads and writes hardware and firmware settings. Incorrect or incompatible settings may affect cooling, performance, stability, hardware lifespan, warranty coverage, or data safety. You must evaluate and accept all risks and consequences yourself. If you do not understand or accept these risks, do not install or use this software.\n\n" +
               "Before requesting after-sales service, uninstall ThinkBook Toolkit or remove the drive containing it to avoid unnecessary complications.";
         var required = RequiredConfirmation;
-        _instruction.Text = _isChinese
-            ? $"请完整手动输入以下文字后继续：\n{required}"
-            : $"Type the following sentence in full to continue:\n{required}";
+        _instruction.Text = _allowPaste
+            ? (_isChinese ? $"请确认当前版本的风险说明，输入或复制粘贴以下完整文字后继续：\n{required}"
+                : $"Review the risks for this version, then type or copy and paste the complete sentence to continue:\n{required}")
+            : (_isChinese ? $"首次确认需要完整手动输入以下文字后继续：\n{required}"
+                : $"For your first acknowledgement, type the following sentence in full to continue:\n{required}");
+        _copy.Content = _isChinese ? "复制确认文字" : "Copy acknowledgement";
         _exit.Content = _isChinese ? "退出软件" : "Exit";
         _continue.Content = _isChinese ? "继续" : "Continue";
         _language.SelectedIndex = _isChinese ? 0 : 1;

@@ -132,6 +132,7 @@ public static class CurveProfileStore
             defaults.LogLevel = loaded.LogLevel is "INFO" or "WARN" or "ERROR" or "NONE"
                 ? loaded.LogLevel : "ERROR";
             defaults.Language = loaded.Language is "en-US" or "zh-CN" ? loaded.Language : defaults.Language;
+            defaults.ThemeColors = ThemeColorSettings.Normalize(loaded.ThemeColors);
             defaults.Theme = loaded.Theme is "dark" or "light" or "system"
                 ? loaded.Theme
                 : defaults.Theme;
@@ -474,6 +475,7 @@ public static class CurveProfileStore
     public static void SaveSettings(AppSettings settings)
     {
         settings.ConfigurationVersion = CurrentConfigurationVersion;
+        settings.ThemeColors = ThemeColorSettings.Normalize(settings.ThemeColors);
         settings.IncludedGamePaths = NormalizeApplicationPaths(
             settings.IncludedGamePaths);
         settings.ExcludedGamePaths = NormalizeApplicationPaths(

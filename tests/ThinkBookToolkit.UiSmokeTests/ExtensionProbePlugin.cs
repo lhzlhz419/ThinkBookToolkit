@@ -18,6 +18,7 @@ public sealed class ExtensionProbePlugin : IToolkitPlugin
         if (delay.ValueKind == JsonValueKind.Number && delay.GetInt32() > 0)
             await Task.Delay(delay.GetInt32(), cancellationToken);
         var mode = request.PluginSettings.GetValueOrDefault("behavior").ToString();
+        if (mode == "hang") await Task.Delay(Timeout.Infinite, CancellationToken.None);
         if (mode == "crash") Environment.Exit(123);
         if (mode == "throw") throw new InvalidOperationException("probe logic failure");
         var values = new Dictionary<string, double?>

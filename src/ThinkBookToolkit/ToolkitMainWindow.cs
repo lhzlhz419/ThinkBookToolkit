@@ -158,6 +158,7 @@ internal sealed class ToolkitMainWindow : Window
 
     private void ApplyAppearance()
     {
+        ToolkitPalette.Configure(_runtime.Settings.ThemeColors);
         ToolkitMessageBox.SetLanguage(_runtime.Settings.Language);
         ModernTheme.Apply(Application.Current, _runtime.IsDark);
         ModernTheme.ApplyWindowSurfaceStyles(
@@ -818,7 +819,8 @@ internal sealed class ToolkitMainWindow : Window
         }
         var dialog = new ApplicationDisclaimerWindow(
             _runtime.Settings.Language,
-            _runtime.IsDark)
+            _runtime.IsDark,
+            ApplicationDisclaimerPreference.AllowsPaste(_runtime.Settings))
         {
             Owner = this
         };

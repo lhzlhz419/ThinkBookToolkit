@@ -19,6 +19,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
     private readonly ComboBox _logLevel = new() { MinWidth = 150 };
     private readonly ComboBox _logRetention = new() { MinWidth = 150 };
     private readonly Button _folderLocations;
+    private readonly Button _themeColors;
     private readonly ComboBox _hardwareAcceleration = new() { MinWidth = 190 };
     private readonly ComboBox _overviewMode = new() { MinWidth = 150 };
     private readonly ComboBox _startupMode = new() { MinWidth = 170 };
@@ -106,6 +107,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _checkUpdates = ActionButton(L("检查更新", "Check for updates"));
         _downloadUpdate = ActionButton(L("下载更新", "Download update"), primary: true);
         _folderLocations = ActionButton(L("设置", "Settings"));
+        _themeColors = ActionButton(L("设置", "Settings"));
+        _themeColors.Click += (_, _) => new ThemeColorSettingsWindow(Runtime)
+            { Owner = Window.GetWindow(this) }.ShowDialog();
         _folderLocations.Click += (_, _) => new FolderLocationsWindow(Runtime)
             { Owner = Window.GetWindow(this) }.ShowDialog();
         _downloadUpdate.Visibility = Visibility.Collapsed;
@@ -281,6 +285,9 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         global.Children.Add(SettingRow(L("自定义文件夹位置", "Custom folder locations"),
             L("设置依赖、配置、日志、下载缓存和传感器记录的存放位置。", "Choose locations for dependencies, configuration, logs, downloads and recordings."),
             _folderLocations, "\uE8B7"));
+        global.Children.Add(SettingRow(L("主题颜色", "Theme colors"),
+            L("自定义浅色、深色模式的强调色、背景主题色和概览顶部卡片颜色。", "Customize accent, background and overview header colors for light and dark modes."),
+            _themeColors, "\uE790"));
         global.Children.Add(SettingRow(
             L("背景图像", "Background image"),
             L(

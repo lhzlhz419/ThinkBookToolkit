@@ -85,6 +85,7 @@ internal static class Program
 
     private static void RunSmokeTests()
     {
+        ThemeColorTests.Run();
         AutomationCompletionTests.Run();
         PowerLockReadbackTests.Run();
         DisplayAndResumeTests.Run();
@@ -3827,6 +3828,7 @@ internal static class Program
     {
         var settings = new AppSettings();
         Assert(ApplicationDisclaimerPreference.RequiresConfirmation(settings) &&
+               !ApplicationDisclaimerPreference.AllowsPaste(settings) &&
                ApplicationDisclaimerPreference.ChineseConfirmation ==
                "我了解风险，并自行承担全部后果，同时会在售后前卸载此软件。",
             "The per-version application disclaimer does not require the exact acknowledgement text.");
@@ -3837,6 +3839,8 @@ internal static class Program
         settings.AcceptedDisclaimerVersion = "0.0.0";
         Assert(ApplicationDisclaimerPreference.RequiresConfirmation(settings),
             "Updating the application does not require a new disclaimer acknowledgement.");
+        Assert(ApplicationDisclaimerPreference.AllowsPaste(settings),
+            "Previously accepted versions must allow copy/paste on the next acknowledgement.");
 
         var window = new ApplicationDisclaimerWindow("zh-CN", isDark: false);
         try
@@ -3844,6 +3848,12 @@ internal static class Program
             var confirmation = GetPrivateField<TextBox>(window, "_confirmation");
             var continueButton = GetPrivateField<Button>(window, "_continue");
             var language = GetPrivateField<ComboBox>(window, "_language");
+            var pasting = new DataObjectPastingEventArgs(
+                new DataObject(DataFormats.UnicodeText, ApplicationDisclaimerPreference.ChineseConfirmation),
+                false, DataFormats.UnicodeText);
+            confirmation.RaiseEvent(pasting);
+            Assert(pasting.CommandCancelled && GetPrivateField<Button>(window, "_copy").Visibility == Visibility.Collapsed &&
+                !confirmation.AllowDrop, "First acknowledgement must reject paste and drag/drop.");
             Assert(!continueButton.IsEnabled &&
                    language.Width == 130 &&
                    language.HorizontalAlignment == HorizontalAlignment.Left &&
@@ -3859,6 +3869,38 @@ internal static class Program
         {
             window.Close();
         }
+
+        var returning = new ApplicationDisclaimerWindow("zh-CN", isDark: false,
+            allowPaste: ApplicationDisclaimerPreference.AllowsPaste(settings));
+        try
+        {
+            var confirmation = GetPrivateField<TextBox>(returning, "_confirmation");
+            var proceed = GetPrivateField<Button>(returning, "_continue");
+            var language = GetPrivateField<ComboBox>(returning, "_language");
+            foreach (var chinese in new[] { true, false })
+            {
+                language.SelectedIndex = chinese ? 0 : 1;
+                var required = chinese ? ApplicationDisclaimerPreference.ChineseConfirmation : ApplicationDisclaimerPreference.EnglishConfirmation;
+                var pasting = new DataObjectPastingEventArgs(new DataObject(DataFormats.UnicodeText, required), false, DataFormats.UnicodeText);
+                confirmation.RaiseEvent(pasting);
+                Assert(!pasting.CommandCancelled && GetPrivateField<Button>(returning, "_copy").Visibility == Visibility.Visible,
+                    "Returning users cannot paste the acknowledgement.");
+                confirmation.Text = required[..^1];
+                Assert(!proceed.IsEnabled, "Incomplete pasted acknowledgement was accepted.");
+                confirmation.Text = required;
+                Assert(proceed.IsEnabled, "Complete acknowledgement was rejected.");
+            }
+            var previousSettings = CurveProfileStore.LoadSettings();
+            try
+            {
+                Assert(ApplicationDisclaimerPreference.Accept(settings, out _), "Disclaimer acceptance could not be saved.");
+                var restored = CurveProfileStore.LoadSettings();
+                Assert(ApplicationDisclaimerPreference.AllowsPaste(restored) &&
+                    !ApplicationDisclaimerPreference.RequiresConfirmation(restored), "Saved acceptance was lost after reload.");
+            }
+            finally { CurveProfileStore.SaveSettings(previousSettings); }
+        }
+        finally { returning.Close(); }
 
         var normalizedPaths = CurveProfileStore.NormalizeApplicationPaths(
         [

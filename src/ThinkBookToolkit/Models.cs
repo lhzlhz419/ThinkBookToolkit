@@ -305,6 +305,7 @@ public sealed class AppSettings
     public string ConfigurationVersion { get; set; } = CurveProfileStore.CurrentConfigurationVersion;
     public string Language { get; set; } = "zh-CN";
     public string Theme { get; set; } = "light";
+    public ThemeColorSettings ThemeColors { get; set; } = new();
     public string LogLevel { get; set; } = "ERROR";
     public int LogRetentionDays { get; set; } = 7;
     public string BackgroundImagePath { get; set; } = "";

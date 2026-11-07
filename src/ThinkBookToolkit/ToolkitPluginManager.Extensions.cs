@@ -86,7 +86,7 @@ internal sealed partial class ToolkitPluginManager
         catch (Exception ex)
         {
             if (!Active(plugin, generation)) return;
-            plugin.LastFailure = ex.GetBaseException().Message;
+            plugin.LastFailure = FailureMessage(ex);
             plugin.Values = []; plugin.Conditions.Clear(); plugin.Thresholds.Clear(); plugin.OverviewValues = new Dictionary<string, string?>();
             plugin.Client?.Dispose(); plugin.Client = null;
             if (ex is IOException or TimeoutException || ex is OperationCanceledException && !_stop.IsCancellationRequested)
@@ -345,12 +345,17 @@ internal sealed partial class ToolkitPluginManager
             return await AcceptResultAsync(plugin, result, DateTimeOffset.UtcNow, generation, isAction: true, cancellationToken: linked.Token);
         }
         catch (OperationCanceledException) { plugin.Client?.Dispose(); plugin.Client = null; throw; }
-        catch (Exception ex) { plugin.Client?.Dispose(); plugin.Client = null; return ex.GetBaseException().Message; }
+        catch (Exception ex) { plugin.Client?.Dispose(); plugin.Client = null; return FailureMessage(ex); }
         finally { if (holdsSlot) _evaluationSlots.Release(); plugin.IoGate.Release(); if (!_disposed) Publish(); }
     }
 
     internal bool Condition(string id) => _plugins.Any(p => p.Enabled && p.Error is null && !p.PendingUninstall &&
         DateTimeOffset.UtcNow - p.LastResultAt < TimeSpan.FromSeconds(10) && p.Conditions.GetValueOrDefault(id));
+
+    // Preserve the stage of an IPC timeout instead of reducing it to its
+    // inner exception ("A task was canceled") in the plugin card.
+    private static string FailureMessage(Exception exception) =>
+        exception is TimeoutException ? exception.Message : exception.GetBaseException().Message;
 
     private readonly Dictionary<string, DateTimeOffset> _settingWrites = new();
     private void ValidateExternalWrite(PluginInstallation source, PluginSettingWrite write)

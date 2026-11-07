@@ -5244,6 +5244,27 @@ internal sealed class ToolkitRuntimeService : IDisposable
         RaiseAppearanceChanged();
     }
 
+    internal bool TrySetThemeColors(ThemeColorSettings colors, out string? error)
+    {
+        if (!ThemeColorSettings.Valid(colors))
+        {
+            error = L("请输入有效的六位 HEX 颜色。", "Enter valid six-digit HEX colors.");
+            return false;
+        }
+        var previous = Settings.ThemeColors;
+        Settings.ThemeColors = ThemeColorSettings.Normalize(colors);
+        try { CurveProfileStore.SaveSettings(Settings); }
+        catch (Exception ex)
+        {
+            Settings.ThemeColors = previous;
+            error = ex.Message;
+            return false;
+        }
+        error = null;
+        RaiseAppearanceChanged();
+        return true;
+    }
+
     private void RaiseAppearanceChanged()
     {
         var dispatcher = Application.Current?.Dispatcher;

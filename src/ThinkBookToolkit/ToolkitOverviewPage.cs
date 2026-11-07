@@ -233,20 +233,20 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             FontFamily = UiTypography.FontFamilyFor(Runtime.Settings.Language),
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
-            Foreground = Brush("#D7E1FF")
+            Foreground = HeroTextBrush("#D7E1FF")
         });
         left.Children.Add(new TextBlock
         {
             Text = DeviceModelDetector.CurrentIdentity.Model,
             FontSize = 28,
             FontWeight = FontWeights.SemiBold,
-            Foreground = Brushes.White,
+            Foreground = HeroTextBrush("#FFFFFF"),
             Margin = new Thickness(0, 7, 0, 3)
         });
         left.Children.Add(new TextBlock
         {
             Text = DeviceModelDetector.CurrentIdentity.ProductNumber,
-            Foreground = Brush("#DDE5FF"),
+            Foreground = HeroTextBrush("#DDE5FF"),
             FontSize = 12
         });
         var pills = new AdaptiveUniformPanel
@@ -290,7 +290,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             Text = "\uE770",
             FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
             FontSize = 72,
-            Foreground = Brush("#80FFFFFF"),
+            Foreground = HeroTextBrush("#80FFFFFF"),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(28, 0, 8, 0)
         };
@@ -301,8 +301,8 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             MinHeight = 172,
             CornerRadius = new CornerRadius(20),
             Background = new LinearGradientBrush(
-                HeroColor("#5178F3"),
-                HeroColor("#7955D9"),
+                HeroColor(Runtime.Settings.ThemeColors.Hero(Runtime.IsDark).Start),
+                HeroColor(Runtime.Settings.ThemeColors.Hero(Runtime.IsDark).End),
                 0),
             Padding = new Thickness(24, 20, 22, 20),
             Margin = new Thickness(0, 0, 0, 16),
@@ -317,6 +317,10 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         }
     }
 
+    private SolidColorBrush HeroTextBrush(string defaultColor) =>
+        Brush(Runtime.Settings.ThemeColors.DefaultHero(Runtime.IsDark)
+            ? defaultColor : Runtime.Settings.ThemeColors.HeroText(Runtime.IsDark));
+
     internal static byte HeroBackgroundAlpha(bool hasBackgroundImage) =>
         hasBackgroundImage ? (byte)0xB3 : byte.MaxValue;
 
@@ -326,7 +330,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         stack.Children.Add(new TextBlock
         {
             Text = label,
-            Foreground = Brush("#CFD8FA"),
+            Foreground = HeroTextBrush("#CFD8FA"),
             FontSize = 12
         });
         var valueHost = new Grid
@@ -336,7 +340,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         };
         var value = new TextBlock
         {
-            Foreground = Brushes.White,
+            Foreground = HeroTextBrush("#FFFFFF"),
             FontWeight = FontWeights.SemiBold,
             FontSize = valueFontSize,
             VerticalAlignment = VerticalAlignment.Center,
@@ -362,7 +366,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         stack.Children.Add(new TextBlock
         {
             Text = label,
-            Foreground = Brush("#CFD8FA"),
+            Foreground = HeroTextBrush("#CFD8FA"),
             FontSize = 12
         });
         var valueHost = new Grid
@@ -380,7 +384,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         });
         var value = new TextBlock
         {
-            Foreground = Brushes.White,
+            Foreground = HeroTextBrush("#FFFFFF"),
             FontWeight = FontWeights.SemiBold,
             FontSize = 16,
             VerticalAlignment = VerticalAlignment.Center,
@@ -421,7 +425,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         stack.Children.Add(new TextBlock
         {
             Text = label,
-            Foreground = Brush("#E3E9FF"),
+            Foreground = HeroTextBrush("#E3E9FF"),
             FontSize = 12
         });
         stack.Children.Add(selector);

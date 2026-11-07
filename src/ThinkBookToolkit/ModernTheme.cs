@@ -54,6 +54,18 @@ internal static class ModernTheme
             RefreshWindow(window, isDark);
     }
 
+    internal static void ApplyColorPreview(TextBox input, Button button, ToolkitPalette palette)
+    {
+        input.Style = TextBoxStyle(palette);
+        input.Background = Brush(palette.SurfaceRaised);
+        input.Foreground = Brush(palette.Text);
+        input.BorderBrush = Brush(palette.Border);
+        button.Style = ButtonStyle(palette);
+        button.Background = Brush(palette.Accent);
+        button.Foreground = Brush(palette.AccentText);
+        button.BorderBrush = Brush(palette.Accent);
+    }
+
     /// <summary>
     /// Reconnects controls which have already been created to the current
     /// application theme and applies the matching native window chrome.
@@ -368,7 +380,8 @@ internal static class ModernTheme
         button.Background = background;
         button.Foreground =
             isDanger || hasSemanticBackground
-                ? Brushes.White
+                ? !isDanger && background is SolidColorBrush solid && solid.Color == (Color)ColorConverter.ConvertFromString(palette.Accent)
+                    ? Brush(palette.AccentText) : Brushes.White
                 : Brush(palette.Text);
         button.BorderBrush =
             isDanger
@@ -549,7 +562,7 @@ internal static class ModernTheme
             "SwitchThumb"));
         enabled.Setters.Add(new Setter(
             Border.BackgroundProperty,
-            Brushes.White,
+            Brush(palette.AccentText),
             "SwitchThumb"));
         template.Triggers.Add(enabled);
 

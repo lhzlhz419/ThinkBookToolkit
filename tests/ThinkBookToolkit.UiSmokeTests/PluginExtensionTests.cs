@@ -70,6 +70,7 @@ internal static class PluginExtensionTests
                 await runtime.Plugins.SetEnabledAsync(reserved, false);
             }
             var fast = runtime.Plugins.Installations.Single(p => p.Manifest.Id == "test.fast");
+            await VerifyDispatcherIndependentTransportAsync(runtime, fast, options.HostPath!);
             var slow = runtime.Plugins.Installations.Single(p => p.Manifest.Id == "test.slow");
             Check(runtime.Plugins.Installations.Single(p => p.Manifest.Id == "test.migration").Settings["behavior"].GetString() == "migrated" && Directory.GetFiles(Path.Combine(options.StateRoot!, "migration-backups")).Length > 0, "Settings migration did not preserve/backup old value.");
             try { await runtime.Plugins.SetEnabledAsync(runtime.Plugins.Installations.Single(p => p.Manifest.Id == "test.dependent"), true); throw new Exception("Incompatible dependency accepted."); }
@@ -164,5 +165,26 @@ internal static class PluginExtensionTests
             Check(plugin.Manifest.Version == "1.0.0" && !plugin.Enabled && plugin.Settings["behavior"].GetString() == "changed", "Rollback lost old package/settings or silently enabled it.");
         }
         Console.WriteLine("Plugin extension commands, scheduling, events, automation, settings, recording metadata and package update/rollback tests passed: " + root);
+    }
+
+    private static async Task VerifyDispatcherIndependentTransportAsync(ToolkitRuntimeService runtime, PluginInstallation plugin, string hostPath)
+    {
+        using var client = new PluginProcessClient(plugin.Directory, plugin.Manifest, hostPath);
+        var settings = new Dictionary<string, JsonElement>(plugin.Settings) { ["delay"] = J(100) };
+        var request = new PluginRequest("refresh", PluginHostBridge.Context(runtime, []), settings);
+        await client.EvaluateAsync(request, CancellationToken.None);
+        // Keep the real WPF dispatcher busy while a healthy worker sends its
+        // reply. Reading the complete frame must not require a dispatcher turn.
+        var pending = client.EvaluateAsync(request, CancellationToken.None);
+        var finished = Task.WhenAny(pending, Task.Delay(TimeSpan.FromSeconds(6))).GetAwaiter().GetResult();
+        Check(finished == pending && pending.IsCompletedSuccessfully, "A busy WPF dispatcher stalled a healthy plugin pipe.");
+        Check((await pending).Values.ContainsKey(plugin.Manifest.Id + ".value"), "Worker response was lost.");
+        settings["behavior"] = J("hang");
+        try
+        {
+            await client.EvaluateAsync(request, CancellationToken.None);
+            throw new InvalidOperationException("Hung plugin escaped its request deadline.");
+        }
+        catch (TimeoutException ex) when (ex.Message.Contains("reading the response")) { }
     }
 }

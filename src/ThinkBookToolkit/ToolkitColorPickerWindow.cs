@@ -80,7 +80,7 @@ internal sealed class ToolkitColorPickerWindow : Window
         };
         root.Children.Add(new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
-        _accept.Content = L("确定", "OK"); _accept.Background = Brush(palette.Accent); _accept.Foreground = Brushes.White;
+        _accept.Content = L("确定", "OK"); _accept.Background = Brush(palette.Accent); _accept.Foreground = Brush(palette.AccentText);
         _accept.Click += (_, _) => DialogResult = true;
         var cancel = new Button { Content = L("取消", "Cancel"), IsCancel = true, MinWidth = 88, MinHeight = 36, Margin = new Thickness(10, 0, 0, 0) };
         cancel.Click += (_, _) => DialogResult = false;
