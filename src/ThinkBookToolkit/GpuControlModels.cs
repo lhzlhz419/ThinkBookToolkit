@@ -20,10 +20,6 @@ public sealed class GpuOverclockSettings
 
 internal static class GpuOverclockPolicy
 {
-    public const int MinimumCoreOffsetMhz = -500;
-    public const int MaximumCoreOffsetMhz = 500;
-    public const int MinimumMemoryOffsetMhz = -1000;
-    public const int MaximumMemoryOffsetMhz = 3000;
     public const int MinimumLockedCoreFrequencyMhz = 0;
     public const int MaximumLockedCoreFrequencyMhz = 3500;
 
@@ -53,14 +49,8 @@ internal static class GpuOverclockPolicy
             MemoryFrequencyOffsetEnabled = value.MemoryFrequencyOffsetEnabled,
             CoreFrequencyLimitEnabled = value.CoreFrequencyLimitEnabled,
             MemoryFrequencyLimitEnabled = value.MemoryFrequencyLimitEnabled,
-            CoreFrequencyOffsetMhz = Math.Clamp(
-                value.CoreFrequencyOffsetMhz,
-                MinimumCoreOffsetMhz,
-                MaximumCoreOffsetMhz),
-            MemoryFrequencyOffsetMhz = Math.Clamp(
-                value.MemoryFrequencyOffsetMhz,
-                MinimumMemoryOffsetMhz,
-                MaximumMemoryOffsetMhz),
+            CoreFrequencyOffsetMhz = value.CoreFrequencyOffsetMhz,
+            MemoryFrequencyOffsetMhz = value.MemoryFrequencyOffsetMhz,
             MinimumCoreFrequencyMhz = minimum,
             MaximumCoreFrequencyMhz = maximum,
             MinimumMemoryFrequencyMhz = minimumMemory,
@@ -77,16 +67,14 @@ internal static class GpuOverclockPolicy
             error = "GPU overclock settings are missing.";
             return false;
         }
-        if (value.CoreFrequencyOffsetMhz is < MinimumCoreOffsetMhz or
-            > MaximumCoreOffsetMhz)
+        if (value.CoreFrequencyOffsetEnabled && !FitsDriverUnits(value.CoreFrequencyOffsetMhz))
         {
-            error = $"Core offset must be between {MinimumCoreOffsetMhz} and +{MaximumCoreOffsetMhz} MHz.";
+            error = "Core offset cannot be represented in driver frequency units.";
             return false;
         }
-        if (value.MemoryFrequencyOffsetMhz is < MinimumMemoryOffsetMhz or
-            > MaximumMemoryOffsetMhz)
+        if (value.MemoryFrequencyOffsetEnabled && !FitsDriverUnits(value.MemoryFrequencyOffsetMhz))
         {
-            error = $"Memory offset must be between {MinimumMemoryOffsetMhz} and +{MaximumMemoryOffsetMhz} MHz.";
+            error = "Memory offset cannot be represented in driver frequency units.";
             return false;
         }
         if (!IsValidClockLimit(
@@ -105,6 +93,25 @@ internal static class GpuOverclockPolicy
         }
 
         error = string.Empty;
+        return true;
+    }
+
+    private static bool FitsDriverUnits(int mhz) => (long)mhz * 1000 is >= int.MinValue and <= int.MaxValue;
+
+    internal static bool TryValidateOffsets(GpuOverclockSettings value, GpuOverclockRanges ranges, out string error)
+    {
+        if (value.CoreFrequencyOffsetEnabled && !ValidateOffset("核心 / Core", value.CoreFrequencyOffsetMhz, ranges.Core, out error)) return false;
+        if (value.MemoryFrequencyOffsetEnabled && !ValidateOffset("显存 / Memory", value.MemoryFrequencyOffsetMhz, ranges.Memory, out error)) return false;
+        error = "";
+        return true;
+    }
+
+    private static bool ValidateOffset(string name, int value, GpuClockOffsetRange? range, out string error)
+    {
+        error = range is null ? name + "：驱动未提供可编辑的偏移范围。 / Driver offset range is unavailable."
+            : $"{name}：驱动允许的偏移范围为 {range.MinimumMhz} ～ {range.MaximumMhz} MHz。 / Outside driver range.";
+        if (range is null || !range.Contains(value)) return false;
+        error = "";
         return true;
     }
 
@@ -196,6 +203,7 @@ internal sealed record GpuWorkerCommandResponse(
     IReadOnlyList<DiscreteGpuApplication> Applications,
     int AffectedProcesses = 0)
 {
+    public GpuOverclockRanges? OverclockRanges { get; init; }
     public static GpuWorkerCommandResponse Failure(string error) =>
         new(false, error, [], 0);
 
@@ -204,3 +212,19 @@ internal sealed record GpuWorkerCommandResponse(
         int affectedProcesses = 0) =>
         new(true, string.Empty, applications ?? [], affectedProcesses);
 }
+
+internal sealed record GpuClockOffsetRange(int MinimumMhz, int MaximumMhz)
+{
+    public bool Contains(int value) => MinimumMhz <= MaximumMhz && value >= MinimumMhz && value <= MaximumMhz;
+
+    internal static GpuClockOffsetRange? FromKhz(int minimum, int maximum, bool editable)
+    {
+        if (!editable || minimum > maximum) return null;
+        // Round inward so every offered whole-MHz value fits the driver's kHz limits.
+        var lower = (int)Math.Ceiling(minimum / 1000d);
+        var upper = (int)Math.Floor(maximum / 1000d);
+        return lower <= upper ? new(lower, upper) : null;
+    }
+}
+
+internal sealed record GpuOverclockRanges(GpuClockOffsetRange? Core, GpuClockOffsetRange? Memory);

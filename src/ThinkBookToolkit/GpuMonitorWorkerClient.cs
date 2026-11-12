@@ -163,6 +163,9 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
     public GpuWorkerCommandResponse QueryApplications() =>
         ExecuteCommand(Guardian.GpuMonitorWorker.ListApplicationsCommand);
 
+    public GpuWorkerCommandResponse ReadOverclockRanges() =>
+        ExecuteCommand(Guardian.GpuMonitorWorker.ReadOverclockRangesCommand);
+
     public GpuWorkerCommandResponse KillApplications() =>
         ExecuteCommand(
             Guardian.GpuMonitorWorker.KillApplicationsCommand,

@@ -7,6 +7,60 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-12
+
+### Added
+
+- Added independently configurable light/dark accent and background colors,
+  coordinated surface/text colors, Overview header gradients, previews and defaults.
+- Added internal-panel resolution, DPI presets and custom account-wide scaling
+  alongside refresh-rate settings, with timed confirmation for reversible changes.
+- Added Quiet Performance as a selectable mode on compatible BIOS/Dispatcher
+  combinations, including BIOS and service-cache confirmation.
+- Added restoration of the last confirmed performance mode after sleep/hibernation.
+- Expanded automation with built-in device controls, startup/resume/session
+  triggers, per-rule enable switches, a serial execution queue, cancellation,
+  progress and recent results.
+- Added plugin event subscriptions, actions/triggers/conditions for automation,
+  sensor threshold conditions, scoped cross-plugin setting writes, command
+  receipts, independent scheduling and opt-in transport retries.
+- Added plugin update/rollback staging, package/settings backups, dependency
+  checks, capability declarations and settings migration. Existing v1 plugins
+  remain supported, with new capabilities available through manifest v2.
+- Added plugin setting editors, conditional visibility, UI helpers and Overview/
+  tray actions. New sensor recordings retain provider and chart metadata.
+
+### Changed
+
+- NVIDIA core and memory offset limits now come from the driver's editable P0
+  clock ranges and are checked again before writes. Saved out-of-range values
+  are retained for correction. The overclock dialog can refresh driver ranges.
+- NVAPI Beta retains the user's enable preference while NVPCF is unavailable
+  and resumes after successful probing. An explicit disable cancels recovery.
+- First-time risk acknowledgement requires typing the full sentence. Users
+  with a previous acceptance can copy/paste when confirming another version.
+- Closed combo boxes no longer change selection on mouse-wheel input. Page
+  scrolling and scrolling within an expanded list remain available.
+- Startup-to-tray initializes without displaying the main window.
+
+### Fixed
+
+- Fixed GPU-worker broken-pipe cleanup preventing reconnection. Driver
+  communication has bounded read/write waits and failed writes are not replayed.
+- Fixed plugin IPC waiting on the WPF dispatcher and falsely timing out while
+  the UI was busy. Startup and request deadlines are separate, with stage details.
+- Fixed power-lock handling of partial readback and firmware-clamped values,
+  repeated error notifications and missing per-lock failure attribution.
+- Enabled WPF pointer input to avoid the legacy PenIMC COM activation failure
+  observed after runtime servicing. Guardian now launches a fresh recovery
+  process so late recovery does not depend on an old runtime's unloaded files.
+- Fixed Quiet Performance requests reporting success while the Dispatcher cache
+  disagreed with BIOS, and preserved the meaning of older shutdown-mode records.
+- Fixed plugin settings colliding with reserved manager-state filenames,
+  stale responses after disable and failed host commands reporting action success.
+- Removed raw display device names from normal display status and folded
+  automation run history into its own expandable area.
+
 ## [1.1.0] - 2026-10-08
 
 ### Added
@@ -570,7 +624,9 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - First public release with the replaceable fan-backend contract and the core
   ThinkBook Toolkit device controls.
 
-[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.4...v1.1.0
 [1.0.3]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/lhzlhz419/ThinkBookToolkit/compare/v1.0.0...v1.0.1

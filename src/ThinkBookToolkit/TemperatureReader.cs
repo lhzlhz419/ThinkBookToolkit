@@ -119,6 +119,9 @@ public sealed class TemperatureReader : IDisposable
         GpuWorkerCommandResponse.Failure(
             "GPU monitoring is unavailable.");
 
+    internal GpuWorkerCommandResponse ReadGpuOverclockRanges() =>
+        _gpuMonitor?.ReadOverclockRanges() ?? GpuWorkerCommandResponse.Failure("GPU monitoring is unavailable.");
+
     internal GpuWorkerCommandResponse KillDiscreteGpuApplications() =>
         _gpuMonitor?.KillApplications() ??
         GpuWorkerCommandResponse.Failure(

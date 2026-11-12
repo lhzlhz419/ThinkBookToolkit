@@ -18,6 +18,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Avoid the legacy PenIMC COM worker, which can fail on device changes
+         after a desktop-runtime servicing update. Keep pointer touch/stylus input. -->
+    <RuntimeHostConfigurationOption Include="Switch.System.Windows.Input.Stylus.EnablePointerSupport" Value="true" />
     <InternalsVisibleTo Include="ThinkBookToolkit.UiSmokeTests" />
     <InternalsVisibleTo Include="ThinkBookToolkit.UiPreview" />
     <InternalsVisibleTo Include="ThinkBookToolkit.GpuWorker" />

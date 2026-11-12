@@ -58,7 +58,11 @@ internal sealed class FanWatchdogService : ServiceBase
             }
 
             log.Info("Toolkit disappeared while watchdog remained armed; restoring firmware automatic fan control.");
-            await RestoreWithRetryAsync(log, marker, cancellationToken);
+            // A long-lived service may still reference runtime files removed by
+            // .NET servicing. A new process resolves the installed runtime again.
+            await RunRecoveryProcessAsync(
+                CreateRecoveryStart(Path.GetFileName(markerPath)),
+                TimeSpan.FromSeconds(30), cancellationToken);
             File.Delete(markerPath);
             log.Info("Firmware automatic fan control was restored; watchdog is stopping.");
         }
@@ -131,6 +135,77 @@ internal sealed class FanWatchdogService : ServiceBase
         if (marker is null || marker.ProcessId <= 0 || marker.ProcessStartUtcTicks <= 0 || marker.DeclaredFanCount is not (1 or 2))
             throw new InvalidDataException("The watchdog marker is invalid.");
         return marker;
+    }
+
+    internal static ProcessStartInfo CreateRecoveryStart(string markerName)
+    {
+        _ = ResolveMarkerPath([markerName]);
+        var start = new ProcessStartInfo
+        {
+            FileName = Path.Combine(AppContext.BaseDirectory, "ThinkBookToolkit.Guardian.exe"),
+            WorkingDirectory = AppContext.BaseDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        start.ArgumentList.Add("--restore-fans");
+        start.ArgumentList.Add(markerName);
+        return start;
+    }
+
+    internal static async Task RunRecoveryProcessAsync(ProcessStartInfo start, TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeout);
+        using var process = Process.Start(start) ?? throw new IOException("Fan recovery worker could not be started.");
+        try
+        {
+            await process.WaitForExitAsync(deadline.Token);
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException($"Fan recovery worker exited with code {process.ExitCode}; the armed marker is retained.");
+        }
+        catch
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+    }
+
+    internal static bool IsMonitoredProcessAlive(FanWatchdogMarker marker)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(marker.ProcessId);
+            return !process.HasExited && process.StartTime.ToUniversalTime().Ticks == marker.ProcessStartUtcTicks;
+        }
+        catch (ArgumentException) { return false; }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    internal static async Task<int> RunRecoveryWorkerAsync(string markerName)
+    {
+        GuardianLog? log = null;
+        try
+        {
+            var path = ResolveMarkerPath([markerName]);
+            if (!File.Exists(path)) return 0; // Normal exit disarmed during handoff.
+            var marker = ReadMarker(path);
+            log = new GuardianLog(marker.LogDirectory, settingsPath: marker.SettingsPath);
+            if (IsMonitoredProcessAlive(marker))
+                throw new InvalidOperationException("Refusing fan recovery while the monitored Toolkit instance is still running.");
+            log.Info($"Fresh fan recovery worker started; runtime={Environment.Version}; backend={marker.BackendIdentity}.");
+            await RestoreWithRetryAsync(log, marker, CancellationToken.None);
+            log.Info("Fresh fan recovery worker restored firmware automatic control.");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            log ??= new GuardianLog(DefaultLogDirectory());
+            log.Error("Fresh fan recovery failed.", ex);
+            return 1;
+        }
+        finally { log?.Dispose(); }
     }
 
     private static void RestoreFirmwareAutomatic(GuardianLog log, FanWatchdogMarker marker)

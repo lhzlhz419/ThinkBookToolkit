@@ -16,6 +16,7 @@ using NvAPIWrapper.Native;
 using NvAPIWrapper.Native.Exceptions;
 using NvAPIWrapper.Native.GPU;
 using NvAPIWrapper.Native.GPU.Structures;
+using NvAPIWrapper.Native.Interfaces.GPU;
 
 namespace ThinkBookToolkit.Guardian;
 
@@ -46,6 +47,7 @@ internal static class GpuMonitorWorker
     internal const string KillApplicationsCommand = "KILL_APPLICATIONS";
     internal const string ApplyOverclockCommand = "APPLY_OVERCLOCK:";
     internal const string ResetOverclockCommand = "RESET_OVERCLOCK";
+    internal const string ReadOverclockRangesCommand = "READ_OVERCLOCK_RANGES";
 
     public static int Run(string pipeName)
     {
@@ -112,6 +114,12 @@ internal static class GpuMonitorWorker
                         stateReader.KillApplications()));
                     continue;
                 }
+                if (command == ReadOverclockRangesCommand)
+                {
+                    stateReader ??= new GuardianNvidiaStateReader(log);
+                    output.WriteLine(JsonSerializer.Serialize(stateReader.ReadOverclockRanges()));
+                    continue;
+                }
                 if (command.StartsWith(
                         ApplyOverclockCommand,
                         StringComparison.OrdinalIgnoreCase))
@@ -129,7 +137,7 @@ internal static class GpuMonitorWorker
                     stateReader ??= new GuardianNvidiaStateReader(log);
                     output.WriteLine(JsonSerializer.Serialize(
                         stateReader.ApplyOverclock(
-                            new GpuOverclockSettings())));
+                            new GpuOverclockSettings(), reset: true)));
                     continue;
                 }
                 var integratedOnly = string.Equals(
@@ -759,8 +767,26 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
                 killed);
     }
 
+    public GpuWorkerCommandResponse ReadOverclockRanges()
+    {
+        try
+        {
+            _gpu ??= FindLaptopGpu();
+            if (_gpu is null) return GpuWorkerCommandResponse.Failure("The discrete GPU is unavailable.");
+            return GpuWorkerCommandResponse.Ok() with
+            {
+                OverclockRanges = GuardianNvidiaOverclockController.ReadRanges(_gpu)
+            };
+        }
+        catch (Exception ex)
+        {
+            _log.Error("GPU overclock range query failed.", ex);
+            return GpuWorkerCommandResponse.Failure(ex.Message);
+        }
+    }
+
     public GpuWorkerCommandResponse ApplyOverclock(
-        GpuOverclockSettings settings)
+        GpuOverclockSettings settings, bool reset = false)
     {
         if (!GpuOverclockPolicy.TryValidate(settings, out var error))
             return GpuWorkerCommandResponse.Failure(error);
@@ -770,7 +796,7 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
             if (_gpu is null)
                 return GpuWorkerCommandResponse.Failure(
                     "The discrete GPU is unavailable.");
-            GuardianNvidiaOverclockController.Apply(_gpu, settings);
+            GuardianNvidiaOverclockController.Apply(_gpu, settings, reset);
             return GpuWorkerCommandResponse.Ok();
         }
         catch (Exception ex)
@@ -858,24 +884,52 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
 
 internal static class GuardianNvidiaOverclockController
 {
+    internal static GpuOverclockRanges ReadRanges(PhysicalGPU gpu)
+    {
+        var states = GPUApi.GetPerformanceStates20(gpu.Handle);
+        if (!states.Clocks.TryGetValue(PerformanceStateId.P0_3DPerformance, out var clocks))
+            return new(null, null);
+        return RangesFromClocks(clocks);
+    }
+
+    internal static GpuOverclockRanges RangesFromClocks(IReadOnlyList<IPerformanceStates20ClockEntry> clocks)
+    {
+        GpuClockOffsetRange? Range(PublicClockDomain domain)
+        {
+            var entries = clocks.Where(c => c.DomainId == domain).ToArray();
+            if (entries.Length != 1) return null;
+            var entry = entries[0];
+            var delta = entry.FrequencyDeltaInkHz.DeltaRange;
+            return GpuClockOffsetRange.FromKhz(delta.Minimum, delta.Maximum, entry.IsEditable);
+        }
+        return new(Range(PublicClockDomain.Graphics), Range(PublicClockDomain.Memory));
+    }
+
     public static void Apply(
         PhysicalGPU gpu,
-        GpuOverclockSettings settings)
+        GpuOverclockSettings settings, bool reset = false)
     {
+        if (reset && !GpuOverclockPolicy.IsDefault(settings))
+            throw new ArgumentException("Only zero offsets and cleared clock locks can use the reset path.");
+        // Re-read immediately before any write. Never reuse bounds from an
+        // earlier driver session or clamp a stored overclock silently.
+        if (!reset && (settings.CoreFrequencyOffsetEnabled || settings.MemoryFrequencyOffsetEnabled) &&
+            !GpuOverclockPolicy.TryValidateOffsets(settings, ReadRanges(gpu), out var error))
+            throw new ArgumentOutOfRangeException(nameof(settings), error);
         var clockEntries = new List<PerformanceStates20ClockEntryV1>();
         if (settings.CoreFrequencyOffsetEnabled)
         {
             clockEntries.Add(new PerformanceStates20ClockEntryV1(
                 PublicClockDomain.Graphics,
                 new PerformanceStates20ParameterDelta(
-                    settings.CoreFrequencyOffsetMhz * 1000)));
+                    checked(settings.CoreFrequencyOffsetMhz * 1000))));
         }
         if (settings.MemoryFrequencyOffsetEnabled)
         {
             clockEntries.Add(new PerformanceStates20ClockEntryV1(
                 PublicClockDomain.Memory,
                 new PerformanceStates20ParameterDelta(
-                    settings.MemoryFrequencyOffsetMhz * 1000)));
+                    checked(settings.MemoryFrequencyOffsetMhz * 1000))));
         }
         if (clockEntries.Count > 0)
         {

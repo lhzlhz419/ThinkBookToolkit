@@ -23,8 +23,10 @@ internal static class GpuMonitorRecoveryTests
             if (command == "EXIT") return 0;
             if (command == "CRASH") Environment.Exit(123);
             if (command == "HANG") Thread.Sleep(30000);
-            writer.WriteLine(command == "MALFORMED" ? "invalid json" :
-                JsonSerializer.Serialize(GpuWorkerCommandResponse.Ok(affectedProcesses: Environment.ProcessId)));
+            var response = GpuWorkerCommandResponse.Ok(affectedProcesses: Environment.ProcessId);
+            if (command == ThinkBookToolkit.Guardian.GpuMonitorWorker.ReadOverclockRangesCommand)
+                response = response with { OverclockRanges = new(new(-210, 720), new(-1400, 4200)) };
+            writer.WriteLine(command == "MALFORMED" ? "invalid json" : JsonSerializer.Serialize(response));
             if (command == "NO_READ") Thread.Sleep(30000);
         }
         return 0;
@@ -37,6 +39,9 @@ internal static class GpuMonitorRecoveryTests
             TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(200));
         var first = client.QueryApplications();
         Check(first.Success, "Initial query failed.");
+        var ranges = client.ReadOverclockRanges();
+        Check(ranges.Success && ranges.OverclockRanges?.Core == new GpuClockOffsetRange(-210, 720) &&
+            ranges.OverclockRanges.Memory == new GpuClockOffsetRange(-1400, 4200), "Driver offset ranges did not cross the worker pipe.");
 
         // Reproduce the reported loop: a dead peer, buffered data whose flush
         // fails, then EnsureWorker trying to dispose that same writer.

@@ -241,14 +241,14 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
     public MainWindow? FanRuntime => _fanRuntime;
 
-    // GPU inactivity alone preserves the preference. Missing/disabled NVPCF
-    // forces it off; ordinary handoffs still use the manual-toggle path.
+    // Saved preference is user intent; effective activation additionally needs
+    // a live GPU and a successful NVPCF probe.
     internal bool NvApiGpuPowerEnabled { get; private set; }
 
     internal bool NvApiGpuPowerVisible { get; private set; }
     private DateTimeOffset _nextNvApiProbe;
     private bool _nvApiDefaultsResetPending;
-    private bool _nvApiDisableSavePending;
+    private bool _nvApiSuspensionSavePending;
     private bool _nvApiGpuWasActive;
     private int _nvApiReadFailed;
     private readonly NvPcfDriverDetector _nvPcfDriver = new();
@@ -291,7 +291,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
          temperatures.GpuName.Contains("GeForce", StringComparison.OrdinalIgnoreCase));
 
     private async Task UpdateNvApiAvailabilityAsync(TemperatureSnapshot? temperatures,
-        NvPcfDriverStatus? driverForTesting = null, Func<Task>? probeForTesting = null, Action? saveForTesting = null)
+        NvPcfDriverStatus? driverForTesting = null, Func<Task>? probeForTesting = null, Action? saveForTesting = null,
+        Func<bool, Task<PowerSettingsState>>? switchForTesting = null)
     {
         var driver = driverForTesting ?? await Task.Run(_nvPcfDriver.Capture);
         if (driver is NvPcfDriverStatus.Missing or NvPcfDriverStatus.Disabled or NvPcfDriverStatus.Unavailable)
@@ -307,12 +308,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
             await ForceDisableNvApiAsync("NVPCF 接口读取失败。 / NVPCF interface read failed.", saveForTesting);
             return;
         }
-        if (_nvApiDisableSavePending) SaveForcedNvApiDisable(saveForTesting);
+        if (_nvApiSuspensionSavePending) SaveNvApiSuspension(saveForTesting);
         var active = CanProbeNvApiPower(temperatures);
         var changed = active != _nvApiGpuWasActive;
         _nvApiGpuWasActive = active;
         if (!active && NvApiGpuPowerEnabled)
-            await ChangeNvApiGpuPowerAsync(false, automatic: true);
+            await ChangeNvApiGpuPowerAsync(false, automatic: true, switchForTesting, saveForTesting);
         if (!active) NvApiGpuPowerVisible = false;
         if (!active)
         {
@@ -339,7 +340,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 DateTimeOffset.UtcNow >= _nextNvApiProbe)
             {
                 _nextNvApiProbe = DateTimeOffset.UtcNow.AddSeconds(30);
-                await ChangeNvApiGpuPowerAsync(true, automatic: true);
+                await ChangeNvApiGpuPowerAsync(true, automatic: true, switchForTesting, saveForTesting);
             }
             return;
         }
@@ -387,26 +388,25 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
         NvApiGpuPowerVisible = true;
         if (Settings.UseNvApiGpuPower && Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true)
-            await ChangeNvApiGpuPowerAsync(true, automatic: true);
+            await ChangeNvApiGpuPowerAsync(true, automatic: true, switchForTesting, saveForTesting);
         AvailabilityChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    // Unlike normal handoff, absence of NVPCF must never reset/write the missing
-    // driver or roll back to "enabled" when saving configuration fails.
+    // Stop using an unavailable driver while retaining the user's preference.
+    // Persistence failure must never reactivate the effective backend.
     private async Task ForceDisableNvApiAsync(string detail, Action? saveForTesting)
     {
-        var changed = NvApiGpuPowerVisible || NvApiGpuPowerEnabled || Settings.UseNvApiGpuPower ||
+        var changed = NvApiGpuPowerVisible || NvApiGpuPowerEnabled ||
             Report?.IsAvailable(FeatureIds.NvApiGpuPower) == true;
         Interlocked.Exchange(ref _nvApiReadFailed, 0);
-        if (!changed && !_nvApiDisableSavePending && Report?.Items.FirstOrDefault(i => i.Id == FeatureIds.NvApiGpuPower)?.Detail == detail) return;
+        if (!changed && !_nvApiSuspensionSavePending && Report?.Items.FirstOrDefault(i => i.Id == FeatureIds.NvApiGpuPower)?.Detail == detail) return;
         _powerSettingsLockTimer.Stop();
         await _powerSettingsGate.WaitAsync();
         try
         {
             var wasEnabled = NvApiGpuPowerEnabled;
-            if (wasEnabled || Settings.UseNvApiGpuPower) ResetAcceptedPowerLimits();
-            _nvApiDisableSavePending |= Settings.UseNvApiGpuPower;
-            Settings.UseNvApiGpuPower = false;
+            if (wasEnabled) ResetAcceptedPowerLimits();
+            _nvApiSuspensionSavePending |= changed;
             NvApiGpuPowerEnabled = false;
             NvApiGpuPowerVisible = false;
             _nvApiDefaultsResetPending |= wasEnabled;
@@ -429,7 +429,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     new FeatureAvailability(FeatureIds.NvApiGpuPower, "性能", "NVAPI GPU 功耗调整（Beta）", false, detail)));
                 FeatureAvailabilityCache.Current = Report;
             }
-            if (_nvApiDisableSavePending) SaveForcedNvApiDisable(saveForTesting);
+            if (_nvApiSuspensionSavePending) SaveNvApiSuspension(saveForTesting);
         }
         finally { _powerSettingsGate.Release(); SyncPowerSettingsLockTimer(); }
         if (changed)
@@ -440,19 +440,20 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
-    private void SaveForcedNvApiDisable(Action? saveForTesting)
+    private void SaveNvApiSuspension(Action? saveForTesting)
     {
         try
         {
             if (saveForTesting is null) CurveProfileStore.SaveSettings(Settings);
             else saveForTesting();
-            _nvApiDisableSavePending = false;
+            _nvApiSuspensionSavePending = false;
         }
-        catch (Exception ex) { ToolkitLog.Error("NVAPI was disabled, but saving its disabled preference failed; will retry.", ex); }
+        catch (Exception ex) { ToolkitLog.Error("NVAPI was suspended, but saving the updated power state failed; will retry.", ex); }
     }
 
     internal Task UpdateNvApiAvailabilityForTestingAsync(TemperatureSnapshot? temperatures, NvPcfDriverStatus driver,
-        Func<Task> probe, Action save) => UpdateNvApiAvailabilityAsync(temperatures, driver, probe, save);
+        Func<Task> probe, Action save, Func<bool, Task<PowerSettingsState>>? change = null) =>
+        UpdateNvApiAvailabilityAsync(temperatures, driver, probe, save, change);
     internal bool IntelMmioCpuPowerEnabled =>
         Settings.UseIntelMmioCpuPower &&
         Report?.IsAvailable(FeatureIds.IntelMmioCpuPower) == true;
@@ -1469,7 +1470,8 @@ internal sealed class ToolkitRuntimeService : IDisposable
     public Task<string?> SetNvApiGpuPowerEnabledAsync(bool enabled) =>
         ChangeNvApiGpuPowerAsync(enabled, automatic: false);
 
-    private async Task<string?> ChangeNvApiGpuPowerAsync(bool enabled, bool automatic)
+    private async Task<string?> ChangeNvApiGpuPowerAsync(bool enabled, bool automatic,
+        Func<bool, Task<PowerSettingsState>>? switchForTesting = null, Action? saveForTesting = null)
     {
         if (enabled == NvApiGpuPowerEnabled &&
             (automatic || enabled == Settings.UseNvApiGpuPower))
@@ -1497,23 +1499,37 @@ internal sealed class ToolkitRuntimeService : IDisposable
         var previousTarget = Settings.PowerSettingsLockTarget;
         try
         {
+            if (automatic && enabled && !Settings.UseNvApiGpuPower)
+                return null; // A manual disable may have completed while waiting for the gate.
             if (enabled && (!NvApiGpuPowerVisible || Report?.IsAvailable(FeatureIds.NvApiGpuPower) != true))
                 throw new InvalidOperationException("NVPCF is no longer available.");
             ResetAcceptedPowerLimits();
-            var source = automatic && !enabled
-                ? _cachedPowerSettings ?? Snapshot.PowerSettings ?? NvPcfPowerPolicy.EmptyState()
-                : await Task.Run(ReadPowerSettingsCore);
+            if (!enabled && !NvApiGpuPowerEnabled)
+            {
+                if (automatic) return null;
+                // Cancel a pending automatic restore without touching an unavailable driver.
+                Settings.UseNvApiGpuPower = false;
+                if (saveForTesting is null) CurveProfileStore.SaveSettings(Settings);
+                else saveForTesting();
+                return null;
+            }
             PowerSettingsState confirmed;
-            if (enabled)
-                confirmed = await EnableNvApiGpuPowerCoreAsync(source);
+            if (switchForTesting is not null)
+                confirmed = await switchForTesting(enabled);
             else
-                confirmed = await DisableNvApiGpuPowerCoreAsync(source);
+            {
+                var source = automatic && !enabled
+                    ? _cachedPowerSettings ?? Snapshot.PowerSettings ?? NvPcfPowerPolicy.EmptyState()
+                    : await Task.Run(ReadPowerSettingsCore);
+                confirmed = enabled ? await EnableNvApiGpuPowerCoreAsync(source) : await DisableNvApiGpuPowerCoreAsync(source);
+            }
             NvApiGpuPowerEnabled = enabled;
             if (!automatic)
                 Settings.UseNvApiGpuPower = enabled;
             _cachedPowerSettings = confirmed;
             SyncLegacyPowerLockFields();
-            CurveProfileStore.SaveSettings(Settings);
+            if (saveForTesting is null) CurveProfileStore.SaveSettings(Settings);
+            else saveForTesting();
             changed = true;
             ToolkitLog.Info(
                 $"NVAPI GPU power control changed: enabled={enabled}.");
@@ -1539,7 +1555,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
         if (changed)
         {
-            await EnforcePowerSettingsLockAsync();
+            if (switchForTesting is null) await EnforcePowerSettingsLockAsync();
             OverviewLayoutChanged?.Invoke(this, EventArgs.Empty);
             if (!automatic)
                 await RefreshAsync(force: true);
@@ -2152,6 +2168,15 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return error;
         settings = GpuOverclockPolicy.Normalize(settings);
 
+        if (!applyEvenIfDisabled && (settings.CoreFrequencyOffsetEnabled || settings.MemoryFrequencyOffsetEnabled))
+        {
+            var rangeResponse = await ReadGpuOverclockRangesAsync();
+            if (!rangeResponse.Success || rangeResponse.OverclockRanges is null)
+                return L("无法读取驱动超频范围：", "Could not read driver overclock ranges: ") + rangeResponse.Error;
+            if (!GpuOverclockPolicy.TryValidateOffsets(settings, rangeResponse.OverclockRanges, out error))
+                return error;
+        }
+
         var enabled = Settings.GpuOverclock.Enabled;
         settings.Enabled = enabled;
         if (enabled || applyEvenIfDisabled)
@@ -2163,9 +2188,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     "独立显卡已关闭，当前设置无法应用。",
                     "The discrete GPU is off, so these settings cannot be applied.");
             }
-            var result = await ExecuteGpuOverclockAsync(
-                settings,
-                force: true);
+            var result = applyEvenIfDisabled && GpuOverclockPolicy.IsDefault(settings)
+                ? await ResetGpuOverclockAsync()
+                : await ExecuteGpuOverclockAsync(settings, force: true);
             if (!result.Success)
                 return result.Error;
         }
@@ -2185,6 +2210,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return ex.Message;
         }
     }
+
+    internal Task<GpuWorkerCommandResponse> ReadGpuOverclockRangesAsync() =>
+        Task.Run(() => _fanRuntime is not null
+            ? _fanRuntime.RuntimeReadGpuOverclockRanges()
+            : _temperatureReader?.ReadGpuOverclockRanges() ??
+                GpuWorkerCommandResponse.Failure(L("独立显卡监控不可用。", "Discrete GPU monitoring is unavailable.")));
 
     private Task<GpuWorkerCommandResponse> ExecuteGpuOverclockAsync(
         GpuOverclockSettings settings,

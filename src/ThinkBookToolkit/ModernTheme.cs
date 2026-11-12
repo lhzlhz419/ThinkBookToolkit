@@ -142,6 +142,10 @@ internal static class ModernTheme
             return;
         _windowThemeHandlerRegistered = true;
         EventManager.RegisterClassHandler(
+            typeof(ComboBox),
+            Mouse.PreviewMouseWheelEvent,
+            new MouseWheelEventHandler(OnComboBoxPreviewMouseWheel));
+        EventManager.RegisterClassHandler(
             typeof(Window),
             FrameworkElement.LoadedEvent,
             new RoutedEventHandler((sender, _) =>
@@ -149,6 +153,22 @@ internal static class ModernTheme
                 if (sender is Window window)
                     RefreshWindow(window, _isDark);
             }));
+    }
+
+    private static void OnComboBoxPreviewMouseWheel(object sender, MouseWheelEventArgs args)
+    {
+        var comboBox = (ComboBox)sender;
+        if (comboBox.IsDropDownOpen) return;
+
+        // Stop WPF from changing the focused, closed selector's value.
+        // Re-route scrolling above it so the containing page still scrolls.
+        args.Handled = true;
+        var parent = VisualTreeHelper.GetParent(comboBox) as UIElement ?? comboBox.Parent as UIElement;
+        parent?.RaiseEvent(new MouseWheelEventArgs(args.MouseDevice, args.Timestamp, args.Delta)
+        {
+            RoutedEvent = Mouse.MouseWheelEvent,
+            Source = parent
+        });
     }
 
     private static void ApplyManagedControlStyles(DependencyObject root)

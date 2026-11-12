@@ -12,6 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <RuntimeHostConfigurationOption Include="Switch.System.Windows.Input.Stylus.EnablePointerSupport" Value="true" />
     <ProjectReference Include="..\..\src\ThinkBookToolkit\ThinkBookToolkit.csproj" />
     <ProjectReference Include="..\..\plugins\ThinkBookToolkit.PluginTest\ThinkBookToolkit.PluginTest.csproj" />
     <ProjectReference Include="..\..\plugins\ThinkBookToolkit.PluginTest.Ui\ThinkBookToolkit.PluginTest.Ui.csproj" ReferenceOutputAssembly="false" Private="false" />

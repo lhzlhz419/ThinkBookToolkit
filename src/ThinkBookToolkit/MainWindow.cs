@@ -596,6 +596,12 @@ public sealed class MainWindow : Window
         return _temperatureReader.QueryDiscreteGpuApplications();
     }
 
+    internal GpuWorkerCommandResponse RuntimeReadGpuOverclockRanges()
+    {
+        _temperatureReader ??= new TemperatureReader();
+        return _temperatureReader.ReadGpuOverclockRanges();
+    }
+
     internal GpuWorkerCommandResponse RuntimeKillDiscreteGpuApplications()
     {
         _temperatureReader ??= new TemperatureReader();

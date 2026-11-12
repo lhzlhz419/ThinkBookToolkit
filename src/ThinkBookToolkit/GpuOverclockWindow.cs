@@ -14,6 +14,12 @@ internal sealed class GpuOverclockWindow : Window
     private readonly ToolkitPalette _palette;
     private readonly NumericEditor _coreOffset;
     private readonly NumericEditor _memoryOffset;
+    private readonly TextBlock _coreRangeText = new();
+    private readonly TextBlock _memoryRangeText = new();
+    private readonly Button _refreshRanges = new();
+    private GpuOverclockRanges _ranges = new(null, null);
+    private bool _closed;
+    private bool _readingRanges;
     private readonly FrameworkElement _coreLimitEditor;
     private readonly FrameworkElement _memoryLimitEditor;
     private readonly TextBox _minimumCoreClock = ClockBox();
@@ -58,12 +64,10 @@ internal sealed class GpuOverclockWindow : Window
         var settings = GpuOverclockPolicy.Normalize(
             runtime.Settings.GpuOverclock);
         _coreOffset = new NumericEditor(
-            GpuOverclockPolicy.MinimumCoreOffsetMhz,
-            GpuOverclockPolicy.MaximumCoreOffsetMhz,
+            0, 0,
             settings.CoreFrequencyOffsetMhz);
         _memoryOffset = new NumericEditor(
-            GpuOverclockPolicy.MinimumMemoryOffsetMhz,
-            GpuOverclockPolicy.MaximumMemoryOffsetMhz,
+            0, 0,
             settings.MemoryFrequencyOffsetMhz);
         _minimumCoreClock.Text =
             settings.MinimumCoreFrequencyMhz?.ToString(
@@ -85,6 +89,9 @@ internal sealed class GpuOverclockWindow : Window
             _memoryOffsetEnabled,
             _memoryOffset.View,
             settings.MemoryFrequencyOffsetEnabled);
+        _coreOffsetEnabled.Click += (_, _) => SyncOffsetEditors();
+        _memoryOffsetEnabled.Click += (_, _) => SyncOffsetEditors();
+        SyncOffsetEditors();
         _coreLimitEditor = ClockLimitEditor(
             _minimumCoreClock,
             _maximumCoreClock);
@@ -118,14 +125,19 @@ internal sealed class GpuOverclockWindow : Window
         });
         root.Children.Add(Field(
             T("核心频率偏移量", "Core frequency offset"),
-            T("范围 -500 到 +500 MHz", "Range: -500 to +500 MHz"),
+            T("正在读取驱动范围…", "Reading driver range…"),
             _coreOffset.View,
-            _coreOffsetEnabled));
+            _coreOffsetEnabled, _coreRangeText));
         root.Children.Add(Field(
             T("显存频率偏移量", "Memory frequency offset"),
-            T("范围 -1000 到 +3000 MHz", "Range: -1000 to +3000 MHz"),
+            T("正在读取驱动范围…", "Reading driver range…"),
             _memoryOffset.View,
-            _memoryOffsetEnabled));
+            _memoryOffsetEnabled, _memoryRangeText));
+        _refreshRanges.Content = T("刷新驱动范围", "Refresh driver ranges");
+        _refreshRanges.HorizontalAlignment = HorizontalAlignment.Left;
+        _refreshRanges.Margin = new Thickness(0, 0, 0, 9);
+        _refreshRanges.Click += async (_, _) => await RefreshRangesAsync();
+        root.Children.Add(_refreshRanges);
         root.Children.Add(Field(
             T("限制核心频率", "Limit core frequency"),
             T(
@@ -207,7 +219,55 @@ internal sealed class GpuOverclockWindow : Window
         Grid.SetColumn(right, 1);
         buttons.Children.Add(right);
         root.Children.Add(buttons);
-        Content = root;
+        Content = new ScrollViewer { Content = root, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        Loaded += async (_, _) => await RefreshRangesAsync();
+        Closed += (_, _) => _closed = true;
+    }
+
+    private async Task RefreshRangesAsync()
+    {
+        if (_readingRanges || _closed) return;
+        _readingRanges = true;
+        SetButtonsEnabled(false);
+        _refreshRanges.IsEnabled = false;
+        try
+        {
+            var response = await _runtime.ReadGpuOverclockRangesAsync();
+            if (!_closed) ApplyRanges(response);
+        }
+        catch (Exception ex)
+        {
+            if (!_closed) ApplyRanges(GpuWorkerCommandResponse.Failure(ex.GetBaseException().Message));
+        }
+        finally
+        {
+            _readingRanges = false;
+            if (!_closed) { SetButtonsEnabled(true); _refreshRanges.IsEnabled = true; }
+        }
+    }
+
+    internal void ApplyRanges(GpuWorkerCommandResponse response)
+    {
+        _ranges = response.Success && response.OverclockRanges is { } ranges ? ranges : new(null, null);
+        _coreOffset.SetRange(_ranges.Core);
+        _memoryOffset.SetRange(_ranges.Memory);
+        string Label(GpuClockOffsetRange? range) => range is null
+            ? T("驱动未提供可编辑范围", "Editable driver range unavailable")
+            : T($"驱动范围 {range.MinimumMhz} ～ {range.MaximumMhz} MHz", $"Driver range: {range.MinimumMhz} to {range.MaximumMhz} MHz");
+        _coreRangeText.Text = Label(_ranges.Core);
+        _memoryRangeText.Text = Label(_ranges.Memory);
+        SyncOffsetEditors();
+        _status.Foreground = Brush(_palette.Danger);
+        _status.Text = response.Success ? "" : T("读取驱动范围失败：", "Could not read driver ranges: ") + response.Error;
+        if (response.Success && !TryCollect(out _, out var invalid))
+            _status.Text = invalid;
+    }
+
+    private void SyncOffsetEditors()
+    {
+        _coreOffset.View.IsEnabled = _coreOffsetEnabled.IsChecked == true && _ranges.Core is not null;
+        _memoryOffset.View.IsEnabled = _memoryOffsetEnabled.IsChecked == true && _ranges.Memory is not null;
     }
 
     private FrameworkElement ClockLimitEditor(
@@ -242,7 +302,8 @@ internal sealed class GpuOverclockWindow : Window
         string title,
         string description,
         UIElement editor,
-        CheckBox enabled)
+        CheckBox enabled,
+        TextBlock? descriptionBlock = null)
     {
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition
@@ -261,13 +322,13 @@ internal sealed class GpuOverclockWindow : Window
             Text = title,
             FontWeight = FontWeights.SemiBold
         });
-        label.Children.Add(new TextBlock
-        {
-            Text = description,
-            Foreground = Brush(_palette.Muted),
-            FontSize = 12,
-            Margin = new Thickness(0, 3, 0, 0)
-        });
+        descriptionBlock ??= new TextBlock();
+        descriptionBlock.Text = description;
+        descriptionBlock.Foreground = Brush(_palette.Muted);
+        descriptionBlock.FontSize = 12;
+        descriptionBlock.TextWrapping = TextWrapping.Wrap;
+        descriptionBlock.Margin = new Thickness(0, 3, 0, 0);
+        label.Children.Add(descriptionBlock);
         grid.Children.Add(label);
         Grid.SetColumn(editor, 1);
         grid.Children.Add(editor);
@@ -347,6 +408,7 @@ internal sealed class GpuOverclockWindow : Window
         SetOption(_memoryOffsetEnabled, _memoryOffset.View, true);
         SetOption(_coreLimitEnabled, _coreLimitEditor, true);
         SetOption(_memoryLimitEnabled, _memoryLimitEditor, true);
+        SyncOffsetEditors();
         SetButtonsEnabled(false);
         _status.Text = T("正在恢复默认设置……", "Restoring defaults…");
         var error = await _runtime.SaveGpuOverclockSettingsAsync(
@@ -398,20 +460,23 @@ internal sealed class GpuOverclockWindow : Window
         out string error)
     {
         settings = new GpuOverclockSettings();
-        if (!_coreOffset.TryGetValue(out var core))
+        if (!_coreOffset.TryGetValue(out var core, validateRange: false))
         {
-            error = T(
-                "核心频率偏移量必须在 -500 到 +500 之间。",
-                "Core frequency offset must be between -500 and +500.");
+            error = T("核心频率偏移量必须是整数。", "Core frequency offset must be an integer.");
             return false;
         }
-        if (!_memoryOffset.TryGetValue(out var memory))
+        if (!_memoryOffset.TryGetValue(out var memory, validateRange: false))
         {
-            error = T(
-                $"显存频率偏移量必须在 {GpuOverclockPolicy.MinimumMemoryOffsetMhz} 到 +{GpuOverclockPolicy.MaximumMemoryOffsetMhz} 之间。",
-                $"Memory frequency offset must be between {GpuOverclockPolicy.MinimumMemoryOffsetMhz} and +{GpuOverclockPolicy.MaximumMemoryOffsetMhz}.");
+            error = T("显存频率偏移量必须是整数。", "Memory frequency offset must be an integer.");
             return false;
         }
+        var offsets = new GpuOverclockSettings
+        {
+            CoreFrequencyOffsetEnabled = _coreOffsetEnabled.IsChecked == true,
+            MemoryFrequencyOffsetEnabled = _memoryOffsetEnabled.IsChecked == true,
+            CoreFrequencyOffsetMhz = core, MemoryFrequencyOffsetMhz = memory
+        };
+        if (!GpuOverclockPolicy.TryValidateOffsets(offsets, _ranges, out error)) return false;
 
         var minimumText = _minimumCoreClock.Text.Trim();
         var maximumText = _maximumCoreClock.Text.Trim();
@@ -493,6 +558,7 @@ internal sealed class GpuOverclockWindow : Window
         _restore.IsEnabled = enabled;
         _apply.IsEnabled = enabled;
         _applyAndClose.IsEnabled = enabled;
+        _refreshRanges.IsEnabled = enabled;
     }
 
     private static void BindOption(
@@ -578,7 +644,7 @@ internal sealed class GpuOverclockWindow : Window
                     return;
                 }
                 _syncing = true;
-                Slider.Value = Math.Clamp(parsed, minimum, maximum);
+                Slider.Value = Math.Clamp(parsed, Slider.Minimum, Slider.Maximum);
                 _syncing = false;
             };
         }
@@ -587,14 +653,28 @@ internal sealed class GpuOverclockWindow : Window
         public TextBox TextBox { get; }
         public StackPanel View { get; }
 
-        public bool TryGetValue(out int value) =>
+        public bool TryGetValue(out int value, bool validateRange = true) =>
             int.TryParse(
                 TextBox.Text,
                 NumberStyles.Integer,
                 CultureInfo.InvariantCulture,
                 out value) &&
-            value >= Slider.Minimum &&
-            value <= Slider.Maximum;
+            (!validateRange || value >= Slider.Minimum && value <= Slider.Maximum);
+
+        public void SetRange(GpuClockOffsetRange? range)
+        {
+            _syncing = true;
+            try
+            {
+                Slider.Minimum = range?.MinimumMhz ?? 0;
+                Slider.Maximum = range?.MaximumMhz ?? 0;
+                Slider.IsEnabled = range is not null;
+                if (int.TryParse(TextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+                    Slider.Value = Math.Clamp(value, Slider.Minimum, Slider.Maximum);
+                // Keep out-of-range text so an old saved value is not silently changed.
+            }
+            finally { _syncing = false; }
+        }
 
         public void SetValue(int value)
         {

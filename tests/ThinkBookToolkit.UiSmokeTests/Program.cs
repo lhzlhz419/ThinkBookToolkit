@@ -24,6 +24,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 3 && args[0] == "--recovery-test-helper")
+            return RecoveryStartupTests.Helper(args[1], args[2]);
         if (args.Length == 3 && args[0] == "--audit-helper") return AuditFixTests.Helper(args[1], args[2]);
         if (args.Length == 1 && args[0] == "--test-bounded-process")
         {
@@ -64,6 +66,12 @@ internal static class Program
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         try
         {
+            if (args.Contains("--test-recovery-startup"))
+            {
+                RecoveryStartupTests.VerifyPointerStartup();
+                System.Threading.Tasks.Task.Run(RecoveryStartupTests.VerifyRecoveryWorkerAsync).GetAwaiter().GetResult();
+                return 0;
+            }
             if (args.Contains("--test-plugins"))
             {
                 PluginSystemTests.Run(args.Length > 1 ? args[1] : null); Console.WriteLine("Plugin system tests passed."); return 0;
@@ -86,6 +94,8 @@ internal static class Program
     private static void RunSmokeTests()
     {
         ThemeColorTests.Run();
+        ComboBoxWheelTests.Run();
+        GpuOverclockRangeTests.Run();
         AutomationCompletionTests.Run();
         PowerLockReadbackTests.Run();
         DisplayAndResumeTests.Run();
@@ -214,7 +224,7 @@ internal static class Program
         using var runtime = new ToolkitRuntimeService(settings);
         ModernTheme.Apply(Application.Current, runtime.IsDark);
         var window = new ToolkitMainWindow(runtime, enableHardwareDetection: false);
-        Assert(window.Title == "ThinkBook Toolkit v1.1.0",
+        Assert(window.Title == "ThinkBook Toolkit v1.1.1",
             "The native title bar does not show the current application version.");
         var backgroundLayer = typeof(ToolkitMainWindow)
             .GetField(
@@ -329,7 +339,7 @@ internal static class Program
         using (var versionSettingsPage = new ToolkitSettingsPage(runtime))
         {
             Assert(ContainsText(versionSettingsPage, "当前版本") &&
-                   ContainsText(versionSettingsPage, "v1.1.0") &&
+                   ContainsText(versionSettingsPage, "v1.1.1") &&
                    ContainsButtonText(versionSettingsPage, "检查更新") &&
                    ContainsText(versionSettingsPage, "软件更新检查") &&
                    ContainsText(versionSettingsPage, "自定义游戏检测路径"),
@@ -2349,13 +2359,13 @@ internal static class Program
         Assert(!GpuOverclockPolicy.TryValidate(
                    new GpuOverclockSettings
                    {
-                       CoreFrequencyOffsetMhz = 501
+                       CoreFrequencyOffsetMhz = int.MaxValue
                    },
                    out _) &&
                !GpuOverclockPolicy.TryValidate(
                    new GpuOverclockSettings
                    {
-                       MemoryFrequencyOffsetMhz = -1001
+                       MemoryFrequencyOffsetMhz = int.MinValue
                    },
                    out _) &&
                !GpuOverclockPolicy.TryValidate(
@@ -2402,13 +2412,13 @@ internal static class Program
                 MinimumMemoryFrequencyMhz = 12000,
                 MaximumMemoryFrequencyMhz = 6000
             });
-        Assert(normalized.CoreFrequencyOffsetMhz == 500 &&
-               normalized.MemoryFrequencyOffsetMhz == -1000 &&
+        Assert(normalized.CoreFrequencyOffsetMhz == 800 &&
+               normalized.MemoryFrequencyOffsetMhz == -4000 &&
                normalized.MinimumCoreFrequencyMhz is null &&
                normalized.MaximumCoreFrequencyMhz is null &&
                normalized.MinimumMemoryFrequencyMhz is null &&
                normalized.MaximumMemoryFrequencyMhz is null,
-            "Legacy invalid GPU overclock settings are not normalized safely on load.");
+            "GPU offset preferences must be preserved until the actual driver range is available.");
         Assert(GpuOverclockPolicy.Signature(valid) !=
                GpuOverclockPolicy.Signature(new GpuOverclockSettings
                {
@@ -2453,6 +2463,7 @@ internal static class Program
             runtime,
             font,
             14);
+        overclockWindow.ApplyRanges(GpuWorkerCommandResponse.Ok() with { OverclockRanges = new(new(-210, 720), new(-1400, 4200)) });
         var coreEditor = GetPrivateField<object>(
             overclockWindow,
             "_coreOffset");
@@ -2477,9 +2488,9 @@ internal static class Program
             BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(overclockWindow, collectArguments) ?? false);
         var collectedSettings = collectArguments[0] as GpuOverclockSettings;
-        Assert(coreSlider.Minimum == -500 && coreSlider.Maximum == 500 &&
-               memorySlider.Minimum == -1000 &&
-               memorySlider.Maximum == 3000 &&
+        Assert(coreSlider.Minimum == -210 && coreSlider.Maximum == 720 &&
+               memorySlider.Minimum == -1400 &&
+               memorySlider.Maximum == 4200 &&
                collected &&
                collectedSettings?.MinimumMemoryFrequencyMhz == 6000 &&
                collectedSettings.MaximumMemoryFrequencyMhz == 12000 &&
@@ -2504,7 +2515,7 @@ internal static class Program
                    .HorizontalAlignment == HorizontalAlignment.Left &&
                Descendants(overclockWindow).OfType<Button>()
                    .Select(button => button.Content?.ToString())
-                   .SequenceEqual(["恢复默认", "保存", "保存并关闭"]),
+                   .SequenceEqual(["刷新驱动范围", "恢复默认", "保存", "保存并关闭"]),
             "The disabled GPU-overclock dialog does not expose the requested ranges and save actions.");
 
         var applicationsWindow = new GpuApplicationsWindow(
@@ -3295,7 +3306,7 @@ internal static class Program
 
     private static void VerifyApplicationUpdateService()
     {
-        Assert(ApplicationUpdateService.CurrentVersionText == "1.1.0",
+        Assert(ApplicationUpdateService.CurrentVersionText == "1.1.1",
             "The application version is not the expected release version.");
         var release = ApplicationUpdateService.ParseReleaseJson(
             "{\"tag_name\":\"v1.2.0\",\"html_url\":" +
