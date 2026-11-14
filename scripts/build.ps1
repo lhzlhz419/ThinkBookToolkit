@@ -362,8 +362,8 @@ if ($Publish -or $Installer) {
 
         $translationDirectory = Join-Path $projectRoot ".tmp"
         $translation = Join-Path $translationDirectory "ChineseSimplified.isl"
-        $translationHash = "6753BE2C5E2740D859900FD902824DB2EC568DA5C5B52486524C9762D778B0B0"
-        $translationUrl = "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl"
+        $translationHash = "E0B0B350E2245F3C5E65586DFE43D574F6E7F06F2261149ABA284954B3FC9A8D"
+        $translationUrl = "https://raw.githubusercontent.com/jrsoftware/issrc/6ef32198ef1f7b7b375cd4b6b90896c2a58eb4c2/Files/Languages/ChineseSimplified.isl"
         $translationIsValid =
         (Test-Path -LiteralPath $translation) -and
         ((Get-FileHash -LiteralPath $translation -Algorithm SHA256).Hash -eq $translationHash)
