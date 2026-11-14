@@ -269,51 +269,122 @@ internal static partial class RefreshRateController
         DisplayRefreshRateMode mode,
         out string error)
     {
-        try
-        {
-            var display = FindDisplay(deviceName);
-            if (display is not null)
+        var success = TryApplyWithFallback(
+            mode, OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000),
+            () =>
             {
+                var display = FindDisplay(deviceName) ?? throw new InvalidOperationException("The active display path was not found.");
                 ApplyUsingDisplayConfig(display, mode);
+                if (!mode.IsDynamic)
+                    VerifyFixedRefreshRate(mode.Frequency, () => ReadCurrentRefreshRate(deviceName), Thread.Sleep);
+            },
+            () => ApplyUsingDevMode(deviceName, mode.Frequency),
+            out error);
+        if (!success)
+            ToolkitLog.Warning($"Refresh-rate change failed: device={deviceName}; target={mode.DisplayName}; OS={Environment.OSVersion.Version}; {error}");
+        return success;
+    }
+
+    internal static bool TryApplyWithFallback(DisplayRefreshRateMode mode, bool supportsVirtualRefreshRate,
+        Action applyDisplayConfig, Action applyDevMode, out string error)
+    {
+        if (mode.IsDynamic && !supportsVirtualRefreshRate)
+        {
+            error = "动态刷新率需要 Windows 11。 / Dynamic Refresh Rate requires Windows 11.";
+            return false;
+        }
+        string? displayConfigError = null;
+        // The bundled DisplayConfig wrapper adds QDC/SDC virtual-refresh-rate
+        // flags in virtual-aware mode. Windows 10 rejects those Windows 11 flags.
+        if (supportsVirtualRefreshRate)
+        {
+            try
+            {
+                applyDisplayConfig();
                 error = string.Empty;
                 return true;
             }
-            if (mode.IsDynamic)
+            catch (Exception ex)
             {
-                error = "The internal display path required for Dynamic Refresh Rate was not found.";
-                return false;
+                displayConfigError = ex.GetBaseException().Message;
+                if (mode.IsDynamic)
+                {
+                    error = "DisplayConfig: " + displayConfigError;
+                    return false;
+                }
+                ToolkitLog.Warning("DisplayConfig refresh-rate change failed; trying ChangeDisplaySettingsEx: " + displayConfigError);
             }
+        }
+        try
+        {
+            applyDevMode();
+            error = string.Empty;
+            return true;
         }
         catch (Exception ex)
         {
-            error = ex.GetBaseException().Message;
+            error = (displayConfigError is null ? "" : "DisplayConfig: " + displayConfigError + Environment.NewLine) +
+                "ChangeDisplaySettingsEx: " + ex.GetBaseException().Message;
             return false;
         }
+    }
 
+    private static void ApplyUsingDevMode(string deviceName, uint frequency)
+    {
         var current = CreateDevMode();
         if (!EnumDisplaySettings(
                 deviceName,
                 CurrentSettings,
                 ref current))
         {
-            error = "The current display settings could not be read.";
-            return false;
+            throw new InvalidOperationException("The current display settings could not be read.");
         }
-        current.dmDisplayFrequency = mode.Frequency;
+        // Preserve resolution, position, orientation, depth and scan mode.
+        current.dmDisplayFrequency = frequency;
         current.dmFields |= DisplayFrequencyField;
-        var result = ChangeDisplaySettingsEx(
-            deviceName,
-            ref current,
-            IntPtr.Zero,
-            UpdateRegistry,
-            IntPtr.Zero);
-        if (result != Successful)
+        ApplyFixedRefreshRate(frequency,
+            flags => ChangeDisplaySettingsEx(deviceName, ref current, IntPtr.Zero, flags, IntPtr.Zero),
+            () => ReadCurrentRefreshRate(deviceName), Thread.Sleep);
+    }
+
+    private static uint? ReadCurrentRefreshRate(string deviceName)
+    {
+        var current = CreateDevMode();
+        return EnumDisplaySettings(deviceName, CurrentSettings, ref current) ? current.dmDisplayFrequency : null;
+    }
+
+    internal static void ApplyFixedRefreshRate(uint frequency, Func<uint, int> change, Func<uint?> read, Action<int> delay)
+    {
+        CheckDisplayChange(change(TestDisplayMode), "测试 / test");
+        CheckDisplayChange(change(UpdateRegistry), "应用 / apply");
+        VerifyFixedRefreshRate(frequency, read, delay);
+    }
+
+    private static void CheckDisplayChange(int result, string stage)
+    {
+        if (result == Successful) return;
+        var detail = result switch
         {
-            error = $"Windows rejected the refresh-rate change (code {result}).";
-            return false;
+            1 => "系统要求重启才能应用。 / Windows requires a restart.",
+            -2 => "驱动不支持此显示模式。 / Display mode unsupported by the driver.",
+            -3 => "无法保存显示配置。 / Display configuration could not be saved.",
+            -4 => "显示参数无效。 / Invalid display parameters.",
+            -5 => "显示标志无效。 / Invalid display flags.",
+            _ => "显示驱动拒绝了修改。 / The display driver rejected the change."
+        };
+        throw new InvalidOperationException($"{stage}: {detail} (code {result})");
+    }
+
+    internal static void VerifyFixedRefreshRate(uint frequency, Func<uint?> read, Action<int> delay)
+    {
+        uint? actual = null;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            actual = read();
+            if (actual == frequency) return;
+            if (attempt < 9) delay(100);
         }
-        error = string.Empty;
-        return true;
+        throw new InvalidOperationException($"刷新率读回未确认：请求 {frequency} Hz，当前 {actual?.ToString() ?? "未知"} Hz。 / Refresh-rate readback did not confirm the change.");
     }
 
     private static (bool DynamicSupported, bool DynamicActive, uint DynamicMaximumHz)
@@ -379,6 +450,8 @@ internal static partial class RefreshRateController
             DisplayFixedOutput.Default);
         var source = screen.ToPathDisplaySource();
         var paths = PathInfo.GetActivePaths(virtualModeAware: true);
+        if (!paths.Any(path => path.DisplaySource == source))
+            throw new InvalidOperationException("The requested display source is no longer active.");
         var target = paths
             .Where(path => path.DisplaySource == source)
             .SelectMany(path => path.TargetsInfo)
@@ -592,6 +665,7 @@ internal static partial class RefreshRateController
     private const int DisplayDevicePrimary = 0x4;
     private const int Successful = 0;
     private const uint UpdateRegistry = 0x1;
+    private const uint TestDisplayMode = 0x2;
     private const int DisplayFrequencyField = 0x00400000;
     private const uint InternalOutputTechnology = 0x80000000;
     private const uint EmbeddedDisplayPortTechnology = 11;

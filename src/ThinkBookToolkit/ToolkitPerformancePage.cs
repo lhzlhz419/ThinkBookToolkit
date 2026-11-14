@@ -14,6 +14,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     IControlStateRefreshable
 {
     private readonly bool _coolingOnly;
+    private readonly List<FrameworkElement> _quietPerformanceLinkRows = new();
     private readonly bool _hasSecondFan;
     private readonly ComboBox _itsMode = new() { MinWidth = 190 };
     private readonly Button _performanceModeOrderSettings;
@@ -148,13 +149,21 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         _advancedCurve.SetFanCount(_hasSecondFan ? 2 : 1);
         ConfigureCurves();
         DataContext = new PerformanceViewModel(runtime);
-        Content = BuildLayout();
-        WireEvents();
-        UpdateFanDraftStatus();
-        UpdatePowerStatus();
+        try
+        {
+            Content = BuildLayout();
+            WireEvents();
+            UpdateFanDraftStatus();
+            UpdatePowerStatus();
+            SyncRuntimeControls();
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
         runtime.SnapshotChanged += OnSnapshotChanged;
         runtime.FnKeyTakeoverChanged += OnFnKeyTakeoverChanged;
-        SyncRuntimeControls();
         Loaded += async (_, _) => await LoadAsync();
     }
 
@@ -460,7 +469,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
                 "切换性能模式时，自动切换风扇策略",
                 "Switch fan strategy with performance mode"),
             L(
-                "为四种性能模式分别指定风扇策略；确认模式切换成功并等待 2 秒后应用。",
+                "为各性能模式分别指定风扇策略；确认模式切换成功并等待 2 秒后应用。",
                 "Assign a fan strategy to each performance mode. It is applied two seconds after the mode switch is confirmed."),
             _linkFanStrategyToPerformanceMode));
 
@@ -504,10 +513,12 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
                     SaveFanPerformanceLink();
             };
             _fanStrategyByPerformanceMode[mode] = selector;
-            bindingGrid.Children.Add(SettingRow(
+            var bindingRow = SettingRow(
                 ItsModeDisplayName(mode),
                 string.Empty,
-                selector));
+                selector);
+            bindingGrid.Children.Add(bindingRow);
+            if (mode == ItsMode.QuietPerformance) _quietPerformanceLinkRows.Add(bindingRow);
         }
         _fanStrategyBindings.Children.Add(bindingGrid);
         content.Children.Add(_fanStrategyBindings);
@@ -552,7 +563,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
                     SaveFanPerformanceLink();
             };
             _fanControlNoSwitchModes[mode] = toggle;
-            whitelist.Children.Add(new Border
+            var whitelistRow = new Border
             {
                 Background = Brush(Palette.SurfaceRaised),
                 BorderBrush = Brush(Palette.Border),
@@ -560,7 +571,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(12, 9, 12, 9),
                 Child = toggle
-            });
+            };
+            whitelist.Children.Add(whitelistRow);
+            if (mode == ItsMode.QuietPerformance) _quietPerformanceLinkRows.Add(whitelistRow);
         }
         _fanControlWhitelist.Children.Add(new TextBlock
         {
@@ -640,6 +653,19 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         _syncing = true;
         var settings = PerformanceFanLinkDefaults.Normalize(
             Runtime.Settings.PerformanceFanLink);
+        // This capability is populated only by the modern Dispatcher/BIOS probe.
+        var quietSupported = Runtime.Snapshot.QuietPerformance.Available;
+        foreach (var row in _quietPerformanceLinkRows)
+            row.Visibility = quietSupported ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var item in _fanControlTargetMode.Items.OfType<ComboBoxItem>().Where(i => Equals(i.Tag, ItsMode.QuietPerformance)))
+        {
+            // Keep an existing configuration readable when a driver temporarily
+            // loses capability, without silently changing the saved target.
+            item.Visibility = quietSupported || settings.FanControlTargetMode == ItsMode.QuietPerformance ? Visibility.Visible : Visibility.Collapsed;
+            item.IsEnabled = quietSupported;
+            item.Content = quietSupported ? ItsModeDisplayName(ItsMode.QuietPerformance)
+                : L("静音性能模式（当前不可用）", "Quiet performance (currently unavailable)");
+        }
         _linkFanStrategyToPerformanceMode.IsChecked =
             settings.SwitchFanStrategyWithPerformanceMode;
         _fanStrategyBindings.Visibility =
@@ -679,6 +705,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         ItsMode.PowerSaving => L("省电模式", "Power saving"),
         ItsMode.Intelligent => L("智能模式", "Intelligent"),
         ItsMode.Performance => L("性能模式", "Performance"),
+        ItsMode.QuietPerformance => L("静音性能模式", "Quiet performance"),
         ItsMode.Geek => L("极客模式", "Geek"),
         _ => L("不切换", "Do not switch")
     };
@@ -2478,7 +2505,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         _syncing = true;
         var snapshot = Runtime.Snapshot;
         var itsPath = new ItsModeDetector().GetControlPath();
-        SyncPerformanceChoices(_itsMode, snapshot, itsPath, Runtime.IsChinese);
+        if (!_coolingOnly && _itsMode.Items.Count > 0)
+            SyncPerformanceChoices(_itsMode, snapshot, itsPath, Runtime.IsChinese);
         foreach (var item in _gpuMode.Items.OfType<ComboBoxItem>())
             item.Visibility = item.Tag is GpuWorkingMode mode && snapshot.SupportedGpuModes.Contains(mode)
                 ? Visibility.Visible
@@ -2565,6 +2593,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         _fanLimitsButton.IsEnabled =
             Runtime.Report?.IsAvailable(FeatureIds.FanControl) == true &&
             !snapshot.FullSpeed;
+        SyncFanPerformanceLinkControls();
         _syncing = false;
         SetModeControls(true);
     }

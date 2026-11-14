@@ -88,9 +88,9 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         var quietItem = selector.Items.OfType<ComboBoxItem>().FirstOrDefault(i => Equals(i.Tag, ItsMode.QuietPerformance));
         if (state.SupportsSelection(ItsMode.QuietPerformance, path))
         {
-            if (quietItem is null)
+            var ordinary = selector.Items.OfType<ComboBoxItem>().FirstOrDefault(i => Equals(i.Tag, ItsMode.Performance));
+            if (quietItem is null && ordinary is not null)
             {
-                var ordinary = selector.Items.OfType<ComboBoxItem>().First(i => Equals(i.Tag, ItsMode.Performance));
                 selector.Items.Insert(selector.Items.IndexOf(ordinary) + 1, new ComboBoxItem
                 {
                     Content = chinese ? "静音性能模式" : "Quiet performance", Tag = ItsMode.QuietPerformance

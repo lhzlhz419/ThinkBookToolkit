@@ -10,6 +10,7 @@ internal static class PerformanceFanLinkDefaults
         ItsMode.Intelligent,
         ItsMode.PowerSaving,
         ItsMode.Performance,
+        ItsMode.QuietPerformance,
         ItsMode.Geek
     ];
 
@@ -72,6 +73,16 @@ internal static class PerformanceFanLinkDefaults
             normalized.NoSwitchModes[
                 normalized.FanControlTargetMode.ToString()] = true;
         }
+        // Older versions used the Performance linkage for both BIOS flag states.
+        // Preserve that behavior until the user configures Quiet Performance separately.
+        var quietKey = ItsMode.QuietPerformance.ToString();
+        var performanceKey = ItsMode.Performance.ToString();
+        if (value?.FanStrategiesByMode?.ContainsKey(quietKey) != true)
+        {
+            normalized.FanStrategiesByMode[quietKey] = NormalizeSelection(normalized.FanStrategiesByMode[performanceKey]);
+        }
+        if (value?.NoSwitchModes?.ContainsKey(quietKey) != true && normalized.FanControlTargetMode != ItsMode.QuietPerformance)
+            normalized.NoSwitchModes[quietKey] = normalized.NoSwitchModes[performanceKey];
         return normalized;
     }
 

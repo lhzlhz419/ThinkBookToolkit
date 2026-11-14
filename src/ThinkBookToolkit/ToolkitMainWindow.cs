@@ -105,6 +105,7 @@ internal sealed class ToolkitMainWindow : Window
         Content = BuildLayout();
         _availabilitySignature = AvailabilitySignature();
         ModernTheme.RefreshWindow(this, _runtime.IsDark);
+        Activated += (_, _) => ModernTheme.RefreshWindow(this, _runtime.IsDark);
 
         _toastTimer.Tick += (_, _) =>
         {
@@ -1175,6 +1176,7 @@ internal sealed class ToolkitMainWindow : Window
     {
         if (IsVisible && WindowState != WindowState.Minimized)
         {
+            ModernTheme.RefreshWindow(this, _runtime.IsDark);
             RestoreWindowHardwareRendering();
             ApplyBackgroundImage();
             _backgroundImage?.SetPlaybackActive(true);

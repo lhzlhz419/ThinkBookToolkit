@@ -163,6 +163,12 @@ internal static class ItsModeTransitionTests
         var selector = new System.Windows.Controls.ComboBox();
         foreach (var raw in PerformanceModeCycle.DefaultOrder) selector.Items.Add(new System.Windows.Controls.ComboBoxItem { Tag = raw });
         var snapshot = ToolkitRuntimeSnapshot.Empty with { ItsMode = ItsMode.Performance, QuietPerformance = on };
+        var empty = new System.Windows.Controls.ComboBox();
+        ToolkitPageBase.SyncPerformanceChoices(empty, snapshot, ItsModeControlPath.ModernDispatcher, true);
+        Check(empty.Items.Count == 0, "An uninitialized selector was populated or threw during quiet-mode discovery.");
+        empty.Items.Add(new System.Windows.Controls.ComboBoxItem { Tag = ItsMode.Intelligent });
+        ToolkitPageBase.SyncPerformanceChoices(empty, snapshot, ItsModeControlPath.ModernDispatcher, true);
+        Check(empty.Items.Count == 1, "A selector lacking the Performance insertion point was corrupted.");
         ToolkitPageBase.SyncPerformanceChoices(selector, snapshot, ItsModeControlPath.ModernDispatcher, true);
         Check(selector.Items.Count == 5 && (selector.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() == "静音性能模式",
             "Verified quiet performance is missing or incorrectly selected.");

@@ -91,6 +91,16 @@ not be undone when initialization completes. Mandatory first-run/version risk
 confirmation is still shown; informational backend notices wait until the main
 window is opened, and startup failures are reported through the tray.
 
+## Driver catalog rule coverage
+
+Windows build requirements with a trailing `^` are treated as minimum builds
+(for example, `26100^` accepts build 26300). Plain numbers require an exact match.
+The scanner still skips packages whose required applicability or installed-state
+checks cannot be established. In particular, `_RegistryKeyValue`,
+`_CPUAddressWidth` and `_ExternalDetection` are currently unsupported and logged.
+“Show up-to-date items” includes known applicable packages already installed,
+but does not override an unknown or failed applicability rule.
+
 ## Automation
 
 Automation supports ordered device-control steps, event/Fn triggers, per-rule enable

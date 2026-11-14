@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
@@ -73,6 +74,11 @@ internal static class TrayStartupTests
                         break;
                     case 1:
                         Check(window.IsVisible && IsWindowVisible(handle) && window.ShowInTaskbar, "Tray open did not show the window normally.");
+                        CheckCaption(window, handle);
+                        // Simulate a native-caption reset without changing WPF's
+                        // title. Restoring from the tray must resynchronize it.
+                        Check(SetWindowText(handle, ""), "Could not prepare stale native caption.");
+                        Check(window.Title == $"ThinkBook Toolkit v{ApplicationUpdateService.CurrentVersionText}", "Fixture unexpectedly changed the managed title.");
                         runtime.HideToTray();
                         break;
                     case 2:
@@ -81,6 +87,7 @@ internal static class TrayStartupTests
                         break;
                     case 3:
                         Check(window.IsVisible && shown == 2, "Window could not be reopened.");
+                        CheckCaption(window, handle);
                         runtime.HideToTray();
                         runtime.RequestExit();
                         break;
@@ -98,6 +105,17 @@ internal static class TrayStartupTests
         return 0;
     }
     private static void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
+    private static void CheckCaption(ToolkitMainWindow window, IntPtr handle)
+    {
+        var text = new StringBuilder(256);
+        GetWindowText(handle, text, text.Capacity);
+        Check(text.ToString() == window.Title, $"Native window title is missing: WPF='{window.Title}', HWND='{text}'.");
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr handle, StringBuilder text, int capacity);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowText(IntPtr handle, string text);
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(IntPtr handle);

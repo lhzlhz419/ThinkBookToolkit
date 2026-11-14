@@ -116,6 +116,9 @@ internal static class ModernTheme
         if (handle == IntPtr.Zero)
             return;
 
+        // Reapply even when the WPF Title value is unchanged. A hidden HWND or
+        // taskbar/style transition can leave the native caption stale.
+        _ = SetWindowText(handle, window.Title);
         var dark = isDark ? 1 : 0;
         if (DwmSetWindowAttribute(
                 handle,
@@ -134,6 +137,9 @@ internal static class ModernTheme
         SetWindowColor(handle, DwmwaCaptionColor, palette.Canvas);
         SetWindowColor(handle, DwmwaTextColor, palette.Text);
         SetWindowColor(handle, DwmwaBorderColor, palette.Border);
+        if (window.IsVisible)
+            _ = RedrawWindow(handle, IntPtr.Zero, IntPtr.Zero,
+                0x0001 | 0x0100 | 0x0400); // RDW_INVALIDATE | RDW_UPDATENOW | RDW_FRAME
     }
 
     private static void EnsureWindowThemeHandler()
@@ -255,6 +261,14 @@ internal static class ModernTheme
             ref colorRef,
             sizeof(int));
     }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowText(IntPtr handle, string title);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RedrawWindow(IntPtr handle, IntPtr updateRectangle, IntPtr updateRegion, uint flags);
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(

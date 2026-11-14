@@ -99,6 +99,7 @@ internal static class Program
         AutomationCompletionTests.Run();
         PowerLockReadbackTests.Run();
         DisplayAndResumeTests.Run();
+        RefreshRateCompatibilityTests.Run();
         AuditFixTests.Run();
         StartupAndSettingGroupTests.Run();
         PluginToastTests.Run();
@@ -109,6 +110,7 @@ internal static class Program
         FanBackendPluginTests.Run();
         StoragePolicyTests.Run();
         ItsModeTransitionTests.Run();
+        QuietPerformanceLinkTests.Run();
         var gpuFeatures = new FeatureAvailabilityReport([
             new(FeatureIds.DiscreteGpuManagement, "性能", "状态", false, "missing"),
             new(FeatureIds.GpuOverclock, "性能", "超频", true, "keep"),
@@ -4565,6 +4567,40 @@ internal static class Program
             </Package>
             """;
         var entries = LenovoDriverCatalogService.ParseCatalog(catalogXml);
+        DriverUpdateItem? BuildCandidate(string rule, int build, string installed = "1.0.0") =>
+            LenovoDriverCatalogService.ParseDescriptor(
+                descriptorXml.Replace("<_WindowsBuildVersion><Version>26200</Version></_WindowsBuildVersion>", rule),
+                entries[0].DescriptorUri, entries[0].Category,
+                new DriverSystemSnapshot(build, "P5CN31WW",
+                    [new InstalledDriverSnapshot(["PCI\\VEN_1234&DEV_5678"], installed, null)]), "zh-CN");
+        foreach (var buildRule in new[] { "22631^", "26100^", " 26100 ^ " })
+        {
+            var rule = $"<_WindowsBuildVersion><Version>{buildRule}</Version></_WindowsBuildVersion>";
+            Assert(BuildCandidate(rule, 26300) is { IsUpdateRequired: true } &&
+                   BuildCandidate(rule, 26300, "2.0.0") is { IsUpdateRequired: false },
+                "Minimum Windows build rules hid applicable updates or up-to-date packages (issues #4/#5).");
+        }
+        const string minimumBuild = "<_WindowsBuildVersion><Version>26100^</Version></_WindowsBuildVersion>";
+        const string exactBuild = "<_WindowsBuildVersion><Version>26100</Version></_WindowsBuildVersion>";
+        Assert(BuildCandidate(minimumBuild, 26099) is null &&
+               BuildCandidate(minimumBuild, 26100) is not null &&
+               BuildCandidate(exactBuild, 26100) is not null &&
+               BuildCandidate(exactBuild, 26300) is null &&
+               BuildCandidate("<_WindowsBuildVersion><Version>22631</Version><Version>26100^</Version></_WindowsBuildVersion>", 26300) is not null &&
+               BuildCandidate(minimumBuild, 0) is null,
+            "Windows build lower bounds, equality, OR alternatives or unknown OS state were evaluated incorrectly.");
+        foreach (var invalid in new[] { "", "^", "26100^^", "-1", "+26100", "0", "26x00", "2147483648" })
+        {
+            var malformed = $"<_WindowsBuildVersion><Version>{invalid}</Version></_WindowsBuildVersion>";
+            Assert(BuildCandidate(malformed, 26300) is null &&
+                   BuildCandidate("<Not>" + malformed + "</Not>", 26300) is null,
+                "Malformed Windows build rules, including under Not, must not authorize installation.");
+        }
+        Assert(BuildCandidate("<_WindowsBuildVersion />", 26300) is null &&
+               BuildCandidate("<_WindowsBuildVersion><Version>bad</Version><Version>26100^</Version></_WindowsBuildVersion>", 26300) is not null &&
+               BuildCandidate("<And>" + minimumBuild + "<_CPUAddressWidth>64</_CPUAddressWidth></And>", 26300) is null &&
+               BuildCandidate("<And>" + minimumBuild + "<_PnPID>PCI\\VEN_9999</_PnPID></And>", 26300) is null,
+            "Build support must preserve unknown-rule and hardware applicability checks.");
         var oldSnapshot = new DriverSystemSnapshot(
             26200,
             "R2CN57WW",
@@ -6015,7 +6051,7 @@ internal static class Program
         Assert(ToolkitRuntimeService.PerformanceFanStrategyApplyDelay ==
                    TimeSpan.FromSeconds(2) &&
                normalized.SwitchFanStrategyWithPerformanceMode &&
-               normalized.FanStrategiesByMode.Count == 4 &&
+               normalized.FanStrategiesByMode.Count == 5 &&
                PerformanceFanLinkDefaults.SelectionFor(
                    normalized,
                    ItsMode.Intelligent) is

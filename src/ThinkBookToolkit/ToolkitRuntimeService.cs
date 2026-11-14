@@ -2717,12 +2717,10 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 automationGamesRunning);
             UpdateTrayText();
             SyncPowerSettingsLockTimer();
-            if (itsMode != ItsMode.Unknown &&
-                itsMode != _lastFanLinkedPerformanceMode)
+            if (TrackFanPerformanceMode(Snapshot) is { } generation)
             {
-                _lastFanLinkedPerformanceMode = itsMode;
-                modeToLink = itsMode;
-                modeToLinkGeneration = ++_fanPerformanceModeChangeGeneration;
+                modeToLink = Snapshot.PerformanceMode;
+                modeToLinkGeneration = generation;
             }
         }
         catch (Exception ex)
@@ -3042,11 +3040,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
                     mode = ItsMode.Performance;
                     if (!baseChanged)
                     {
-                        // Only the BIOS overlay changed. Do not reapply fan or power profiles.
+                        // The BIOS overlay has its own fan linkage, while power
+                        // settings still belong to the underlying ITS performance base.
                         _lastConfirmedItsMode = mode;
                         Interlocked.Increment(ref _itsModeReadGeneration);
                         Snapshot = Snapshot with { ItsMode = mode };
                         SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                        QueueCurrentPerformanceFanLink();
                         return null;
                     }
                     compositeConfirmed = true;
@@ -3104,9 +3104,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
             Snapshot = Snapshot with { ItsMode = mode, QuietPerformance = switchState };
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             _confirmedPerformanceModeDuringRefresh = mode;
-            _lastFanLinkedPerformanceMode = mode;
-            var generation = ++_fanPerformanceModeChangeGeneration;
-            _ = ApplyFanStrategyForPerformanceModeAsync(mode, generation);
+            QueueCurrentPerformanceFanLink(force: true);
             try
             {
                 await RefreshAsync(force: true);
@@ -4050,6 +4048,23 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
+    internal int? TrackFanPerformanceMode(ToolkitRuntimeSnapshot snapshot, bool force = false)
+    {
+        var mode = snapshot.QuietPerformance.ConfirmsSelection(snapshot.ItsMode, snapshot.PerformanceMode)
+            ? snapshot.PerformanceMode : ItsMode.Unknown;
+        if (!force && mode == _lastFanLinkedPerformanceMode) return null;
+        _lastFanLinkedPerformanceMode = mode;
+        var generation = ++_fanPerformanceModeChangeGeneration;
+        // Unknown readback must invalidate older delayed actions too.
+        return mode == ItsMode.Unknown ? null : generation;
+    }
+
+    private void QueueCurrentPerformanceFanLink(bool force = false)
+    {
+        if (TrackFanPerformanceMode(Snapshot, force) is { } generation)
+            _ = ApplyFanStrategyForPerformanceModeAsync(Snapshot.PerformanceMode, generation);
+    }
+
     private async Task ApplyFanStrategyForPerformanceModeCoreAsync(
         ItsMode mode,
         int generation)
@@ -4081,6 +4096,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 $"Linked fan strategy for {mode} was cancelled because the performance mode was no longer confirmed after the delay.");
             return;
         }
+        if (_disposed || _switchingPerformanceMode ||
+            generation != _fanPerformanceModeChangeGeneration || _fanPerformanceLinkBusy)
+            return;
 
         var link = PerformanceFanLinkDefaults.Normalize(
             Settings.PerformanceFanLink);
@@ -4133,8 +4151,9 @@ internal sealed class ToolkitRuntimeService : IDisposable
             return await applyFanAction();
         }
 
-        var current = Snapshot.ItsMode;
-        if (PerformanceFanLinkDefaults.IsNoSwitchMode(link, current))
+        var current = Snapshot.PerformanceMode;
+        if (Snapshot.QuietPerformance.ConfirmsSelection(Snapshot.ItsMode, current) &&
+            PerformanceFanLinkDefaults.IsNoSwitchMode(link, current))
             return await applyFanAction();
 
         if (_fanPerformanceLinkBusy)
@@ -4157,14 +4176,12 @@ internal sealed class ToolkitRuntimeService : IDisposable
 
             ToolkitLog.Info(
                 $"Linked performance mode {link.FanControlTargetMode} was confirmed; delaying the requested fan action by {PerformanceFanStrategyApplyDelay.TotalSeconds:0} seconds.");
+            var generation = _fanPerformanceModeChangeGeneration;
             await Task.Delay(PerformanceFanStrategyApplyDelay);
-            var currentLink = PerformanceFanLinkDefaults.Normalize(
-                Settings.PerformanceFanLink);
-            if (_disposed ||
-                currentLink.FanControlTargetMode !=
-                    link.FanControlTargetMode ||
-                !await IsPerformanceModeConfirmedAsync(
-                    link.FanControlTargetMode))
+            var confirmed = await IsPerformanceModeConfirmedAsync(link.FanControlTargetMode);
+            var currentLink = PerformanceFanLinkDefaults.Normalize(Settings.PerformanceFanLink);
+            if (_disposed || _switchingPerformanceMode || generation != _fanPerformanceModeChangeGeneration ||
+                currentLink.FanControlTargetMode != link.FanControlTargetMode || !confirmed)
             {
                 return L(
                     "等待期间性能模式发生变化，风扇设置未更改。",
@@ -4179,14 +4196,13 @@ internal sealed class ToolkitRuntimeService : IDisposable
         }
     }
 
-    private static async Task<bool> IsPerformanceModeConfirmedAsync(
+    private async Task<bool> IsPerformanceModeConfirmedAsync(
         ItsMode expectedMode)
     {
         try
         {
-            return await Task.Run(
-                       () => new ItsModeDetector().ReadMode()) ==
-                   expectedMode;
+            var (baseMode, quiet) = await Task.Run(ReadPerformanceState);
+            return quiet.ConfirmsSelection(baseMode, expectedMode);
         }
         catch (Exception ex)
         {

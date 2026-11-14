@@ -583,12 +583,9 @@ internal static class LenovoDriverCatalogService
                     ? RuleTruth.True
                     : RuleTruth.False;
             case "_WindowsBuildVersion":
-                return rule.Elements().Any(element =>
-                           element.Name.LocalName == "Version" &&
-                           int.TryParse(element.Value, out var build) &&
-                           build == snapshot.WindowsBuild)
-                    ? RuleTruth.True
-                    : RuleTruth.False;
+                var versions = rule.Elements().Where(element => element.Name.LocalName == "Version").ToArray();
+                return versions.Length == 0 ? RuleTruth.Unknown :
+                    CombineOr(versions.Select(element => EvaluateWindowsBuild(element.Value, snapshot.WindowsBuild)));
             case "_PnPID":
                 return snapshot.Drivers.Any(driver =>
                            driver.HardwareIds.Any(id =>
@@ -616,6 +613,17 @@ internal static class LenovoDriverCatalogService
                 }
                 return RuleTruth.Unknown;
         }
+    }
+
+    private static RuleTruth EvaluateWindowsBuild(string value, int currentBuild)
+    {
+        var text = value.Trim();
+        var minimum = text.EndsWith('^');
+        var digits = minimum ? text[..^1].Trim() : text;
+        if (currentBuild <= 0 || !int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out var requiredBuild) ||
+            requiredBuild <= 0)
+            return RuleTruth.Unknown;
+        return (minimum ? currentBuild >= requiredBuild : currentBuild == requiredBuild) ? RuleTruth.True : RuleTruth.False;
     }
 
     private static RuleTruth EvaluateDriverRule(
