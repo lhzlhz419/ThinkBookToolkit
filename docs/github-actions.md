@@ -28,10 +28,11 @@ those device checks in the manual release checklist.
 ## Daily test installers
 
 After each successful branch push, download the installer from **Actions →
-Build and test → the run → Artifacts → ThinkBookToolkit-test.…-installer**.
-Artifacts are retained for 30 days. The artifact contains only the Setup EXE;
-GitHub wraps artifact downloads in ZIP containers, but this is not a portable
-application distribution. The separate test-log artifact remains available.
+Build and test → the run → Artifacts → ThinkBookToolkit-…-Setup.exe**.
+Artifacts are retained for 30 days. Installer uploads use `upload-artifact` v7
+with `archive: false`, so the artifact name is the original Setup EXE filename
+and downloading it returns the EXE directly, without a ZIP wrapper. Older runs
+retain their original ZIP artifacts. The separate test-log artifact remains available.
 
 The installer filename and setup display version include the source version,
 run number, attempt, and short commit SHA, for example:
