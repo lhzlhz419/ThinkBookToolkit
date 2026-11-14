@@ -1,0 +1,65 @@
+name: Build and test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact ref to validate before packaging
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.workflow == 'Build and test' }}
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-test:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source and pinned submodules
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build Release solution
+        run: dotnet build ThinkBookToolkit.sln -c Release -m:1 --disable-build-servers -p:ContinuousIntegrationBuild=true
+
+      # This helper is deliberately separate from the main solution.
+      - name: Build AMD Power Helper
+        run: dotnet build src/ThinkBookToolkit.AmdPowerHelper/ThinkBookToolkit.AmdPowerHelper.csproj -c Release -m:1 --disable-build-servers -p:ContinuousIntegrationBuild=true
+
+      - name: Run executable test suites
+        timeout-minutes: 15
+        run: ./scripts/test_ci.ps1
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .tmp/ci-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 14

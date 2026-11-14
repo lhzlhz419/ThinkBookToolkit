@@ -1,0 +1,148 @@
+name: Package release draft
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag matching Directory.Build.props (for example v1.1.2)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+
+  package:
+    needs: validate
+    runs-on: windows-2022
+    timeout-minutes: 45
+    environment: release-signing
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check tag and source version
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw 'Expected an existing vMAJOR.MINOR.PATCH tag.'
+          }
+          [xml]$props = Get-Content -LiteralPath Directory.Build.props
+          $version = [string]$props.Project.PropertyGroup.VersionPrefix
+          if ($env:RELEASE_TAG -cne "v$version") {
+            throw "Tag $env:RELEASE_TAG does not match source version v$version."
+          }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Ensure Inno Setup 6 is installed
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            choco install innosetup --version=6.4.3 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed.' }
+          }
+
+      - name: Restore signing certificate
+        env:
+          TBT_CERT_PFX_BASE64: ${{ secrets.TBT_CERT_PFX_BASE64 }}
+          TBT_CERT_PASSWORD: ${{ secrets.TBT_CERT_PASSWORD }}
+        run: |
+          $env:TBT_CERT_PATH = Join-Path $env:RUNNER_TEMP 'tbt-signing.pfx'
+          $env:TBT_CERT_PUBLIC_PATH = Join-Path $env:RUNNER_TEMP 'tbt-signing.cer'
+          "TBT_CERT_PATH=$env:TBT_CERT_PATH" >> $env:GITHUB_ENV
+          "TBT_CERT_PUBLIC_PATH=$env:TBT_CERT_PUBLIC_PATH" >> $env:GITHUB_ENV
+          if ([string]::IsNullOrWhiteSpace($env:TBT_CERT_PFX_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:TBT_CERT_PASSWORD)) {
+            throw 'Configure TBT_CERT_PFX_BASE64 and TBT_CERT_PASSWORD in the release-signing environment.'
+          }
+          [IO.File]::WriteAllBytes($env:TBT_CERT_PATH, [Convert]::FromBase64String($env:TBT_CERT_PFX_BASE64))
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $env:TBT_CERT_PATH, $env:TBT_CERT_PASSWORD,
+            [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+          try {
+            if (-not $certificate.HasPrivateKey) { throw 'PFX does not contain a private key.' }
+            if ($certificate.NotAfter -le (Get-Date)) { throw 'Signing certificate has expired.' }
+            [IO.File]::WriteAllBytes($env:TBT_CERT_PUBLIC_PATH,
+              $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+          } finally { $certificate.Dispose() }
+
+      - name: Build signed installer and portable archive
+        env:
+          TBT_CERT_PASSWORD: ${{ secrets.TBT_CERT_PASSWORD }}
+        run: ./scripts/build.ps1 -Configuration Release -Publish -Installer
+
+      - name: Verify release assets
+        run: |
+          $directory = "dist/v$env:RELEASE_VERSION"
+          $assets = @(
+            "ThinkBookToolkit-$env:RELEASE_VERSION-Setup.exe",
+            "ThinkBookToolkit-$env:RELEASE_VERSION-win-x64-framework-dependent.zip",
+            "SHA256SUMS-v$env:RELEASE_VERSION.txt")
+          foreach ($asset in $assets) {
+            $file = Get-Item -LiteralPath (Join-Path $directory $asset)
+            if ($file.Length -eq 0) { throw "Empty release asset: $asset" }
+          }
+          foreach ($line in Get-Content -LiteralPath (Join-Path $directory $assets[2])) {
+            if ($line -notmatch '^([A-Fa-f0-9]{64})  (.+)$') { throw 'Invalid checksum manifest.' }
+            $actual = (Get-FileHash -LiteralPath (Join-Path $directory $Matches[2]) -Algorithm SHA256).Hash
+            if ($actual -ne $Matches[1]) { throw 'Release asset checksum mismatch.' }
+          }
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ThinkBookToolkit-${{ env.RELEASE_VERSION }}-win-x64
+          path: |
+            dist/v${{ env.RELEASE_VERSION }}/*.exe
+            dist/v${{ env.RELEASE_VERSION }}/*.zip
+            dist/v${{ env.RELEASE_VERSION }}/SHA256SUMS-*.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      # Create only: an existing release is never overwritten on a rerun.
+      - name: Create release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $directory = "dist/v$env:RELEASE_VERSION"
+          gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --verify-tag --draft --generate-notes --title "ThinkBook Toolkit $env:RELEASE_TAG" `
+            "$directory/ThinkBookToolkit-$env:RELEASE_VERSION-Setup.exe" `
+            "$directory/ThinkBookToolkit-$env:RELEASE_VERSION-win-x64-framework-dependent.zip" `
+            "$directory/SHA256SUMS-v$env:RELEASE_VERSION.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create release draft. Check whether this tag already has a release.' }
+
+      - name: Remove temporary signing files
+        if: always()
+        run: |
+          foreach ($name in @('tbt-signing.pfx', 'tbt-signing.cer')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+          }
