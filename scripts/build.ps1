@@ -3,6 +3,9 @@ param(
     [string]$Configuration = "Release",
     [switch]$Publish,
     [switch]$Installer,
+    [switch]$InstallerOnly,
+    [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9.-]*$')]
+    [string]$BuildLabel = '',
     [switch]$SelfContained,
     [switch]$IncludeLocalProprietaryDependencies,
     [string]$CertificatePath = $env:TBT_CERT_PATH,
@@ -11,6 +14,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($InstallerOnly) { $Installer = $true }
+if ($BuildLabel -and -not $InstallerOnly) {
+    throw 'BuildLabel is only supported with InstallerOnly.'
+}
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $solution = Join-Path $projectRoot "ThinkBookToolkit.sln"
 $project = Join-Path $projectRoot "src\ThinkBookToolkit\ThinkBookToolkit.csproj"
@@ -102,6 +109,9 @@ if ($Publish -or $Installer) {
 
     $publishKind = if ($SelfContained) { "self-contained" } else { "framework-dependent" }
     $releaseOutput = Join-Path $projectRoot "dist\v$version"
+    $displayVersion = if ($BuildLabel) { "$version-$BuildLabel" } else { $version }
+    if ($BuildLabel) { $releaseOutput = Join-Path $releaseOutput $BuildLabel }
+    $installerBaseName = "ThinkBookToolkit-$displayVersion-Setup"
     $output = Join-Path $releaseOutput "ThinkBookToolkit-$version-win-x64-$publishKind"
     $amdHelperOutput = Join-Path $projectRoot ".tmp\amd-power-helper-$Configuration-$publishKind"
     if (Test-Path -LiteralPath $amdHelperOutput) {
@@ -325,14 +335,16 @@ if ($Publish -or $Installer) {
     }
 
     $archive = Join-Path $releaseOutput "ThinkBookToolkit-$version-win-x64-$publishKind.zip"
-    if (Test-Path -LiteralPath $archive) {
-        Remove-Item -LiteralPath $archive -Force
+    if (-not $InstallerOnly) {
+        if (Test-Path -LiteralPath $archive) {
+            Remove-Item -LiteralPath $archive -Force
+        }
+        Compress-Archive `
+            -Path (Join-Path $output "*") `
+            -DestinationPath $archive `
+            -CompressionLevel Optimal
+        Write-Host "Portable archive: $archive"
     }
-    Compress-Archive `
-        -Path (Join-Path $output "*") `
-        -DestinationPath $archive `
-        -CompressionLevel Optimal
-    Write-Host "Portable archive: $archive"
 
     if ($Installer) {
         $compilerCandidates = @(
@@ -367,6 +379,8 @@ if ($Publish -or $Installer) {
         $installerOutput = $releaseOutput
         & $compiler `
             "/DAppVersion=$version" `
+            "/DAppDisplayVersion=$displayVersion" `
+            "/DInstallerBaseName=$installerBaseName" `
             "/DSourceDir=$output" `
             "/DOutputDir=$installerOutput" `
             "/DChineseMessagesFile=$translation" `
@@ -374,7 +388,7 @@ if ($Publish -or $Installer) {
             $installerScript
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $installerPath = Join-Path $installerOutput `
-            "ThinkBookToolkit-$version-Setup.exe"
+            "$installerBaseName.exe"
         if ($Configuration -eq "Release") {
             Sign-ReleaseFile `
                 -File $installerPath `
@@ -384,6 +398,9 @@ if ($Publish -or $Installer) {
         }
         Write-Host "Installer output: $installerPath"
     }
+
+    # Installer-only builds never create portable archives or checksum manifests.
+    if ($InstallerOnly) { exit 0 }
 
     $releaseAssets = @($archive)
     if ($Installer) {

@@ -63,3 +63,63 @@ jobs:
           path: .tmp/ci-logs/*.log
           if-no-files-found: ignore
           retention-days: 14
+
+  test-installer:
+    needs: build-test
+    # PRs never receive the fixed signing key. Release validation only runs tests.
+    if: >-
+      (github.event_name == 'push' && github.ref_type == 'branch') ||
+      (github.event_name == 'workflow_dispatch' && inputs.ref == '')
+    runs-on: windows-2022
+    timeout-minutes: 45
+    environment: release-signing
+    steps:
+      - name: Checkout source and pinned submodules
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Prepare signing and installer tools
+        env:
+          TBT_CERT_PFX_BASE64: ${{ secrets.TBT_CERT_PFX_BASE64 }}
+          TBT_CERT_PASSWORD: ${{ secrets.TBT_CERT_PASSWORD }}
+        run: ./scripts/initialize_ci_packaging.ps1
+
+      - name: Build test installer only
+        env:
+          TBT_CERT_PASSWORD: ${{ secrets.TBT_CERT_PASSWORD }}
+        run: |
+          $label = "test.$env:GITHUB_RUN_NUMBER.$env:GITHUB_RUN_ATTEMPT.g$($env:GITHUB_SHA.Substring(0, 8))"
+          "TEST_BUILD_LABEL=$label" >> $env:GITHUB_ENV
+          ./scripts/build.ps1 -Configuration Release -InstallerOnly -BuildLabel $label
+
+      - name: Verify installer-only output
+        run: |
+          $assets = @(Get-ChildItem -Path "dist/v*/$env:TEST_BUILD_LABEL/*" -File)
+          if ($assets.Count -ne 1 -or $assets[0].Name -notlike '*-Setup.exe' -or $assets[0].Length -eq 0) {
+            throw 'Expected exactly one test installer, without a portable ZIP or checksum manifest.'
+          }
+
+      - name: Upload test installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ThinkBookToolkit-${{ env.TEST_BUILD_LABEL }}-installer
+          path: dist/v*/${{ env.TEST_BUILD_LABEL }}/*-Setup.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Remove temporary signing files
+        if: always()
+        run: |
+          foreach ($name in @('tbt-signing.pfx', 'tbt-signing.cer')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+          }

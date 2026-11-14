@@ -1,13 +1,23 @@
-name: Package release draft
+name: Publish release
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
         description: Existing release tag matching Directory.Build.props (for example v1.1.2)
         required: true
+        type: string
+      notes_source:
+        description: Release notes source
+        required: true
+        type: choice
+        default: automatic
+        options:
+          - automatic
+          - custom
+      notes:
+        description: Custom Markdown (CLI supports -F notes=@path/to/notes.md)
+        required: false
         type: string
 
 permissions:
@@ -45,7 +55,16 @@ jobs:
           persist-credentials: false
 
       - name: Check tag and source version
+        env:
+          NOTES_SOURCE: ${{ inputs.notes_source }}
+          RELEASE_NOTES: ${{ inputs.notes }}
         run: |
+          if ($env:NOTES_SOURCE -eq 'custom' -and [string]::IsNullOrWhiteSpace($env:RELEASE_NOTES)) {
+            throw 'Custom release notes must not be empty.'
+          }
+          if ($env:NOTES_SOURCE -eq 'automatic' -and -not [string]::IsNullOrWhiteSpace($env:RELEASE_NOTES)) {
+            throw 'Select custom notes_source to use the supplied Markdown.'
+          }
           if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
             throw 'Expected an existing vMAJOR.MINOR.PATCH tag.'
           }
@@ -61,37 +80,11 @@ jobs:
         with:
           dotnet-version: 9.0.x
 
-      - name: Ensure Inno Setup 6 is installed
-        run: |
-          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
-          if (-not (Test-Path -LiteralPath $compiler)) {
-            choco install innosetup --version=6.4.3 --yes --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed.' }
-          }
-
-      - name: Restore signing certificate
+      - name: Prepare signing and installer tools
         env:
           TBT_CERT_PFX_BASE64: ${{ secrets.TBT_CERT_PFX_BASE64 }}
           TBT_CERT_PASSWORD: ${{ secrets.TBT_CERT_PASSWORD }}
-        run: |
-          $env:TBT_CERT_PATH = Join-Path $env:RUNNER_TEMP 'tbt-signing.pfx'
-          $env:TBT_CERT_PUBLIC_PATH = Join-Path $env:RUNNER_TEMP 'tbt-signing.cer'
-          "TBT_CERT_PATH=$env:TBT_CERT_PATH" >> $env:GITHUB_ENV
-          "TBT_CERT_PUBLIC_PATH=$env:TBT_CERT_PUBLIC_PATH" >> $env:GITHUB_ENV
-          if ([string]::IsNullOrWhiteSpace($env:TBT_CERT_PFX_BASE64) -or
-              [string]::IsNullOrWhiteSpace($env:TBT_CERT_PASSWORD)) {
-            throw 'Configure TBT_CERT_PFX_BASE64 and TBT_CERT_PASSWORD in the release-signing environment.'
-          }
-          [IO.File]::WriteAllBytes($env:TBT_CERT_PATH, [Convert]::FromBase64String($env:TBT_CERT_PFX_BASE64))
-          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
-            $env:TBT_CERT_PATH, $env:TBT_CERT_PASSWORD,
-            [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
-          try {
-            if (-not $certificate.HasPrivateKey) { throw 'PFX does not contain a private key.' }
-            if ($certificate.NotAfter -le (Get-Date)) { throw 'Signing certificate has expired.' }
-            [IO.File]::WriteAllBytes($env:TBT_CERT_PUBLIC_PATH,
-              $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-          } finally { $certificate.Dispose() }
+        run: ./scripts/initialize_ci_packaging.ps1
 
       - name: Build signed installer and portable archive
         env:
@@ -128,16 +121,28 @@ jobs:
           retention-days: 30
 
       # Create only: an existing release is never overwritten on a rerun.
-      - name: Create release draft
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTES_SOURCE: ${{ inputs.notes_source }}
+          RELEASE_NOTES: ${{ inputs.notes }}
         run: |
           $directory = "dist/v$env:RELEASE_VERSION"
-          gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --verify-tag --draft --generate-notes --title "ThinkBook Toolkit $env:RELEASE_TAG" `
-            "$directory/ThinkBookToolkit-$env:RELEASE_VERSION-Setup.exe" `
-            "$directory/ThinkBookToolkit-$env:RELEASE_VERSION-win-x64-framework-dependent.zip" `
-            "$directory/SHA256SUMS-v$env:RELEASE_VERSION.txt"
-          if ($LASTEXITCODE -ne 0) { throw 'Could not create release draft. Check whether this tag already has a release.' }
+          $arguments = @('release', 'create', $env:RELEASE_TAG, '--repo', $env:GITHUB_REPOSITORY,
+            '--verify-tag', '--title', "ThinkBook Toolkit $env:RELEASE_TAG")
+          if ($env:NOTES_SOURCE -eq 'custom') {
+            $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+            [IO.File]::WriteAllText($notesPath, $env:RELEASE_NOTES, [Text.UTF8Encoding]::new($false))
+            $arguments += @('--notes-file', $notesPath)
+          } else {
+            $arguments += '--generate-notes'
+          }
+          $arguments += @(
+            "$directory/ThinkBookToolkit-$env:RELEASE_VERSION-Setup.exe",
+            "$directory/ThinkBookToolkit-$env:RELEASE_VERSION-win-x64-framework-dependent.zip",
+            "$directory/SHA256SUMS-v$env:RELEASE_VERSION.txt")
+          gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish release. Check whether this tag already has a release.' }
 
       - name: Remove temporary signing files
         if: always()
