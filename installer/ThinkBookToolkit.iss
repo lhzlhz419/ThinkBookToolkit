@@ -1,6 +1,12 @@
 ﻿#ifndef AppVersion
   #define AppVersion "1.1.1"
 #endif
+#ifndef AppDisplayVersion
+  #define AppDisplayVersion AppVersion
+#endif
+#ifndef InstallerBaseName
+  #define InstallerBaseName "ThinkBookToolkit-" + AppVersion + "-Setup"
+#endif
 #ifndef SourceDir
   #define SourceDir "..\dist\v1.1.1\ThinkBookToolkit-1.1.1-win-x64-framework-dependent"
 #endif
@@ -26,8 +32,10 @@
 AppId={{A4967548-B6D5-4A77-94B6-C84B6E5685AC}
 AppName={#AppName}
 AppVersion={#AppVersion}
+AppVerName={#AppName} {#AppDisplayVersion}
 VersionInfoVersion={#AppVersion}.0
 VersionInfoProductVersion={#AppVersion}
+VersionInfoProductTextVersion={#AppDisplayVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\ThinkBook Toolkit
 DefaultGroupName=ThinkBook Toolkit
@@ -36,7 +44,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 OutputDir={#OutputDir}
-OutputBaseFilename=ThinkBookToolkit-{#AppVersion}-Setup
+OutputBaseFilename={#InstallerBaseName}
 SetupIconFile=..\src\ThinkBookToolkit\Assets\app-icon-tb.ico
 UninstallDisplayIcon={app}\ThinkBookToolkit.exe
 Compression=lzma2/max

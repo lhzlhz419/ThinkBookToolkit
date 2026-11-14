@@ -3642,6 +3642,9 @@ internal static class Program
         beginEdit.Invoke(page, [null]);
         Assert(automationDetails.Visibility == Visibility.Visible,
             "Creating an automation does not expand its card.");
+        // The default performance action needs Lenovo-specific mode options.
+        // Use a portable editor input so this contract also runs on hosted CI.
+        categorySelector.SelectedItem = "延迟";
         addStep.Invoke(page, null);
         addStep.Invoke(page, null);
         var draft = GetPrivateField<AutomationDefinition>(page, "_draft");

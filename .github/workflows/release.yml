@@ -1,0 +1,153 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag matching Directory.Build.props (for example v1.1.2)
+        required: true
+        type: string
+      notes_source:
+        description: Release notes source
+        required: true
+        type: choice
+        default: automatic
+        options:
+          - automatic
+          - custom
+      notes:
+        description: Custom Markdown (CLI supports -F notes=@path/to/notes.md)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+
+  package:
+    needs: validate
+    runs-on: windows-2022
+    timeout-minutes: 45
+    environment: release-signing
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check tag and source version
+        env:
+          NOTES_SOURCE: ${{ inputs.notes_source }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          if ($env:NOTES_SOURCE -eq 'custom' -and [string]::IsNullOrWhiteSpace($env:RELEASE_NOTES)) {
+            throw 'Custom release notes must not be empty.'
+          }
+          if ($env:NOTES_SOURCE -eq 'automatic' -and -not [string]::IsNullOrWhiteSpace($env:RELEASE_NOTES)) {
+            throw 'Select custom notes_source to use the supplied Markdown.'
+          }
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw 'Expected an existing vMAJOR.MINOR.PATCH tag.'
+          }
+          [xml]$props = Get-Content -LiteralPath Directory.Build.props
+          $version = [string]$props.Project.PropertyGroup.VersionPrefix
+          if ($env:RELEASE_TAG -cne "v$version") {
+            throw "Tag $env:RELEASE_TAG does not match source version v$version."
+          }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Prepare signing and installer tools
+        env:
+          TBT_CERT_PFX_BASE64: ${{ secrets.TBT_CERT_PFX_BASE64 }}
+          TBT_CERT_PASSWORD: ${{ secrets.TBT_CERT_PASSWORD }}
+        run: ./scripts/initialize_ci_packaging.ps1
+
+      - name: Build signed installer and portable archive
+        env:
+          TBT_CERT_PASSWORD: ${{ secrets.TBT_CERT_PASSWORD }}
+        run: ./scripts/build.ps1 -Configuration Release -Publish -Installer
+
+      - name: Verify release assets
+        run: |
+          $directory = "dist/v$env:RELEASE_VERSION"
+          $assets = @(
+            "ThinkBookToolkit-$env:RELEASE_VERSION-Setup.exe",
+            "ThinkBookToolkit-$env:RELEASE_VERSION-win-x64-framework-dependent.zip",
+            "SHA256SUMS-v$env:RELEASE_VERSION.txt")
+          foreach ($asset in $assets) {
+            $file = Get-Item -LiteralPath (Join-Path $directory $asset)
+            if ($file.Length -eq 0) { throw "Empty release asset: $asset" }
+          }
+          foreach ($line in Get-Content -LiteralPath (Join-Path $directory $assets[2])) {
+            if ($line -notmatch '^([A-Fa-f0-9]{64})  (.+)$') { throw 'Invalid checksum manifest.' }
+            $actual = (Get-FileHash -LiteralPath (Join-Path $directory $Matches[2]) -Algorithm SHA256).Hash
+            if ($actual -ne $Matches[1]) { throw 'Release asset checksum mismatch.' }
+          }
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ThinkBookToolkit-${{ env.RELEASE_VERSION }}-win-x64
+          path: |
+            dist/v${{ env.RELEASE_VERSION }}/*.exe
+            dist/v${{ env.RELEASE_VERSION }}/*.zip
+            dist/v${{ env.RELEASE_VERSION }}/SHA256SUMS-*.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      # Create only: an existing release is never overwritten on a rerun.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES_SOURCE: ${{ inputs.notes_source }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          $directory = "dist/v$env:RELEASE_VERSION"
+          $arguments = @('release', 'create', $env:RELEASE_TAG, '--repo', $env:GITHUB_REPOSITORY,
+            '--verify-tag', '--title', "ThinkBook Toolkit $env:RELEASE_TAG")
+          if ($env:NOTES_SOURCE -eq 'custom') {
+            $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+            [IO.File]::WriteAllText($notesPath, $env:RELEASE_NOTES, [Text.UTF8Encoding]::new($false))
+            $arguments += @('--notes-file', $notesPath)
+          } else {
+            $arguments += '--generate-notes'
+          }
+          $arguments += @(
+            "$directory/ThinkBookToolkit-$env:RELEASE_VERSION-Setup.exe",
+            "$directory/ThinkBookToolkit-$env:RELEASE_VERSION-win-x64-framework-dependent.zip",
+            "$directory/SHA256SUMS-v$env:RELEASE_VERSION.txt")
+          gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish release. Check whether this tag already has a release.' }
+
+      - name: Remove temporary signing files
+        if: always()
+        run: |
+          foreach ($name in @('tbt-signing.pfx', 'tbt-signing.cer')) {
+            $path = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+          }
