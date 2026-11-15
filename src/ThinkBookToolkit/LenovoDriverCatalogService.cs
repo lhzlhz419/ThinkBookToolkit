@@ -112,8 +112,9 @@ internal static class LenovoDriverCatalogService
         var finishedAt = stopwatch.Elapsed;
         ToolkitLog.Info(
             "Independent Lenovo driver scan completed: " +
-            $"{candidates.Count(item => item.IsUpdateRequired)} update(s), " +
-            $"{candidates.Count(item => !item.IsUpdateRequired)} up-to-date item(s); " +
+            $"{candidates.Count(item => item.IsRecommendedUpdate)} update(s), " +
+            $"{candidates.Count(item => item.IsInstalledStateKnown && !item.IsUpdateRequired)} installed item(s); " +
+            $"{candidates.Count(item => !item.IsApplicable || !item.CanInstall)} package(s) with applicability notices; " +
             $"descriptor step={(finishedAt - snapshotAt).TotalMilliseconds:0} ms; " +
             $"total={finishedAt.TotalMilliseconds:0} ms.");
         return new("Success", candidates);
@@ -182,20 +183,21 @@ internal static class LenovoDriverCatalogService
         Uri descriptorUri,
         string category,
         DriverSystemSnapshot snapshot,
-        string language)
+        string language,
+        bool includeFiltered = false)
     {
         var document = XDocument.Parse(
             descriptorXml,
             LoadOptions.PreserveWhitespace);
         var package = document.Root;
         if (package is null ||
-            !package.Name.LocalName.Equals("Package", StringComparison.Ordinal) ||
-            bool.TryParse(package.Attribute("hide")?.Value, out var hidden) &&
-            hidden)
+            !package.Name.LocalName.Equals("Package", StringComparison.Ordinal))
         {
             return null;
         }
 
+        var hidden = bool.TryParse(package.Attribute("hide")?.Value, out var hide) && hide;
+        if (hidden && !includeFiltered) return null;
         var packageId = package.Attribute("id")?.Value.Trim();
         var version = package.Attribute("version")?.Value.Trim();
         if (string.IsNullOrWhiteSpace(packageId) ||
@@ -211,8 +213,8 @@ internal static class LenovoDriverCatalogService
         var detected = detectNode is null
             ? RuleTruth.False
             : EvaluateContainer(detectNode, snapshot);
-        if (dependency != RuleTruth.True ||
-            detected == RuleTruth.Unknown)
+        if (!includeFiltered && (dependency != RuleTruth.True ||
+            detected == RuleTruth.Unknown))
         {
             return null;
         }
@@ -224,8 +226,61 @@ internal static class LenovoDriverCatalogService
             title = package.Attribute("name")?.Value ?? packageId;
 
         var installer = ParseInstallPlan(package, descriptorUri);
-        if (installer is null)
+        if (installer is null && !includeFiltered)
             return null;
+
+        var chinese = language.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+        var warnings = new List<string>();
+        var dependencies = Child(package, "Dependencies");
+        var windowsRules = dependencies?.DescendantsAndSelf()
+            .Where(node => node.Name.LocalName == "_WindowsBuildVersion").ToArray() ?? [];
+        var windowsMismatch = dependency != RuleTruth.True && windowsRules.Any(node =>
+            EvaluateRule(node, snapshot) == RuleTruth.False);
+        var nonWindowsDependency = dependency;
+        if (windowsMismatch && dependencies is not null)
+        {
+            var relaxed = new XElement(dependencies);
+            // Evaluate the remaining prerequisites to explain mixed mismatches.
+            // This does not change the package's actual applicability result.
+            foreach (var node in relaxed.Descendants().Where(node =>
+                         node.Name.LocalName == "_WindowsBuildVersion" &&
+                         !node.Ancestors().Any(parent => parent.Name.LocalName == "Not") &&
+                         EvaluateRule(node, snapshot) == RuleTruth.False).ToArray())
+                node.ReplaceWith(new XElement("And"));
+            nonWindowsDependency = EvaluateContainer(relaxed, snapshot);
+            var declared = string.Join(" / ", windowsRules.SelectMany(node => node.Elements())
+                .Where(node => node.Name.LocalName == "Version")
+                .Select(node => node.Value.Trim().Replace("^", chinese ? " 及以上" : " or later"))
+                .Distinct());
+            warnings.Add(chinese
+                ? $"只声明支持 Windows Build {declared} 系统，未声明支持当前 Windows Build {snapshot.WindowsBuild} 系统，谨慎安装。"
+                : $"Only declares support for Windows Build {declared}; support for the current Windows Build {snapshot.WindowsBuild} is not declared. Install with caution.");
+        }
+        if (nonWindowsDependency != RuleTruth.True)
+            warnings.Add(nonWindowsDependency == RuleTruth.Unknown
+                ? (chinese ? "部分适用条件无法判断，不能安装。" : "Some applicability conditions could not be evaluated; installation is unavailable.")
+                : (chinese ? "硬件、BIOS 或其他安装前置条件不满足，谨慎安装；确认后可单独安装。" : "Hardware, BIOS, or other installation prerequisites are not met. Install with caution; individual installation is available after confirmation."));
+        var biosLevels = dependencies?.DescendantsAndSelf()
+            .Where(node => node.Name.LocalName == "_Bios" && EvaluateRule(node, snapshot) == RuleTruth.False)
+            .SelectMany(node => node.Elements()).Where(node => node.Name.LocalName == "Level")
+            .Select(node => node.Value.Trim()).Distinct().ToArray() ?? [];
+        if (dependency != RuleTruth.True && biosLevels.Length > 0)
+            warnings.Add(chinese
+                ? $"目录声明的 BIOS 前置版本：{string.Join(" / ", biosLevels)}；当前 BIOS：{snapshot.BiosVersion}。"
+                : $"Declared prerequisite BIOS versions: {string.Join(" / ", biosLevels)}; current BIOS: {snapshot.BiosVersion}.");
+        bool RuleIsKnown(XElement rule) => rule.Name.LocalName is "And" or "Or" or "Not"
+            ? rule.Elements().All(RuleIsKnown)
+            : EvaluateRule(rule, snapshot) != RuleTruth.Unknown;
+        var dependencyKnown = dependency == RuleTruth.True || (dependency != RuleTruth.Unknown &&
+            (dependencies?.Elements().All(RuleIsKnown) ?? true));
+        if (!dependencyKnown && nonWindowsDependency != RuleTruth.Unknown)
+            warnings.Add(chinese ? "另有适用条件无法判断，不能安装。" : "Other applicability conditions are unknown; installation is unavailable.");
+        if (detected == RuleTruth.Unknown)
+            warnings.Add(chinese ? "无法确认已安装状态，不能安装。" : "Installed state is unknown; installation is unavailable.");
+        if (hidden)
+            warnings.Add(chinese ? "联想目录将此项目标记为隐藏，不能安装。" : "Lenovo marks this package as hidden; installation is unavailable.");
+        if (installer is null)
+            warnings.Add(chinese ? "安装命令或安装文件校验信息不受支持，不能安装。" : "The installation command or checksum metadata is unsupported; installation is unavailable.");
 
         var releaseDate = Child(package, "ReleaseDate")?.Value.Trim() ??
                           string.Empty;
@@ -257,7 +312,11 @@ internal static class LenovoDriverCatalogService
             size,
             NormalizeDate(releaseDate),
             IsUpdateRequired: detected != RuleTruth.True,
-            InstallPlan: installer);
+            InstallPlan: installer,
+            IsApplicable: dependency == RuleTruth.True && !hidden,
+            IsInstalledStateKnown: detected != RuleTruth.Unknown,
+            CanInstall: dependencyKnown && detected != RuleTruth.Unknown && !hidden && installer is not null,
+            ApplicabilityWarning: string.Join("\n", warnings));
     }
 
     internal static bool HardwareIdMatches(string installed, string expected)
@@ -302,7 +361,8 @@ internal static class LenovoDriverCatalogService
                 entry.DescriptorUri,
                 entry.Category,
                 snapshot,
-                language);
+                language,
+                includeFiltered: true);
         }
         catch (Exception ex)
         {
@@ -416,6 +476,8 @@ internal static class LenovoDriverCatalogService
         DriverUpdateItem update,
         CancellationToken cancellationToken)
     {
+        if (!update.CanInstall)
+            throw new InvalidOperationException("This package does not meet its installation prerequisites.");
         var plan = update.InstallPlan ?? throw new InvalidOperationException(
             "The update has no validated installation plan.");
         var packageDirectory = Path.Combine(

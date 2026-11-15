@@ -24,7 +24,14 @@ internal sealed record DriverUpdateItem(
     long SizeBytes,
     string ReleaseDate,
     bool IsUpdateRequired = true,
-    DriverUpdateInstallPlan? InstallPlan = null);
+    DriverUpdateInstallPlan? InstallPlan = null,
+    bool IsApplicable = true,
+    bool IsInstalledStateKnown = true,
+    bool CanInstall = true,
+    string ApplicabilityWarning = "")
+{
+    public bool IsRecommendedUpdate => IsApplicable && IsInstalledStateKnown && CanInstall && IsUpdateRequired;
+}
 
 internal sealed record DriverUpdateScanResult(
     string Status,

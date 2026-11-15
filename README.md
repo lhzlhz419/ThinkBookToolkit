@@ -95,11 +95,13 @@ window is opened, and startup failures are reported through the tray.
 
 Windows build requirements with a trailing `^` are treated as minimum builds
 (for example, `26100^` accepts build 26300). Plain numbers require an exact match.
-The scanner still skips packages whose required applicability or installed-state
-checks cannot be established. In particular, `_RegistryKeyValue`,
-`_CPUAddressWidth` and `_ExternalDetection` are currently unsupported and logged.
-“Show up-to-date items” includes known applicable packages already installed,
-but does not override an unknown or failed applicability rule.
+“Show up-to-date items” also displays verified packages with unmet Windows,
+hardware, or BIOS prerequisites, including an already-installed BIOS. Notices
+show undeclared Windows builds and other prerequisite mismatches. These packages
+can be installed individually after explicit confirmation and are excluded from
+“Install all updates”. Unknown applicability/installed-state rules, hidden
+packages, and unsupported installation metadata remain visible but cannot be
+installed. Descriptor and installer integrity/signature checks remain required.
 
 ## Automation
 

@@ -100,6 +100,7 @@ internal static class Program
         PowerLockReadbackTests.Run();
         DisplayAndResumeTests.Run();
         RefreshRateCompatibilityTests.Run();
+        DriverCatalogVisibilityTests.Run();
         AuditFixTests.Run();
         StartupAndSettingGroupTests.Run();
         PluginToastTests.Run();

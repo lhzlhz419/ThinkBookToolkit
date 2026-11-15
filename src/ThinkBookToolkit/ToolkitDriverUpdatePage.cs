@@ -94,8 +94,8 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
             L("更新结果", "Update results"),
             _updates,
             L(
-                "Toolkit 会检查适用条件、已安装版本、目录哈希、XML 签名和安装程序签名。无法安全判定的项目不会显示。",
-                "Toolkit checks applicability, installed versions, catalog hashes, XML signatures, and installer signatures. Items that cannot be evaluated safely are not shown."),
+                "开启“显示无需更新的内容”可查看全部已验证条目及适用条件提示；系统、硬件或 BIOS 条件不匹配的项目须确认后单独安装。",
+                "Show up-to-date items to view all verified packages and applicability notices. Windows, hardware, or BIOS mismatches require confirmation for individual installation."),
             "\uE777"));
 
         ShowEmptyState(L(
@@ -120,12 +120,16 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
             _hasScanned = true;
             RenderVisibleUpdates();
             var availableCount = result.Updates.Count(update =>
-                update.IsUpdateRequired);
+                update.IsRecommendedUpdate);
+            var filteredCount = result.Updates.Count(update => !update.IsApplicable || !update.IsInstalledStateKnown || !update.CanInstall);
             _status.Text = availableCount == 0
-                ? L("未发现适用于当前设备的新更新。", "No new updates applicable to this device were found.")
+                ? L("未发现满足全部条件的新更新。", "No new updates meeting all prerequisites were found.")
                 : L(
                     $"发现 {availableCount} 项可用更新。",
                     $"{availableCount} available update(s) found.");
+            if (filteredCount > 0)
+                _status.Text += L($" 另有 {filteredCount} 项带适用条件提示，开启“显示无需更新的内容”可查看。",
+                    $" {filteredCount} additional package(s) have applicability notices. Enable Show up-to-date items to view them.");
         }
         catch (Exception ex)
         {
@@ -146,7 +150,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
     private async Task InstallAllAsync()
     {
         var updates = _scanResults
-            .Where(update => update.IsUpdateRequired)
+            .Where(update => update.IsRecommendedUpdate)
             .ToArray();
         if (updates.Length == 0 ||
             !ConfirmInstallation(updates, installingAll: true))
@@ -164,16 +168,23 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
             update.Category.Contains("firmware", StringComparison.OrdinalIgnoreCase) ||
             update.Name.Contains("BIOS", StringComparison.OrdinalIgnoreCase) ||
             update.Name.Contains("firmware", StringComparison.OrdinalIgnoreCase));
-        if (!includesFirmware && !installingAll)
+        var compatibilityWarnings = string.Join("\n\n", updates
+            .Where(update => !string.IsNullOrWhiteSpace(update.ApplicabilityWarning))
+            .Select(update => update.Name + "\n" + update.ApplicabilityWarning));
+        if (!includesFirmware && !installingAll && compatibilityWarnings.Length == 0)
             return true;
 
         var warning = includesFirmware
             ? L(
                 "所选内容包含 BIOS 或固件更新。请连接电源、保存工作并暂停 BitLocker（如适用）。安装期间不要关闭电脑。是否继续？",
                 "The selection includes BIOS or firmware. Connect AC power, save your work, and suspend BitLocker if applicable. Do not turn off the PC during installation. Continue?")
-            : L(
+            : installingAll ? L(
                 $"将下载并安装全部 {updates.Count} 项 Lenovo 更新。安装过程中设备或应用可能暂时不可用。是否继续？",
-                $"Lenovo will download and install all {updates.Count} update(s). Devices or applications may be temporarily unavailable. Continue?");
+                $"Lenovo will download and install all {updates.Count} update(s). Devices or applications may be temporarily unavailable. Continue?")
+            : L("此项目不满足目录声明的全部安装条件。仍要下载并安装吗？",
+                "This package does not meet all prerequisites declared by the catalog. Download and install anyway?");
+        if (compatibilityWarnings.Length > 0)
+            warning = compatibilityWarnings + "\n\n" + warning;
         return ToolkitMessageBox.Show(
                 Window.GetWindow(this),
                 warning,
@@ -187,7 +198,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
         IReadOnlyCollection<DriverUpdateItem> updates,
         bool isBatch)
     {
-        if (updates.Count == 0 ||
+        if (updates.Count == 0 || updates.Any(update => !update.CanInstall) ||
             updates.Any(update => Runtime.DriverInstallations.IsQueued(update.PackageId) || _queuedPackageIds.Contains(update.PackageId)))
         {
             return;
@@ -305,9 +316,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
         if (!_hasScanned)
             return;
         var showUpToDate = _showUpToDate.IsChecked == true;
-        var visible = _scanResults
-            .Where(update => update.IsUpdateRequired ||
-                             showUpToDate);
+        var visible = FilterUpdatesForDisplay(_scanResults, showUpToDate);
         RenderUpdates(SortUpdatesForDisplay(visible, showUpToDate));
     }
 
@@ -369,6 +378,16 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
                 Margin = new Thickness(0, 3, 12, 0)
             });
         }
+        if (!string.IsNullOrWhiteSpace(update.ApplicabilityWarning))
+        {
+            labels.Children.Add(new TextBlock
+            {
+                Text = update.ApplicabilityWarning,
+                Foreground = Brush(Palette.Warning),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 6, 12, 0)
+            });
+        }
         row.Children.Add(labels);
 
         var actions = new StackPanel
@@ -378,7 +397,11 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
         };
         actions.Children.Add(new TextBlock
         {
-            Text = update.IsUpdateRequired
+            Text = !update.IsInstalledStateKnown
+                ? L("状态未知", "Unknown state")
+                : update.IsUpdateRequired && !update.IsApplicable
+                ? L("不符合适用条件", "Not applicable")
+                : update.IsUpdateRequired
                 ? L("需要更新", "Update available")
                 : L("无需更新", "Up to date"),
             Foreground = Brush(update.IsUpdateRequired
@@ -387,16 +410,16 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center
         });
-        var download = ActionButton("\uE896", primary: update.IsUpdateRequired);
+        var download = ActionButton("\uE896", primary: update.IsRecommendedUpdate);
         download.FontFamily = new FontFamily(
             "Segoe Fluent Icons, Segoe MDL2 Assets");
         download.Width = 42;
         download.MinWidth = 42;
         download.Padding = new Thickness(0);
         download.Margin = new Thickness(12, 0, 0, 0);
-        download.ToolTip = L(
+        download.ToolTip = update.CanInstall ? L(
             "下载并安装此更新",
-            "Download and install this update");
+            "Download and install this update") : update.ApplicabilityWarning;
         AutomationProperties.SetName(
             download,
             L(
@@ -434,7 +457,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
                              !Runtime.DriverInstallations.IsBusy &&
                              _queuedInstallCount == 0 &&
                              _scanResults.Any(update =>
-                                 update.IsUpdateRequired);
+                                 update.IsRecommendedUpdate);
         _showUpToDate.IsEnabled = !_scanBusy;
         foreach (var pair in _downloadButtons)
         {
@@ -442,7 +465,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
             SetDownloadBusy(pair.Value, queued);
             pair.Value.IsEnabled = !_scanBusy &&
                                    !_batchInstallQueued &&
-                                   !queued;
+                                   pair.Key.CanInstall && !queued;
         }
     }
 
@@ -496,10 +519,14 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
         bool includeUpToDate) =>
         updates
             .OrderByDescending(update =>
-                includeUpToDate && update.IsUpdateRequired)
+                includeUpToDate && update.IsRecommendedUpdate)
             .ThenByDescending(update => ParseReleaseDate(update.ReleaseDate))
             .ThenBy(update => update.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+
+    internal static IEnumerable<DriverUpdateItem> FilterUpdatesForDisplay(
+        IEnumerable<DriverUpdateItem> updates, bool showUpToDate) =>
+        updates.Where(update => showUpToDate || update.IsRecommendedUpdate);
 
     private static DateTime ParseReleaseDate(string value) =>
         DateTime.TryParse(
@@ -523,9 +550,9 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
                     Runtime.Settings.Language);
                 ToolkitLog.Info(
                     "Lenovo driver update scan completed with " +
-                    $"{result.Updates.Count(update => update.IsUpdateRequired)} " +
+                    $"{result.Updates.Count(update => update.IsRecommendedUpdate)} " +
                     "available update(s) and " +
-                    $"{result.Updates.Count(update => !update.IsUpdateRequired)} " +
+                    $"{result.Updates.Count(update => update.IsInstalledStateKnown && !update.IsUpdateRequired)} " +
                     "up-to-date item(s).");
                 return result;
             }
