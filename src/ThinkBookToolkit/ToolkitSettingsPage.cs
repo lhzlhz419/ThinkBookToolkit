@@ -981,7 +981,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         _updateStatus.Margin = new Thickness(0, 0, 16, 0);
         _downloadUpdate.Margin = new Thickness(0, 0, 8, 0);
         _checkUpdates.Margin = new Thickness(0);
-        var actions = new StackPanel
+        var actions = new WrapPanel
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center

@@ -14,6 +14,8 @@
     <ApplicationManifest Condition="'$(Configuration)' != 'Debug'">app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app-icon-tb.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- WPF owns startup. Its native manifest sets DPI awareness before either WPF or tray WinForms creates an HWND. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
     <ExternalDependenciesRoot Condition="'$(ExternalDependenciesRoot)' == ''">$(MSBuildProjectDirectory)\..\..\..\ThinkBookToolkit.Dependencies</ExternalDependenciesRoot>
   </PropertyGroup>
 

@@ -108,21 +108,16 @@ internal sealed partial class ToolkitDisplayPage : ToolkitPageBase,
                 L("护眼关闭时可即时调节。", "Adjustable while eye care is off."),
                 temperatureControl));
 
-            var defaults = new StackPanel { Orientation = Orientation.Horizontal };
-            defaults.Children.Add(new TextBlock
+            var defaults = new WrapPanel();
+            StackPanel TemperatureField(string label, FrameworkElement editor)
             {
-                Text = L("普通", "Normal"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 6, 0)
-            });
-            defaults.Children.Add(_normalDefault);
-            defaults.Children.Add(new TextBlock
-            {
-                Text = L("护眼", "Eye care"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(14, 0, 6, 0)
-            });
-            defaults.Children.Add(_eyeDefault);
+                var field = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 10, 2) };
+                field.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+                field.Children.Add(editor);
+                return field;
+            }
+            defaults.Children.Add(TemperatureField(L("普通", "Normal"), _normalDefault));
+            defaults.Children.Add(TemperatureField(L("护眼", "Eye care"), _eyeDefault));
             var saveDefaults = ActionButton(L("保存默认值", "Save defaults"));
             saveDefaults.Margin = new Thickness(12, 0, 0, 0);
             saveDefaults.Click += async (_, _) => await SaveDefaultsAsync();

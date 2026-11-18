@@ -422,6 +422,16 @@ internal static class Program
             page.Measure(new Size(620, double.PositiveInfinity));
             Assert(page.DesiredSize.Width <= 621,
                 $"Page {expected.Key} forces narrow-window overflow ({page.DesiredSize.Width:0.0}px). ");
+            if (page is ToolkitOverviewPage)
+            {
+                foreach (var width in new[] { 490, 885, 1400, 620 })
+                {
+                    page.Measure(new Size(width, double.PositiveInfinity));
+                    page.Arrange(new Rect(0, 0, width, page.DesiredSize.Height));
+                    foreach (var name in new[] { "_itsMode", "_gpuMode", "_fanMode" })
+                        AssertFitsInsideCard(GetPrivateField<ComboBox>(page, name));
+                }
+            }
         }
         Assert(GetPrivateField<Dictionary<string, ToolkitPageBase>>(
                    window,
@@ -4855,6 +4865,12 @@ internal static class Program
                    modeCombo.HorizontalAlignment ==
                    HorizontalAlignment.Stretch,
                 "The performance-mode selector does not fill the space before the right-aligned settings button.");
+            foreach (var width in new[] { 860, 520, 1180 })
+            {
+                page.Measure(new Size(width, double.PositiveInfinity));
+                page.Arrange(new Rect(0, 0, width, page.DesiredSize.Height));
+                AssertFitsInsideCard(modeSettings);
+            }
             var orderWindow = new PerformanceModeOrderWindow(
                 null,
                 runtime,
@@ -6523,6 +6539,14 @@ internal static class Program
             foreach (var descendant in Descendants(child))
                 yield return descendant;
         }
+    }
+
+    private static void AssertFitsInsideCard(FrameworkElement control)
+    {
+        var card = FindAncestor<Border>(control)!;
+        var bounds = control.TransformToAncestor(card).TransformBounds(new Rect(control.RenderSize));
+        Assert(bounds.Width > 0 && bounds.Left >= -1 && bounds.Right <= card.ActualWidth + 1,
+            $"{control.GetType().Name} is clipped by its card ({bounds} in {card.ActualWidth}).");
     }
 
     private static void Assert(bool condition, string message)

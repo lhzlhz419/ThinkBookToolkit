@@ -304,7 +304,6 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         {
             var performanceModeControl = new Grid
             {
-                MinWidth = 430,
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Stretch
             };
@@ -338,7 +337,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         }
         content.Children.Add(choices);
 
-        var gpuStatusControl = new StackPanel
+        var gpuStatusControl = new WrapPanel
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center
@@ -362,7 +361,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             "\uE7F4");
         content.Children.Add(_discreteGpuStatusRow);
 
-        var overclockControl = new StackPanel
+        var overclockControl = new WrapPanel
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center
@@ -380,7 +379,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         if (Runtime.Report?.IsAvailable(FeatureIds.GpuOverclock) != false)
             content.Children.Add(_gpuOverclockRow);
 
-        var restartControl = new StackPanel { Orientation = Orientation.Horizontal };
+        var restartControl = new WrapPanel { Orientation = Orientation.Horizontal };
         _pendingRestartText.Foreground = Brush(Palette.Warning);
         _pendingRestartText.VerticalAlignment = VerticalAlignment.Center;
         _pendingRestartText.TextWrapping = TextWrapping.Wrap;
@@ -442,7 +441,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             Width = new GridLength(1, GridUnitType.Star)
         });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+        var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
         buttons.Children.Add(_applyFan);
         buttons.Children.Add(_discardFan);
         footer.Children.Add(buttons);
@@ -968,7 +967,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
             var editFan = CompactSetting(
                 L("选择要编辑的风扇", "Select fan to edit"),
                 _editFan);
-            editFan.MinWidth = 330;
+            editFan.MinWidth = 210;
             editFan.HorizontalAlignment = HorizontalAlignment.Right;
             Grid.SetColumn(editFan, 1);
             editRow.Children.Add(editFan);
@@ -1448,6 +1447,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         content.Children.Add(new TextBlock
         {
             Text = title,
+            TextWrapping = TextWrapping.Wrap,
             Foreground = Brush(Palette.Muted),
             FontWeight = FontWeights.SemiBold
         });

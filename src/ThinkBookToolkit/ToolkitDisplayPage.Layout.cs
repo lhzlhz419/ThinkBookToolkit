@@ -54,7 +54,7 @@ internal sealed partial class ToolkitDisplayPage
         }
         if (Runtime.Report?.IsAvailable(FeatureIds.DisplayRefreshRate) != false)
         {
-            var refreshControls = new Grid { MinWidth = 340, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var refreshControls = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
             refreshControls.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             refreshControls.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             _refreshRate.HorizontalAlignment = HorizontalAlignment.Stretch;

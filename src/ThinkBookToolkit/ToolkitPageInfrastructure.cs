@@ -141,7 +141,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         UIElement? headerAction = null)
     {
         var body = new StackPanel();
-        var heading = new Grid();
+        var heading = new ResponsiveGrid();
         heading.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         heading.ColumnDefinitions.Add(new ColumnDefinition
         {
@@ -164,6 +164,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         {
             Text = title,
             FontSize = 20,
+            TextWrapping = TextWrapping.Wrap,
             FontWeight = FontWeights.SemiBold,
             Foreground = Brush(Palette.Text)
         });
@@ -190,6 +191,20 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             }
             Grid.SetColumn(headerAction, 2);
             heading.Children.Add(headerAction);
+            heading.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            heading.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            heading.Reflow = width =>
+            {
+                var compact = width < 530;
+                Grid.SetColumn(headerAction, compact ? 0 : 2);
+                Grid.SetColumnSpan(headerAction, compact ? 3 : 1);
+                Grid.SetRow(headerAction, compact ? 1 : 0);
+                if (headerAction is FrameworkElement action)
+                {
+                    action.HorizontalAlignment = compact ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+                    action.Margin = compact ? new Thickness(0, 8, 0, 0) : new Thickness(16, 0, 0, 0);
+                }
+            };
         }
         body.Children.Add(heading);
         if (content is FrameworkElement element)
@@ -219,7 +234,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             title = contribution.Setting.Title.Resolve(Runtime.IsChinese);
             control = PluginSettingControl.Create(Runtime, contribution.Plugin, contribution.Setting);
         }
-        var row = new Grid { MinHeight = 62 };
+        var row = new ResponsiveGrid { MinHeight = 62 };
         row.RowDefinitions.Add(new RowDefinition
         {
             Height = new GridLength(1, GridUnitType.Star)
@@ -279,9 +294,9 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         void ApplyResponsiveRow(bool compact)
         {
             Grid.SetRow(control, compact ? 1 : 0);
-            Grid.SetColumn(control, compact ? offset : offset + 1);
+            Grid.SetColumn(control, compact ? 0 : offset + 1);
             Grid.SetColumnSpan(control, compact
-                ? Math.Max(1, row.ColumnDefinitions.Count - offset)
+                ? row.ColumnDefinitions.Count
                 : 1);
             if (control is FrameworkElement responsiveControl)
             {
@@ -293,8 +308,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                     : new Thickness(14, 0, 0, 0);
             }
         }
-        row.SizeChanged += (_, _) => ApplyResponsiveRow(
-            !keepControlOnRight && row.ActualWidth < 610);
+        row.Reflow = width => ApplyResponsiveRow(!keepControlOnRight && width < 610);
         ApplyResponsiveRow(compact: false);
         return new Border
         {
@@ -328,12 +342,13 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
             : TextTrimming.None;
         value.Margin = new Thickness(0, 13, 0, 0);
         var content = new StackPanel();
-        var header = new StackPanel { Orientation = Orientation.Horizontal };
+        var header = new DockPanel();
         header.Children.Add(IconTile(glyph, accent, 34, 14));
         header.Children.Add(new TextBlock
         {
             Text = title,
             Foreground = Brush(Palette.Muted),
+            TextWrapping = TextWrapping.Wrap,
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(10, 0, 0, 0)
@@ -343,6 +358,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         content.Children.Add(new TextBlock
         {
             Text = detail,
+            TextWrapping = TextWrapping.Wrap,
             Foreground = Brush(Palette.Muted),
             FontSize = 12,
             Margin = new Thickness(0, 5, 0, 0)
@@ -367,7 +383,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
     {
         var panel = new AdaptiveUniformPanel
         {
-            MinimumItemWidth = 230,
+            MinimumItemWidth = 300,
             Spacing = 8
         };
         Add(OverviewCardIds.Cpu, HardwareMonitorCard(
@@ -1262,6 +1278,24 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
 /// Equal-width responsive panel. It changes column count from the available
 /// width, so pages remain free of horizontal scrolling and nested scrollbars.
 /// </summary>
+// Choose the arrangement from the space offered by the parent before measuring
+// children. A clipped child can report a larger ActualWidth than its layout slot.
+internal sealed class ResponsiveGrid : Grid
+{
+    internal Action<double>? Reflow { get; set; }
+    private double _lastWidth = double.NaN;
+
+    protected override Size MeasureOverride(Size constraint)
+    {
+        if (constraint.Width != _lastWidth)
+        {
+            _lastWidth = constraint.Width;
+            Reflow?.Invoke(constraint.Width);
+        }
+        return base.MeasureOverride(constraint);
+    }
+}
+
 internal sealed class AdaptiveUniformPanel : Panel
 {
     public double MinimumItemWidth { get; set; } = 270;
@@ -1269,6 +1303,7 @@ internal sealed class AdaptiveUniformPanel : Panel
     public double Spacing { get; set; } = 10;
 
     public int MaximumColumns { get; set; } = int.MaxValue;
+    public bool BalanceRows { get; init; }
 
     protected override Size MeasureOverride(Size availableSize)
     {
@@ -1338,10 +1373,13 @@ internal sealed class AdaptiveUniformPanel : Panel
     {
         if (itemCount == 0)
             return 1;
-        return Math.Max(
+        var columns = Math.Max(
             1,
             Math.Min(
                 Math.Min(itemCount, Math.Max(1, MaximumColumns)),
                 (int)Math.Floor((width + Spacing) / (MinimumItemWidth + Spacing))));
+        if (!BalanceRows) return columns;
+        int rows = (itemCount + columns - 1) / columns;
+        return (itemCount + rows - 1) / rows;
     }
 }

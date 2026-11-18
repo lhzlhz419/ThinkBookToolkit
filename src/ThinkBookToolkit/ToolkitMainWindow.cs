@@ -94,10 +94,10 @@ internal sealed class ToolkitMainWindow : Window
         ShowInTaskbar = !StartHiddenAtLaunch;
         ShowActivated = !StartHiddenAtLaunch;
         Title = $"ThinkBook Toolkit v{ApplicationUpdateService.CurrentVersionText}";
-        Width = 1380;
-        Height = 880;
-        MinWidth = 780;
-        MinHeight = 600;
+        MinWidth = 640;
+        MinHeight = 440;
+        Width = Math.Min(1380, SystemParameters.WorkArea.Width);
+        Height = Math.Min(880, SystemParameters.WorkArea.Height);
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         UseLayoutRounding = true;
         SnapsToDevicePixels = true;
@@ -299,6 +299,7 @@ internal sealed class ToolkitMainWindow : Window
         _brandText.Children.Add(new TextBlock
         {
             Text = "ThinkBook Toolkit",
+            TextWrapping = TextWrapping.Wrap,
             FontFamily = new FontFamily("Segoe UI"),
             FontSize = 15,
             FontWeight = FontWeights.SemiBold,
@@ -307,6 +308,7 @@ internal sealed class ToolkitMainWindow : Window
         _brandText.Children.Add(new TextBlock
         {
             Text = L("设备控制中心", "Device control center"),
+            TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
             Foreground = Brush(Palette.Muted),
             Margin = new Thickness(0, 2, 0, 0)
@@ -403,6 +405,7 @@ internal sealed class ToolkitMainWindow : Window
         var label = new TextBlock
         {
             Text = text,
+            TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(6, 0, 0, 0)
         };
@@ -414,7 +417,7 @@ internal sealed class ToolkitMainWindow : Window
             Content = content,
             Tag = id,
             ToolTip = text,
-            HorizontalContentAlignment = HorizontalAlignment.Left,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Center,
             MinHeight = 42,
             Padding = new Thickness(8, 7, 10, 7),
@@ -467,6 +470,7 @@ internal sealed class ToolkitMainWindow : Window
         };
         _pageTitle = new TextBlock
         {
+            TextWrapping = TextWrapping.Wrap,
             FontSize = 28,
             FontWeight = FontWeights.SemiBold,
             Foreground = Brush(Palette.Text)
@@ -731,11 +735,11 @@ internal sealed class ToolkitMainWindow : Window
 
     private void UpdateResponsiveLayout(double width)
     {
-        var collapse = width < 1020;
+        var collapse = width < 1080;
         if (_navigationColumn is null || _navigationSurface is null || _mainArea is null)
             return;
         _sidebarCollapsed = collapse;
-        _navigationColumn.Width = new GridLength(collapse ? 78 : 238);
+        _navigationColumn.Width = new GridLength(collapse ? 82 : Math.Clamp(width * 0.18, 196, 238));
         _navigationSurface.Margin = collapse
             ? new Thickness(10, 14, 8, 14)
             : new Thickness(14, 17, 12, 17);

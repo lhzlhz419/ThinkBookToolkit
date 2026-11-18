@@ -219,7 +219,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             color.A = heroAlpha;
             return color;
         }
-        var content = new Grid();
+        var content = new ResponsiveGrid();
         content.ColumnDefinitions.Add(new ColumnDefinition
         {
             Width = new GridLength(1, GridUnitType.Star)
@@ -238,6 +238,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         left.Children.Add(new TextBlock
         {
             Text = DeviceModelDetector.CurrentIdentity.Model,
+            TextWrapping = TextWrapping.Wrap,
             FontSize = 28,
             FontWeight = FontWeights.SemiBold,
             Foreground = HeroTextBrush("#FFFFFF"),
@@ -251,7 +252,8 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         });
         var pills = new AdaptiveUniformPanel
         {
-            MinimumItemWidth = 135,
+            MinimumItemWidth = 188,
+            BalanceRows = true,
             Spacing = 8,
             Margin = new Thickness(0, 15, 0, 0)
         };
@@ -296,6 +298,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         };
         Grid.SetColumn(decoration, 1);
         content.Children.Add(decoration);
+        content.Reflow = width => decoration.Visibility = width < 900 ? Visibility.Collapsed : Visibility.Visible;
         return new Border
         {
             MinHeight = 172,
