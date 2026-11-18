@@ -34,7 +34,8 @@ internal sealed record InstalledDriverSnapshot(
 internal sealed record DriverSystemSnapshot(
     int WindowsBuild,
     string BiosVersion,
-    IReadOnlyList<InstalledDriverSnapshot> Drivers);
+    IReadOnlyList<InstalledDriverSnapshot> Drivers,
+    string? EditionId = null);
 
 internal static class LenovoDriverCatalogService
 {
@@ -77,31 +78,23 @@ internal static class LenovoDriverCatalogService
                 "Lenovo Machine Type could not be determined from the product number.");
 
         var stopwatch = Stopwatch.StartNew();
-        var catalogUri = ValidateLenovoUri(
-            new Uri($"https://{DownloadHost}/catalog/{machineType}_Win11.xml"));
-        ToolkitLog.Info(
-            $"Independent Lenovo driver scan started for {machineType} / Win11.");
-
-        var snapshotTask = Task.Run(CaptureSystemSnapshot, cancellationToken);
-        var catalogBytes = await DownloadBytesAsync(
-            catalogUri,
-            cancellationToken);
-        var entries = ParseCatalog(DecodeXml(catalogBytes));
+        var snapshot = await Task.Run(CaptureSystemSnapshot, cancellationToken);
+        var snapshotAt = stopwatch.Elapsed;
+        var (entries, fallback) = await ReadCatalogAsync(machineType, snapshot.WindowsBuild, DownloadBytesAsync, cancellationToken);
         var catalogAt = stopwatch.Elapsed;
         ToolkitLog.Info(
             $"Lenovo catalog downloaded and parsed: {entries.Count} descriptors; " +
             $"elapsed={catalogAt.TotalMilliseconds:0} ms.");
 
-        var snapshot = await snapshotTask;
-        var snapshotAt = stopwatch.Elapsed;
         ToolkitLog.Info(
             $"Driver system snapshot captured: {snapshot.Drivers.Count} devices; " +
-            $"step={(snapshotAt - catalogAt).TotalMilliseconds:0} ms.");
+            $"Windows build={snapshot.WindowsBuild}; Win11 fallback={fallback}; step={snapshotAt.TotalMilliseconds:0} ms.");
 
         var tasks = entries.Select(entry => ReadCandidateAsync(
             entry,
             snapshot,
             language,
+            fallback,
             cancellationToken));
         var candidates = (await Task.WhenAll(tasks))
             .Where(item => item is not null)
@@ -115,9 +108,33 @@ internal static class LenovoDriverCatalogService
             $"{candidates.Count(item => item.IsRecommendedUpdate)} update(s), " +
             $"{candidates.Count(item => item.IsInstalledStateKnown && !item.IsUpdateRequired)} installed item(s); " +
             $"{candidates.Count(item => !item.IsApplicable || !item.CanInstall)} package(s) with applicability notices; " +
-            $"descriptor step={(finishedAt - snapshotAt).TotalMilliseconds:0} ms; " +
+            $"descriptor step={(finishedAt - catalogAt).TotalMilliseconds:0} ms; " +
             $"total={finishedAt.TotalMilliseconds:0} ms.");
-        return new("Success", candidates);
+        return new("Success", candidates, fallback);
+    }
+
+    internal static async Task<(IReadOnlyList<DriverCatalogEntry> Entries, bool Fallback)> ReadCatalogAsync(
+        string machineType, int windowsBuild, Func<Uri, CancellationToken, Task<byte[]>> download, CancellationToken token)
+    {
+        async Task<IReadOnlyList<DriverCatalogEntry>> Read(string os)
+        {
+            var uri = ValidateLenovoUri(new Uri($"https://{DownloadHost}/catalog/{machineType}_{os}.xml"));
+            return ParseCatalog(DecodeXml(await download(uri, token)));
+        }
+        if (windowsBuild >= 22000)
+            return (await Read("Win11"), false);
+        try
+        {
+            var entries = await Read("Win10");
+            if (entries.Count > 0)
+                return (entries, false);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
+        {
+            // Lenovo serves both HTTP not-found and valid zero-package catalogs.
+        }
+        token.ThrowIfCancellationRequested();
+        return (await Read("Win11"), true);
     }
 
     public static async Task<DriverUpdateInstallResult> InstallAsync(
@@ -159,7 +176,9 @@ internal static class LenovoDriverCatalogService
     {
         var result = new List<DriverCatalogEntry>();
         var document = XDocument.Parse(catalogXml, LoadOptions.None);
-        foreach (var package in document.Root?.Elements("package") ?? [])
+        var root = document.Root;
+        if (root?.Name != "packages") throw new InvalidDataException("Invalid Lenovo catalog root.");
+        foreach (var package in root.Elements("package"))
         {
             var location = package.Element("location")?.Value.Trim();
             var category = package.Element("category")?.Value.Trim();
@@ -175,6 +194,8 @@ internal static class LenovoDriverCatalogService
                 category,
                 checksum!.ToUpperInvariant()));
         }
+        if (result.Count == 0 && (root.HasElements || root.Attribute("count")?.Value.Trim() != "0"))
+            throw new InvalidDataException("No readable packages in the Lenovo catalog.");
         return result;
     }
 
@@ -184,7 +205,8 @@ internal static class LenovoDriverCatalogService
         string category,
         DriverSystemSnapshot snapshot,
         string language,
-        bool includeFiltered = false)
+        bool includeFiltered = false,
+        bool fromFallbackCatalog = false)
     {
         var document = XDocument.Parse(
             descriptorXml,
@@ -231,6 +253,10 @@ internal static class LenovoDriverCatalogService
 
         var chinese = language.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
         var warnings = new List<string>();
+        if (fromFallbackCatalog)
+            warnings.Add(chinese
+                ? $"该机型没有 Windows 10 目录。本包来自 Windows 11 目录，与当前 Windows 10（Build {snapshot.WindowsBuild}）的兼容性未经确认，谨慎安装。"
+                : $"No Windows 10 catalog exists for this model. This Windows 11 catalog package has unconfirmed compatibility with Windows 10 (build {snapshot.WindowsBuild}). Install with caution.");
         var dependencies = Child(package, "Dependencies");
         var windowsRules = dependencies?.DescendantsAndSelf()
             .Where(node => node.Name.LocalName == "_WindowsBuildVersion").ToArray() ?? [];
@@ -316,7 +342,8 @@ internal static class LenovoDriverCatalogService
             IsApplicable: dependency == RuleTruth.True && !hidden,
             IsInstalledStateKnown: detected != RuleTruth.Unknown,
             CanInstall: dependencyKnown && detected != RuleTruth.Unknown && !hidden && installer is not null,
-            ApplicabilityWarning: string.Join("\n", warnings));
+            ApplicabilityWarning: string.Join("\n", warnings),
+            FromFallbackCatalog: fromFallbackCatalog);
     }
 
     internal static bool HardwareIdMatches(string installed, string expected)
@@ -351,6 +378,7 @@ internal static class LenovoDriverCatalogService
         DriverCatalogEntry entry,
         DriverSystemSnapshot snapshot,
         string language,
+        bool fromFallbackCatalog,
         CancellationToken cancellationToken)
     {
         try
@@ -362,9 +390,10 @@ internal static class LenovoDriverCatalogService
                 entry.Category,
                 snapshot,
                 language,
-                includeFiltered: true);
+                includeFiltered: true,
+                fromFallbackCatalog: fromFallbackCatalog);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             ToolkitLog.Warning(
                 $"Lenovo descriptor {entry.DescriptorUri.AbsolutePath} was skipped: {ex.Message}");
@@ -603,7 +632,8 @@ internal static class LenovoDriverCatalogService
         return new(
             Environment.OSVersion.Version.Build,
             DeviceModelDetector.CurrentIdentity.BiosVersion,
-            drivers);
+            drivers, Microsoft.Win32.Registry.GetValue(
+                @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "EditionID", null) as string);
     }
 
     private static RuleTruth EvaluateContainer(
@@ -637,13 +667,28 @@ internal static class LenovoDriverCatalogService
             case "Not":
                 return Negate(EvaluateContainer(rule, snapshot));
             case "_OS":
-                return rule.Elements().Any(element =>
-                    element.Name.LocalName == "OS" &&
-                    element.Value.Trim().Equals(
-                        "WIN11",
-                        StringComparison.OrdinalIgnoreCase))
-                    ? RuleTruth.True
-                    : RuleTruth.False;
+                if (snapshot.WindowsBuild < 10240) return RuleTruth.Unknown;
+                var systems = rule.Elements().Where(element => element.Name.LocalName == "OS")
+                    .Select(element => element.Value.Trim()).Where(value => value.Length > 0).ToArray();
+                if (systems.Length == 0) return RuleTruth.Unknown;
+                var currentSystem = snapshot.WindowsBuild >= 22000 ? "WIN11" : "WIN10";
+                return CombineOr(systems.Select(system =>
+                {
+                    var name = system.Trim().ToUpperInvariant();
+                    if (name.EndsWith(".*", StringComparison.Ordinal)) name = name[..^2];
+                    if (name == currentSystem) return RuleTruth.True;
+                    if (!name.StartsWith(currentSystem + "-", StringComparison.Ordinal)) return RuleTruth.False;
+                    if (snapshot.EditionId is null) return RuleTruth.Unknown;
+                    var edition = name[(currentSystem.Length + 1)..] switch
+                    {
+                        "ENT" => "Enterprise",
+                        "PRO" => "Professional",
+                        _ => null
+                    };
+                    if (edition is null) return RuleTruth.Unknown;
+                    return string.Equals(snapshot.EditionId, edition, StringComparison.OrdinalIgnoreCase)
+                        ? RuleTruth.True : RuleTruth.False;
+                }));
             case "_WindowsBuildVersion":
                 var versions = rule.Elements().Where(element => element.Name.LocalName == "Version").ToArray();
                 return versions.Length == 0 ? RuleTruth.Unknown :

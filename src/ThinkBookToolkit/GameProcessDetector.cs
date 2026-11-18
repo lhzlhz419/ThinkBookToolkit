@@ -386,6 +386,8 @@ internal sealed class EffectiveGameModeMonitor : IDisposable
 
     public void Start()
     {
+        // Earlier systems continue using GameConfigStore, explicit paths and tracked children.
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362)) return;
         try
         {
             if (PowerRegisterForEffectivePowerModeNotifications(
@@ -394,6 +396,8 @@ internal sealed class EffectiveGameModeMonitor : IDisposable
                     IntPtr.Zero,
                     out var handle) == 0)
                 _handle = handle;
+            else
+                ToolkitLog.Warning("Game-mode notifications unavailable; using process-based game detection.");
         }
         catch
         {

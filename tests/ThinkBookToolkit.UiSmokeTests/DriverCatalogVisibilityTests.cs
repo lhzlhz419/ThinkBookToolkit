@@ -2,6 +2,11 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Controls;
 using ThinkBookToolkit;
 
@@ -28,6 +33,25 @@ internal static class DriverCatalogVisibilityTests
             """;
         var snapshot = new DriverSystemSnapshot(26300, "R2CN59WW",
             [new InstalledDriverSnapshot(["PCI\\VEN_1234"], "2.0", null)]);
+        VerifyCatalogSelectionAsync().GetAwaiter().GetResult();
+        var win10 = snapshot with { WindowsBuild = 19045, EditionId = "Professional",
+            Drivers = [new InstalledDriverSnapshot(["PCI\\VEN_1234"], "1.0", null)] };
+        var anyBuild = xml.Replace("<_WindowsBuildVersion><Version>26200</Version></_WindowsBuildVersion>", "");
+        DriverUpdateItem OnWin10(string descriptor, bool fallback = false) =>
+            LenovoDriverCatalogService.ParseDescriptor(descriptor, new Uri("https://download.lenovo.com/example.xml"),
+                "Driver", win10, "zh-CN", includeFiltered: true, fromFallbackCatalog: fallback)!;
+        Check(OnWin10(anyBuild) is { IsApplicable: false, IsRecommendedUpdate: false }, "WIN11 must not match Windows 10.");
+        var win10Xml = anyBuild.Replace("WIN11", "WIN10");
+        Check(OnWin10(win10Xml).IsRecommendedUpdate && OnWin10(anyBuild.Replace("WIN11", "WIN10-PRO.*")).IsRecommendedUpdate &&
+            !OnWin10(anyBuild.Replace("WIN11", "WIN10-ENT")).IsRecommendedUpdate, "Win10 package/edition matching failed.");
+        foreach (var descriptor in new[] { anyBuild, win10Xml, anyBuild.Replace("<_OS><OS>WIN11</OS></_OS>", "") })
+        {
+            var reference = OnWin10(descriptor, fallback: true);
+            Check(reference.CanInstall && !reference.IsRecommendedUpdate && reference.ApplicabilityWarning.Contains("Windows 11") &&
+                reference.ApplicabilityWarning.Contains("Windows 10") &&
+                ToolkitDriverUpdatePage.FilterUpdatesForDisplay([reference], false).Any(),
+                "Fallback packages must be visible by default with a confirmation notice, and excluded from bulk updates.");
+        }
         DriverUpdateItem Parse(string text, DriverSystemSnapshot? state = null) =>
             LenovoDriverCatalogService.ParseDescriptor(text,
                 new Uri("https://download.lenovo.com/consumer/mobiles/example.xml"),
@@ -95,5 +119,33 @@ internal static class DriverCatalogVisibilityTests
     private static void Check(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private static async Task VerifyCatalogSelectionAsync()
+    {
+        var catalog = Encoding.UTF8.GetBytes("<packages count='1'><package><location>https://download.lenovo.com/test.xml</location><category>Driver</category><checksum>" +
+            new string('A', 64) + "</checksum></package></packages>");
+        var calls = new List<string>();
+        async Task<bool> Select(int build, Func<byte[]> first)
+        {
+            calls.Clear();
+            var selected = await LenovoDriverCatalogService.ReadCatalogAsync("21R0", build, (uri, _) =>
+            {
+                calls.Add(uri.AbsolutePath);
+                return Task.FromResult(calls.Count == 1 ? first() : catalog);
+            }, CancellationToken.None);
+            return selected.Fallback;
+        }
+        Check(!await Select(19045, () => catalog) && calls.SequenceEqual(["/catalog/21R0_Win10.xml"]), "Win10 must prefer its native catalog.");
+        Check(!await Select(26100, () => catalog) && calls.SequenceEqual(["/catalog/21R0_Win11.xml"]), "Win11 must read its native catalog directly.");
+        foreach (var missing in new Func<byte[]>[] {
+            () => Encoding.UTF8.GetBytes("<packages count='0'/>"),
+            () => throw new HttpRequestException("missing", null, HttpStatusCode.NotFound),
+            () => throw new HttpRequestException("gone", null, HttpStatusCode.Gone) })
+            Check(await Select(19045, missing) && calls.SequenceEqual(["/catalog/21R0_Win10.xml", "/catalog/21R0_Win11.xml"]),
+                "Missing/empty Win10 catalog must fall back exactly once.");
+        try { await Select(19045, () => throw new HttpRequestException("unavailable", null, HttpStatusCode.ServiceUnavailable)); }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.ServiceUnavailable && calls.Count == 1) { return; }
+        throw new InvalidOperationException("Network failures must not select a different OS catalog.");
     }
 }

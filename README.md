@@ -93,6 +93,11 @@ window is opened, and startup failures are reported through the tray.
 
 ## Driver catalog rule coverage
 
+On Windows 10 the scanner checks the model's Windows 10 catalog first. If Lenovo
+returns a missing or empty catalog, the scanner shows Windows 11 packages with
+a compatibility notice. These packages require individual confirmation and are
+excluded from “Install all updates”, even if their other prerequisites match.
+
 Windows build requirements with a trailing `^` are treated as minimum builds
 (for example, `26100^` accepts build 26300). Plain numbers require an exact match.
 “Show up-to-date items” also displays verified packages with unmet Windows,

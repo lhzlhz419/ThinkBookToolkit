@@ -724,6 +724,34 @@ internal sealed class DiscreteGpuPresenceDetector
         return _cached;
     }
 
+    // PnPUtil /restart-device is available from Windows 10 2004. Earlier
+    // releases support DIF_PROPERTYCHANGE on the same display device instance.
+    internal static bool RestartLegacyDisplayDevice(string instanceId)
+    {
+        var guid = DisplayClassGuid;
+        var set = Native.SetupDiGetClassDevs(ref guid, null, IntPtr.Zero, Native.DigcfPresent);
+        if (set == Native.InvalidHandleValue) throw new Win32Exception();
+        try
+        {
+            var device = new Native.SpDevInfoData { Size = Marshal.SizeOf<Native.SpDevInfoData>() };
+            if (!Native.SetupDiOpenDeviceInfo(set, instanceId, IntPtr.Zero, 0, ref device))
+                throw new Win32Exception();
+            const uint propertyChange = 0x12; // DIF_PROPERTYCHANGE
+            var change = new Native.PropertyChange
+            {
+                HeaderSize = 8, Function = propertyChange,
+                StateChange = 3, Scope = 2 // DICS_PROPCHANGE, DICS_FLAG_CONFIGSPECIFIC, current profile
+            };
+            if (!Native.SetupDiSetClassInstallParams(set, ref device, ref change, Marshal.SizeOf<Native.PropertyChange>()) ||
+                !Native.SetupDiCallClassInstaller(propertyChange, set, ref device))
+                throw new Win32Exception();
+            var info = new Native.DeviceInstallParams { Size = Marshal.SizeOf<Native.DeviceInstallParams>() };
+            if (!Native.SetupDiGetDeviceInstallParams(set, ref device, ref info)) throw new Win32Exception();
+            return (info.Flags & (0x80u | 0x100u)) != 0; // DI_NEEDRESTART | DI_NEEDREBOOT
+        }
+        finally { Native.SetupDiDestroyDeviceInfoList(set); }
+    }
+
     private static IReadOnlyList<string> EnumeratePresentDisplayDevices()
     {
         var classGuid = DisplayClassGuid;
@@ -803,6 +831,29 @@ internal sealed class DiscreteGpuPresenceDetector
         public const uint DigcfPresent = 0x00000002;
         public const int ErrorNoMoreItems = 259;
         public const uint DnHasProblem = 0x00000400;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PropertyChange { public uint HeaderSize, Function, StateChange, Scope, HardwareProfile; }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct DeviceInstallParams
+        {
+            public int Size;
+            public uint Flags, FlagsEx;
+            public IntPtr Parent, Handler, Context, FileQueue;
+            public UIntPtr ClassInstallReserved;
+            public uint Reserved;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string? DriverPath;
+        }
+
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool SetupDiOpenDeviceInfo(IntPtr set, string id, IntPtr parent, uint flags, ref SpDevInfoData device);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool SetupDiSetClassInstallParams(IntPtr set, ref SpDevInfoData device, ref PropertyChange change, int size);
+        [DllImport("setupapi.dll", SetLastError = true)]
+        public static extern bool SetupDiCallClassInstaller(uint function, IntPtr set, ref SpDevInfoData device);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool SetupDiGetDeviceInstallParams(IntPtr set, ref SpDevInfoData device, ref DeviceInstallParams info);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct SpDevInfoData

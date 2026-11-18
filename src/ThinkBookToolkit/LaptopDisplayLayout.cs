@@ -27,7 +27,10 @@ internal sealed class ReversibleDisplayChange(Action<bool> finish) : IDisposable
 
 internal static partial class RefreshRateController
 {
-    private static string RequireLaptopDisplay(string? expected = null)
+    private static string RequireLaptopDisplay(string? expected = null) =>
+        RequireLaptopDisplaySource(expected).DisplayName;
+
+    private static WindowsDisplayAPI.DisplayConfig.PathDisplaySource RequireLaptopDisplaySource(string? expected = null)
     {
         var device = FindInternalDisplayDeviceName(allowFallback: false)
             ?? throw new InvalidOperationException("未能唯一识别活动的笔记本内置屏幕。 / Cannot uniquely identify the active laptop panel.");
@@ -41,11 +44,11 @@ internal static partial class RefreshRateController
             if ((monitor.StateFlags & DisplayDeviceActive) != 0) active++;
         }
         if (active > 1) throw new InvalidOperationException("请先退出复制显示模式。 / Leave duplicate-display mode first.");
-        var targets = WindowsDisplayAPI.DisplayConfig.PathInfo.GetActivePaths()
+        var paths = WindowsDisplayAPI.DisplayConfig.PathInfo.GetActivePaths(virtualModeAware: false)
             .Where(p => string.Equals(p.DisplaySource.DisplayName, device, StringComparison.OrdinalIgnoreCase))
-            .SelectMany(p => p.TargetsInfo).Count();
-        if (targets != 1) throw new InvalidOperationException("屏幕路径不唯一或正在切换，请退出复制模式后重试。 / Display path is ambiguous or changing; leave duplicate mode and retry.");
-        return device;
+            .ToArray();
+        if (paths.Length != 1 || paths[0].TargetsInfo.Count() != 1) throw new InvalidOperationException("屏幕路径不唯一或正在切换，请退出复制模式后重试。 / Display path is ambiguous or changing; leave duplicate mode and retry.");
+        return paths[0].DisplaySource;
     }
 
     private static DevMode ReadPanelMode(string device)
@@ -71,7 +74,8 @@ internal static partial class RefreshRateController
 
     internal static LaptopDisplayLayout ReadLaptopLayout()
     {
-        var device = RequireLaptopDisplay();
+        var source = RequireLaptopDisplaySource();
+        var device = source.DisplayName;
         var current = ReadPanelMode(device);
         var sizes = PanelModes(device, current).Select(m => new PanelResolution(m.dmPelsWidth, m.dmPelsHeight))
             .Append(new(current.dmPelsWidth, current.dmPelsHeight)).Distinct()
@@ -81,8 +85,6 @@ internal static partial class RefreshRateController
         string? error = null;
         try
         {
-            var source = FindDisplay(device)?.DisplayScreen.ToPathDisplaySource()
-                ?? throw new InvalidOperationException("DPI display source unavailable.");
             scale = (int)source.CurrentDPIScale;
             var maximum = (int)source.MaximumDPIScale;
             scales = Enum.GetValues<DisplayConfigSourceDPIScale>().Select(s => (int)s)
@@ -137,9 +139,7 @@ internal static partial class RefreshRateController
             throw new ArgumentOutOfRangeException(nameof(percent), "当前屏幕不支持此缩放档位。 / Unsupported scale for this panel.");
         void Set(int value)
         {
-            RequireLaptopDisplay(device);
-            var source = FindDisplay(device)?.DisplayScreen.ToPathDisplaySource()
-                ?? throw new InvalidOperationException("DPI display source unavailable.");
+            var source = RequireLaptopDisplaySource(device);
             source.CurrentDPIScale = (DisplayConfigSourceDPIScale)value;
             if ((int)source.CurrentDPIScale != value) throw new InvalidOperationException("Windows did not confirm the scale.");
         }

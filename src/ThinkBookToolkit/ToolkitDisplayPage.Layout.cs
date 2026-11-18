@@ -17,6 +17,7 @@ internal sealed partial class ToolkitDisplayPage
     private readonly TextBox _customScale = new() { Width = 80, Text = "150", MaxLength = 3, VerticalContentAlignment = VerticalAlignment.Center };
     private readonly TextBlock _panelStatus = new() { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
     private Button _resolutionApply = null!, _scaleApply = null!, _customScaleApply = null!, _customScaleDisable = null!, _panelReload = null!;
+    private Button _openScaleSettings = null!;
     private LaptopDisplayLayout? _panelLayout;
     private bool _panelBusy, _panelReading, _customScalePending;
 
@@ -25,6 +26,12 @@ internal sealed partial class ToolkitDisplayPage
         var rows = new StackPanel();
         _resolutionApply = ActionButton(L("应用", "Apply"));
         _scaleApply = ActionButton(L("应用", "Apply"));
+        _openScaleSettings = ActionButton(L("打开 Windows 显示设置", "Open Windows display settings"));
+        _openScaleSettings.Click += (_, _) =>
+        {
+            try { Process.Start(new ProcessStartInfo("ms-settings:display") { UseShellExecute = true }); }
+            catch (Exception ex) { SetPanelStatus(ex.GetBaseException().Message); }
+        };
         _customScaleApply = ActionButton(L("应用自定义", "Apply custom"));
         _customScaleDisable = ActionButton(L("关闭自定义缩放", "Disable custom scaling"));
         _panelReload = ActionButton(L("重新读取", "Reload"));
@@ -67,7 +74,7 @@ internal sealed partial class ToolkitDisplayPage
         rows.Children.Add(SettingRow(L("DPI 缩放", "DPI scaling"),
             L("使用当前内置屏幕支持的固定缩放档位；15 秒未确认会还原。",
                 "Use a supported scaling preset for the internal panel. Reverts unless confirmed within 15 seconds."),
-            Controls(_panelScale, _scaleApply)));
+            Controls(_panelScale, _scaleApply, _openScaleSettings)));
         rows.Children.Add(SettingRow(L("自定义缩放（系统级）", "Custom scaling (system-wide)"),
             L("100–500%。Windows 自定义缩放作用于当前账户的所有屏幕，注销后生效，不是仅修改笔记本屏幕。不会自动注销。",
                 "100–500%. Windows custom scaling affects all displays for this account after sign-out, not just the laptop panel. No automatic sign-out."),
@@ -89,6 +96,7 @@ internal sealed partial class ToolkitDisplayPage
         var enabled = !_panelBusy && !_panelReading && !_customScalePending;
         _panelResolution.IsEnabled = _resolutionApply.IsEnabled = enabled && _panelLayout is not null;
         _panelScale.IsEnabled = _scaleApply.IsEnabled = enabled && _panelLayout?.Scales.Count > 0;
+        _openScaleSettings.Visibility = _panelLayout?.ScaleError is not null ? Visibility.Visible : Visibility.Collapsed;
         _customScale.IsEnabled = _customScaleApply.IsEnabled = !_panelBusy && !_panelReading && _panelLayout is not null;
         _customScaleDisable.IsEnabled = !_panelBusy && !_panelReading;
         _panelReload.IsEnabled = !_panelBusy && !_panelReading;
@@ -143,7 +151,11 @@ internal sealed partial class ToolkitDisplayPage
         await ReloadPanelLayoutAsync();
         await _viewModel.ReloadRefreshRateAsync();
         SyncControls();
-        if (failure is not null) SetPanelStatus(failure);
+        if (failure is not null)
+        {
+            if (scale) _openScaleSettings.Visibility = Visibility.Visible;
+            SetPanelStatus(failure);
+        }
     }
 
     private async Task ApplyCustomScaleAsync(bool disable)

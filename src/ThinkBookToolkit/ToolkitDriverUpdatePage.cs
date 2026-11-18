@@ -127,7 +127,10 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
                 : L(
                     $"发现 {availableCount} 项可用更新。",
                     $"{availableCount} available update(s) found.");
-            if (filteredCount > 0)
+            if (result.UsedFallbackCatalog)
+                _status.Text = L("该机型没有 Windows 10 目录，已显示 Windows 11 目录供单项选择。",
+                    "No Windows 10 catalog exists for this model. Windows 11 packages are shown for individual selection.");
+            else if (filteredCount > 0)
                 _status.Text += L($" 另有 {filteredCount} 项带适用条件提示，开启“显示无需更新的内容”可查看。",
                     $" {filteredCount} additional package(s) have applicability notices. Enable Show up-to-date items to view them.");
         }
@@ -260,7 +263,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
             _scanResults = ApplySuccessfulInstallations(
                 _scanResults,
                 successfulPackageIds,
-                keepAsUpToDate: _showUpToDate.IsChecked == true);
+                keepAsUpToDate: _showUpToDate.IsChecked == true || updates.Any(update => update.FromFallbackCatalog));
         }
         RenderVisibleUpdates();
 
@@ -399,6 +402,8 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
         {
             Text = !update.IsInstalledStateKnown
                 ? L("状态未知", "Unknown state")
+                : update.FromFallbackCatalog && update.IsUpdateRequired && update.CanInstall
+                ? L("仅供单项安装", "Individual installation only")
                 : update.IsUpdateRequired && !update.IsApplicable
                 ? L("不符合适用条件", "Not applicable")
                 : update.IsUpdateRequired
@@ -526,7 +531,7 @@ internal sealed class ToolkitDriverUpdatePage : ToolkitPageBase
 
     internal static IEnumerable<DriverUpdateItem> FilterUpdatesForDisplay(
         IEnumerable<DriverUpdateItem> updates, bool showUpToDate) =>
-        updates.Where(update => showUpToDate || update.IsRecommendedUpdate);
+        updates.Where(update => showUpToDate || update.IsRecommendedUpdate || update.FromFallbackCatalog);
 
     private static DateTime ParseReleaseDate(string value) =>
         DateTime.TryParse(

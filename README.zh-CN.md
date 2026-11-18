@@ -37,6 +37,8 @@ ThinkBook Toolkit 是面向部分 Lenovo ThinkBook 设备的 Windows 原生控�
 
 ## 运行要求与安全提示
 
+Windows 10 上优先扫描该机型的 Windows 10 驱动目录。联想未提供目录或目录为空时，页面会列出 Windows 11 目录的包并提示兼容性。此类包须逐项确认安装，不计入“安装所有更新”。
+
 - Windows 11 x64，并以管理员权限运行；
 - 设备对应功能所需的联想驱动和服务；
 - 在已测试设备上，LibreHardwareMonitor 读取 CPU 温度需要系统已安装并能够使用 [PawnIO](https://pawnio.eu/)。PawnIO 是系统级组件，不随 Toolkit 或外置依赖目录提供；

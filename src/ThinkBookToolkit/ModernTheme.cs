@@ -120,7 +120,7 @@ internal static class ModernTheme
         // taskbar/style transition can leave the native caption stale.
         _ = SetWindowText(handle, window.Title);
         var dark = isDark ? 1 : 0;
-        if (DwmSetWindowAttribute(
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) && DwmSetWindowAttribute(
                 handle,
                 DwmwaUseImmersiveDarkMode,
                 ref dark,
@@ -133,10 +133,13 @@ internal static class ModernTheme
                 sizeof(int));
         }
 
-        var palette = ToolkitPalette.For(isDark);
-        SetWindowColor(handle, DwmwaCaptionColor, palette.Canvas);
-        SetWindowColor(handle, DwmwaTextColor, palette.Text);
-        SetWindowColor(handle, DwmwaBorderColor, palette.Border);
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            var palette = ToolkitPalette.For(isDark);
+            SetWindowColor(handle, DwmwaCaptionColor, palette.Canvas);
+            SetWindowColor(handle, DwmwaTextColor, palette.Text);
+            SetWindowColor(handle, DwmwaBorderColor, palette.Border);
+        }
         if (window.IsVisible)
             _ = RedrawWindow(handle, IntPtr.Zero, IntPtr.Zero,
                 0x0001 | 0x0100 | 0x0400); // RDW_INVALIDATE | RDW_UPDATENOW | RDW_FRAME

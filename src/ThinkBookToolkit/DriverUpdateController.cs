@@ -28,14 +28,16 @@ internal sealed record DriverUpdateItem(
     bool IsApplicable = true,
     bool IsInstalledStateKnown = true,
     bool CanInstall = true,
-    string ApplicabilityWarning = "")
+    string ApplicabilityWarning = "",
+    bool FromFallbackCatalog = false)
 {
-    public bool IsRecommendedUpdate => IsApplicable && IsInstalledStateKnown && CanInstall && IsUpdateRequired;
+    public bool IsRecommendedUpdate => !FromFallbackCatalog && IsApplicable && IsInstalledStateKnown && CanInstall && IsUpdateRequired;
 }
 
 internal sealed record DriverUpdateScanResult(
     string Status,
-    IReadOnlyList<DriverUpdateItem> Updates);
+    IReadOnlyList<DriverUpdateItem> Updates,
+    bool UsedFallbackCatalog = false);
 
 internal sealed record DriverUpdateInstallResult(
     string Status,

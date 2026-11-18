@@ -2068,23 +2068,30 @@ internal sealed class ToolkitRuntimeService : IDisposable
             var presence = await Task.Run(() => _gpuPresence.Capture(force: true));
             if (!presence.Reliable || presence.MatchingDeviceIds.Count != 1)
                 return L("无法唯一确定要重启的独立显卡。", "Could not identify a unique discrete GPU to restart.");
-            var start = new ProcessStartInfo
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
             {
-                FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "pnputil.exe"),
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            start.ArgumentList.Add("/restart-device");
-            start.ArgumentList.Add(presence.MatchingDeviceIds[0]);
-            using var process = Process.Start(start) ?? throw new InvalidOperationException("PnPUtil did not start.");
-            var output = process.StandardOutput.ReadToEndAsync();
-            var error = process.StandardError.ReadToEndAsync();
-            await process.WaitForExitAsync();
-            var detail = (await output) + (await error);
-            if (process.ExitCode != 0)
-                return L("重启独立显卡失败：", "Discrete GPU restart failed: ") + detail.Trim();
+                var start = new ProcessStartInfo
+                {
+                    FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "pnputil.exe"),
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                start.ArgumentList.Add("/restart-device");
+                start.ArgumentList.Add(presence.MatchingDeviceIds[0]);
+                using var process = Process.Start(start) ?? throw new InvalidOperationException("PnPUtil did not start.");
+                var output = process.StandardOutput.ReadToEndAsync();
+                var error = process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                var detail = (await output) + (await error);
+                if (process.ExitCode != 0)
+                    return L("重启独立显卡失败：", "Discrete GPU restart failed: ") + detail.Trim();
+            }
+            else if (await Task.Run(() => DiscreteGpuPresenceDetector.RestartLegacyDisplayDevice(presence.MatchingDeviceIds[0])))
+            {
+                return L("Windows 需要重启系统才能完成显卡重启。", "Restart Windows to complete the GPU restart.");
+            }
             _cachedPowerSettings = null;
             NvPcfPowerController.Shutdown();
             GpuTelemetryControl.RestartWorkers();
