@@ -739,7 +739,8 @@ internal sealed class ToolkitMainWindow : Window
         if (_navigationColumn is null || _navigationSurface is null || _mainArea is null)
             return;
         _sidebarCollapsed = collapse;
-        _navigationColumn.Width = new GridLength(collapse ? 82 : Math.Clamp(width * 0.18, 196, 238));
+        // The compact rail must fit the logo and an icon button alongside a visible scrollbar.
+        _navigationColumn.Width = new GridLength(collapse ? 96 : Math.Clamp(width * 0.18, 196, 238));
         _navigationSurface.Margin = collapse
             ? new Thickness(10, 14, 8, 14)
             : new Thickness(14, 17, 12, 17);
@@ -753,8 +754,13 @@ internal sealed class ToolkitMainWindow : Window
         foreach (var button in _navigation.Values)
         {
             button.Padding = collapse
-                ? new Thickness(7, 7, 4, 7)
+                ? new Thickness(3, 7, 3, 7)
                 : new Thickness(8, 7, 10, 7);
+            if (button.Content is Grid item)
+            {
+                item.ColumnDefinitions[1].Width = collapse ? new GridLength(1, GridUnitType.Star) : new GridLength(34);
+                item.ColumnDefinitions[2].Width = collapse ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+            }
         }
         _mainArea.Margin = collapse
             ? new Thickness(4, 14, 14, 14)

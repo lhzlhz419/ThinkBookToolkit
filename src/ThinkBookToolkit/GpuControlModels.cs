@@ -23,6 +23,8 @@ public sealed class GpuOverclockSettings
 
 internal sealed record GpuPStateLevel(string Name, int State, bool Minimum = false)
 {
+    public string DisplayName => Name.Replace('.', ' ');
+    public override string ToString() => DisplayName;
     internal const string DefaultName = "P0.Max";
     internal bool RatedTdp => Name == "P0.TDP";
     internal static IReadOnlyList<GpuPStateLevel> Choices { get; } = CreateChoices();

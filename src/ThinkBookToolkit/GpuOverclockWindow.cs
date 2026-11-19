@@ -32,7 +32,7 @@ internal sealed class GpuOverclockWindow : Window
     private readonly CheckBox _coreLimitEnabled = new();
     private readonly CheckBox _memoryLimitEnabled = new();
     private readonly CheckBox _pStateLockEnabled = new();
-    private readonly ComboBox _pStateLevel = new() { MinWidth = 125, DisplayMemberPath = nameof(GpuPStateLevel.Name) };
+    private readonly ComboBox _pStateLevel = new() { MinWidth = 125, DisplayMemberPath = nameof(GpuPStateLevel.DisplayName) };
     private string _preferredPState;
     private readonly CheckBox _autoEnableOnStartup = new();
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
@@ -139,9 +139,9 @@ internal sealed class GpuOverclockWindow : Window
             _memoryOffsetEnabled, _memoryRangeText));
         _refreshRanges.Content = T("刷新驱动范围", "Refresh driver ranges");
         _refreshRanges.HorizontalAlignment = HorizontalAlignment.Left;
-        _refreshRanges.Margin = new Thickness(0, 0, 0, 9);
+        _refreshRanges.Margin = new Thickness(10, 0, 0, 0);
+        _refreshRanges.MinHeight = 38;
         _refreshRanges.Click += async (_, _) => await RefreshRangesAsync();
-        root.Children.Add(_refreshRanges);
         root.Children.Add(Field(
             T("限制核心频率", "Limit core frequency"),
             T(
@@ -229,7 +229,10 @@ internal sealed class GpuOverclockWindow : Window
             Width = new GridLength(1, GridUnitType.Star)
         });
         buttons.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        buttons.Children.Add(_restore);
+        var left = new StackPanel { Orientation = Orientation.Horizontal };
+        left.Children.Add(_restore);
+        left.Children.Add(_refreshRanges);
+        buttons.Children.Add(left);
         var right = new StackPanel { Orientation = Orientation.Horizontal };
         right.Children.Add(_apply);
         right.Children.Add(_applyAndClose);

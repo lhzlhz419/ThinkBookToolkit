@@ -8,6 +8,42 @@ using System.Windows.Media;
 
 namespace ThinkBookToolkit;
 
+// WrapPanel measures each selector and status at its natural width. Distribute
+// spare space across a full row without making a short trailing row oversized.
+internal sealed class OverviewModePanel : WrapPanel
+{
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        var children = Children.Cast<UIElement>().Where(child => child.Visibility != Visibility.Collapsed).ToArray();
+        double top = 0;
+        for (int first = 0; first < children.Length;)
+        {
+            int end = first;
+            double used = 0, height = 0;
+            while (end < children.Length)
+            {
+                var size = children[end].DesiredSize;
+                if (end > first && used + size.Width > finalSize.Width + 0.000001) break;
+                used += size.Width;
+                height = Math.Max(height, size.Height);
+                end++;
+            }
+            var extra = first == 0 || end < children.Length
+                ? Math.Max(0, finalSize.Width - used) / (end - first) : 0;
+            double left = 0;
+            for (int i = first; i < end; i++)
+            {
+                var width = Math.Min(finalSize.Width, children[i].DesiredSize.Width + extra);
+                children[i].Arrange(new Rect(left, top, width, height));
+                left += width;
+            }
+            top += height;
+            first = end;
+        }
+        return finalSize;
+    }
+}
+
 internal sealed class ToolkitOverviewPage : ToolkitPageBase,
     IControlStateRefreshable
 {
@@ -220,6 +256,8 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             return color;
         }
         var content = new ResponsiveGrid();
+        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         content.ColumnDefinitions.Add(new ColumnDefinition
         {
             Width = new GridLength(1, GridUnitType.Star)
@@ -250,11 +288,8 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             Foreground = HeroTextBrush("#DDE5FF"),
             FontSize = 12
         });
-        var pills = new AdaptiveUniformPanel
+        var pills = new OverviewModePanel
         {
-            MinimumItemWidth = 188,
-            BalanceRows = true,
-            Spacing = 8,
             Margin = new Thickness(0, 15, 0, 0)
         };
         var layout = Runtime.Settings.OverviewLayout;
@@ -284,7 +319,9 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             HeroRestartStatus(
                 L("重启状态", "Restart state"),
                 nameof(OverviewViewModel.PendingRestart)));
-        left.Children.Add(pills);
+        Grid.SetRow(pills, 1);
+        Grid.SetColumnSpan(pills, 2);
+        content.Children.Add(pills);
         content.Children.Add(left);
 
         var decoration = new TextBlock
@@ -316,7 +353,10 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         void AddHero(string id, UIElement element)
         {
             if (OverviewLayoutDefaults.IsHeroCardEnabled(layout, id))
+            {
+                if (element is FrameworkElement pill) pill.Margin = new Thickness(0, 0, 8, 8);
                 pills.Children.Add(element);
+            }
         }
     }
 

@@ -79,6 +79,9 @@ internal static class GpuOverclockRangeTests
             var toggle = (CheckBox)typeof(GpuOverclockWindow).GetField("_pStateLockEnabled", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
             Check(toggle.IsChecked == false && combo.Items.Cast<GpuPStateLevel>().Select(l => l.Name).SequenceEqual(reported),
                 "Lock must default off and the selector must contain only reported levels.");
+            Check(combo.Items[0].ToString() == "P0 Max" && combo.Items[4].ToString() == "P8 Min" &&
+                  combo.DisplayMemberPath == nameof(GpuPStateLevel.DisplayName),
+                "The selection box and dropdown must show short P-State labels.");
             toggle.IsChecked = true;
             combo.SelectedIndex = 3;
             window.ApplyRanges(GpuWorkerCommandResponse.Ok() with { OverclockRanges = ranges with { PStateLevels = ["P0.Max"] } });

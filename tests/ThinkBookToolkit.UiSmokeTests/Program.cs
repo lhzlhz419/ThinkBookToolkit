@@ -430,6 +430,13 @@ internal static class Program
                     page.Arrange(new Rect(0, 0, width, page.DesiredSize.Height));
                     foreach (var name in new[] { "_itsMode", "_gpuMode", "_fanMode" })
                         AssertFitsInsideCard(GetPrivateField<ComboBox>(page, name));
+                    if (width == 885)
+                    {
+                        var modes = Descendants(page).OfType<OverviewModePanel>().Single();
+                        Assert(modes.Children.Cast<FrameworkElement>().Select(pill =>
+                            Math.Round(pill.TranslatePoint(new Point(), modes).Y)).Distinct().Count() == 1,
+                            "The five overview controls wrap while their natural widths fit on one line.");
+                    }
                 }
             }
         }
@@ -2529,7 +2536,7 @@ internal static class Program
                    .HorizontalAlignment == HorizontalAlignment.Left &&
                Descendants(overclockWindow).OfType<Button>()
                    .Select(button => button.Content?.ToString())
-                   .SequenceEqual(["刷新驱动范围", "恢复默认", "保存", "保存并关闭"]),
+                   .SequenceEqual(["恢复默认", "刷新驱动范围", "保存", "保存并关闭"]),
             "The disabled GPU-overclock dialog does not expose the requested ranges and save actions.");
 
         var applicationsWindow = new GpuApplicationsWindow(

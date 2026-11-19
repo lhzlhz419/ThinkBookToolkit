@@ -383,7 +383,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
     {
         var panel = new AdaptiveUniformPanel
         {
-            MinimumItemWidth = 300,
+            MinimumItemWidth = 260,
             Spacing = 8
         };
         Add(OverviewCardIds.Cpu, HardwareMonitorCard(
@@ -1303,7 +1303,6 @@ internal sealed class AdaptiveUniformPanel : Panel
     public double Spacing { get; set; } = 10;
 
     public int MaximumColumns { get; set; } = int.MaxValue;
-    public bool BalanceRows { get; init; }
 
     protected override Size MeasureOverride(Size availableSize)
     {
@@ -1373,13 +1372,10 @@ internal sealed class AdaptiveUniformPanel : Panel
     {
         if (itemCount == 0)
             return 1;
-        var columns = Math.Max(
+        return Math.Max(
             1,
             Math.Min(
                 Math.Min(itemCount, Math.Max(1, MaximumColumns)),
                 (int)Math.Floor((width + Spacing) / (MinimumItemWidth + Spacing))));
-        if (!BalanceRows) return columns;
-        int rows = (itemCount + columns - 1) / columns;
-        return (itemCount + rows - 1) / rows;
     }
 }
