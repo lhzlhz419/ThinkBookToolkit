@@ -47,6 +47,7 @@ internal static class GpuMonitorWorker
     internal const string KillApplicationsCommand = "KILL_APPLICATIONS";
     internal const string ApplyOverclockCommand = "APPLY_OVERCLOCK:";
     internal const string ResetOverclockCommand = "RESET_OVERCLOCK";
+    internal const string ReleasePStateCommand = "RELEASE_PSTATE";
     internal const string ReadOverclockRangesCommand = "READ_OVERCLOCK_RANGES";
 
     public static int Run(string pipeName)
@@ -114,6 +115,12 @@ internal static class GpuMonitorWorker
                         stateReader.KillApplications()));
                     continue;
                 }
+                if (command == ReleasePStateCommand)
+                {
+                    stateReader ??= new GuardianNvidiaStateReader(log);
+                    output.WriteLine(JsonSerializer.Serialize(stateReader.ReleasePState()));
+                    continue;
+                }
                 if (command == ReadOverclockRangesCommand)
                 {
                     stateReader ??= new GuardianNvidiaStateReader(log);
@@ -126,7 +133,7 @@ internal static class GpuMonitorWorker
                 {
                     stateReader ??= new GuardianNvidiaStateReader(log);
                     output.WriteLine(JsonSerializer.Serialize(
-                        ApplyOverclock(command, stateReader)));
+                        ApplyOverclock(command, stateReader) with { PStateLockMayBeActive = stateReader.OwnsPStateLock }));
                     continue;
                 }
                 if (string.Equals(
@@ -546,6 +553,8 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
         ["dwm.exe", "explorer.exe"];
     private readonly GuardianLog _log;
     private PhysicalGPU? _gpu;
+    private PhysicalGPU? _pStateOwner;
+    internal bool OwnsPStateLock => _pStateOwner is not null;
     private string _gpuName = string.Empty;
     private DateTimeOffset _nextRefresh;
     private bool? _lastIncludeDisplayActivity;
@@ -796,7 +805,21 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
             if (_gpu is null)
                 return GpuWorkerCommandResponse.Failure(
                     "The discrete GPU is unavailable.");
+            var level = settings.PStateLockEnabled ? GpuPStateLevel.Find(settings.PStateLockLevel) : null;
+            var frequency = level is null ? 0 : NvidiaPStateControl.ReadFrequency(_gpu, level);
             GuardianNvidiaOverclockController.Apply(_gpu, settings, reset);
+            if (level is not null)
+            {
+                _pStateOwner = _gpu;
+                try { NvidiaPStateControl.Apply(_gpu, level, frequency); }
+                catch
+                {
+                    // An NVAPI operation may have succeeded before a later write failed.
+                    var recovery = ReleasePState();
+                    if (!recovery.Success) _log.Error("P-State recovery failed: " + recovery.Error);
+                    throw;
+                }
+            }
             return GpuWorkerCommandResponse.Ok();
         }
         catch (Exception ex)
@@ -869,8 +892,26 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
                value == -156;
     }
 
+    internal GpuWorkerCommandResponse ReleasePState()
+    {
+        try
+        {
+            var gpu = _pStateOwner ?? _gpu ?? FindLaptopGpu();
+            if (gpu is null) return GpuWorkerCommandResponse.Failure("Discrete GPU unavailable for P-State reset.");
+            NvidiaPStateControl.Reset(gpu);
+            _pStateOwner = null;
+            return GpuWorkerCommandResponse.Ok();
+        }
+        catch (Exception ex)
+        {
+            _log.Error("Could not restore dynamic P-State.", ex);
+            return GpuWorkerCommandResponse.Failure(ex.GetBaseException().Message);
+        }
+    }
+
     public void Dispose()
     {
+        if (_pStateOwner is not null) ReleasePState();
         _gpu = null;
         try
         {
@@ -882,14 +923,85 @@ internal sealed class GuardianNvidiaStateReader : IDisposable
     }
 }
 
+internal static class NvidiaPStateControl
+{
+    internal static uint ReadFrequency(PhysicalGPU gpu, GpuPStateLevel level)
+    {
+        var states = GPUApi.GetPerformanceStates20(gpu.Handle);
+        return FrequencyFor(states.Clocks, level) ??
+            throw new InvalidOperationException($"Driver does not report {level.Name} on this GPU.");
+    }
+
+    internal static string[] SupportedLevels(IReadOnlyDictionary<PerformanceStateId, IPerformanceStates20ClockEntry[]> clocks) =>
+        GpuPStateLevel.Choices.Where(level => FrequencyFor(clocks, level).HasValue).Select(level => level.Name).ToArray();
+
+    internal static uint? FrequencyFor(IReadOnlyDictionary<PerformanceStateId, IPerformanceStates20ClockEntry[]> states,
+        GpuPStateLevel level)
+    {
+        if (!states.TryGetValue((PerformanceStateId)level.State, out var clocks)) return null;
+        var clock = clocks.FirstOrDefault(entry => entry.DomainId == PublicClockDomain.Graphics);
+        if (clock is null) return null;
+        if (level.RatedTdp) return 0; // LLT offers rated TDP only when the GPU reports P0.
+        // NvAPIWrapper exposes both arms of the native union. Only ClockType
+        // tells us which arm is valid (a non-null FrequencyRange is insufficient).
+        var frequency = clock.ClockType switch
+        {
+            PerformanceStates20ClockType.Single => clock.SingleFrequency.FrequencyInkHz,
+            PerformanceStates20ClockType.Range when level.Minimum => clock.FrequencyRange.MinimumFrequencyInkHz,
+            PerformanceStates20ClockType.Range => clock.FrequencyRange.MaximumFrequencyInkHz,
+            _ => 0u
+        };
+        return frequency == 0 ? null : frequency;
+    }
+
+    internal static void Apply(PhysicalGPU gpu, GpuPStateLevel level, uint frequency) =>
+        Apply(level, frequency, value => GPUApi.SetClockBoostLock(gpu.Handle, value),
+            value => GPUApi.SetRatedTdpControl(gpu.Handle, value));
+
+    internal static void Apply(GpuPStateLevel level, uint frequency, Action<PrivateClockBoostLockV2> setClock,
+        Action<PrivateRatedTdpControlV1> setRatedTdp)
+    {
+        if (level.RatedTdp)
+        {
+            setClock(PrivateClockBoostLockV2.CreateDynamicReset());
+            setRatedTdp(PrivateRatedTdpControlV1.EnableRatedTdp());
+            return;
+        }
+        if (frequency == 0) throw new ArgumentOutOfRangeException(nameof(frequency));
+        setRatedTdp(PrivateRatedTdpControlV1.ClearRatedTdp());
+        setClock(PrivateClockBoostLockV2.CreatePStateAndFrequencyLock((PerformanceStateId)level.State, frequency));
+    }
+
+    internal static void Reset(PhysicalGPU gpu)
+    {
+        var errors = new List<string>();
+        void Attempt(string operation, Action action)
+        {
+            try { action(); }
+            catch (Exception ex) { errors.Add(operation + ": " + ex.GetBaseException().Message); }
+        }
+        Attempt("Clear rated TDP", () => GPUApi.SetRatedTdpControl(gpu.Handle, PrivateRatedTdpControlV1.ClearRatedTdp()));
+        Attempt("Release clock lock", () => GPUApi.SetClockBoostLock(gpu.Handle, PrivateClockBoostLockV2.CreateDynamicReset()));
+        // Older drivers may omit this supplementary request. Clearing the two
+        // locks above is still mandatory and either failure is reported.
+        try { GPUApi.EnableDynamicPStates(gpu.Handle); }
+        catch (NVIDIANotSupportedException) { }
+        catch (NVIDIAApiException ex) when (ex.Status is NvAPIWrapper.Native.General.Status.NotSupported
+            or NvAPIWrapper.Native.General.Status.NoImplementation) { }
+        catch (Exception ex) { errors.Add("Restore dynamic P-States: " + ex.GetBaseException().Message); }
+        if (errors.Count != 0) throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
+    }
+}
+
 internal static class GuardianNvidiaOverclockController
 {
     internal static GpuOverclockRanges ReadRanges(PhysicalGPU gpu)
     {
         var states = GPUApi.GetPerformanceStates20(gpu.Handle);
-        if (!states.Clocks.TryGetValue(PerformanceStateId.P0_3DPerformance, out var clocks))
-            return new(null, null);
-        return RangesFromClocks(clocks);
+        var statesById = states.Clocks;
+        var offsets = statesById.TryGetValue(PerformanceStateId.P0_3DPerformance, out var clocks)
+            ? RangesFromClocks(clocks) : new GpuOverclockRanges(null, null);
+        return offsets with { PStateLevels = NvidiaPStateControl.SupportedLevels(statesById) };
     }
 
     internal static GpuOverclockRanges RangesFromClocks(IReadOnlyList<IPerformanceStates20ClockEntry> clocks)

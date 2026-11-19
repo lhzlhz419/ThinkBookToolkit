@@ -52,6 +52,9 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
     private bool _disposed;
     private bool _missingExecutableLogged;
     private string _appliedOverclockSignature = string.Empty;
+    // Keep this across pipe timeouts/worker replacement: a driver write may
+    // have completed before its acknowledgement was lost.
+    private bool _mayOwnPStateLock;
 
     public GpuMonitorWorkerClient(string? executable = null, string argument = "--gpu-worker",
         TimeSpan? responseTimeout = null, TimeSpan? restartDelay = null)
@@ -180,35 +183,45 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
         var signature = GpuOverclockPolicy.Signature(settings);
         lock (_sync)
         {
+            if (settings.PStateLockEnabled && GpuTelemetryControl.Mode != GpuTelemetryMode.Full)
+                return GpuWorkerCommandResponse.Failure("P-State locking requires an available discrete GPU.");
             if (!force && signature == _appliedOverclockSignature)
                 return GpuWorkerCommandResponse.Ok();
+            _appliedOverclockSignature = string.Empty;
+            if (!settings.PStateLockEnabled)
+            {
+                var release = ReleaseOwnedPState();
+                if (!release.Success) return release;
+            }
+            var payload = Convert.ToBase64String(
+                Encoding.UTF8.GetBytes(JsonSerializer.Serialize(settings)));
+            if (settings.PStateLockEnabled) _mayOwnPStateLock = true;
+            var result = ExecuteCommand(Guardian.GpuMonitorWorker.ApplyOverclockCommand + payload, OperationTimeout);
+            if (result.PStateLockMayBeActive is { } active) _mayOwnPStateLock = active;
+            if (result.Success) _appliedOverclockSignature = signature;
+            return result;
         }
-        var payload = Convert.ToBase64String(
-            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(settings)));
-        var result = ExecuteCommand(
-            Guardian.GpuMonitorWorker.ApplyOverclockCommand + payload,
-            OperationTimeout);
-        if (result.Success)
-        {
-            lock (_sync)
-                _appliedOverclockSignature = signature;
-        }
+    }
+
+    private GpuWorkerCommandResponse ReleaseOwnedPState()
+    {
+        if (!_mayOwnPStateLock) return GpuWorkerCommandResponse.Ok();
+        var result = ExecuteCommand(Guardian.GpuMonitorWorker.ReleasePStateCommand, OperationTimeout);
+        if (result.Success) _mayOwnPStateLock = false;
         return result;
     }
 
     public GpuWorkerCommandResponse ResetOverclock()
     {
-        var result = ExecuteCommand(
-            Guardian.GpuMonitorWorker.ResetOverclockCommand,
-            OperationTimeout);
-        if (result.Success)
+        lock (_sync)
         {
-            lock (_sync)
-                _appliedOverclockSignature =
-                    GpuOverclockPolicy.Signature(
-                        new GpuOverclockSettings());
+            _appliedOverclockSignature = string.Empty;
+            var release = ReleaseOwnedPState();
+            if (!release.Success) return release;
+            var result = ExecuteCommand(Guardian.GpuMonitorWorker.ResetOverclockCommand, OperationTimeout);
+            if (result.Success) _appliedOverclockSignature = GpuOverclockPolicy.Signature(new GpuOverclockSettings());
+            return result;
         }
-        return result;
     }
 
     private GpuWorkerCommandResponse ExecuteCommand(
@@ -364,8 +377,14 @@ internal sealed class GpuMonitorWorkerClient : IDisposable
             // dGPU still has real clients. Once it becomes inactive Read()
             // switches to Paused and this callback ends the entire process,
             // releasing LHM, NVAPI and all native NVIDIA handles together.
-            if (mode is GpuTelemetryMode.Full or
-                GpuTelemetryMode.Quiescing)
+            if (mode == GpuTelemetryMode.Quiescing && _mayOwnPStateLock && _process is { HasExited: false } &&
+                _pipe is { IsConnected: true })
+            {
+                _appliedOverclockSignature = string.Empty;
+                var released = ReleaseOwnedPState();
+                if (!released.Success) ToolkitLog.Warning("P-State release before GPU removal failed: " + released.Error);
+            }
+            if (mode is GpuTelemetryMode.Full or GpuTelemetryMode.Quiescing)
             {
                 return;
             }

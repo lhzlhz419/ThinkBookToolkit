@@ -2508,7 +2508,8 @@ internal static class Program
                collectedSettings?.MinimumMemoryFrequencyMhz == 6000 &&
                collectedSettings.MaximumMemoryFrequencyMhz == 12000 &&
                !collectedSettings.MemoryFrequencyLimitEnabled &&
-               Descendants(overclockWindow).OfType<CheckBox>().Count() == 5 &&
+               GetPrivateField<CheckBox>(overclockWindow, "_pStateLockEnabled").IsChecked == false &&
+               ContainsText(overclockWindow, "锁定P-state可能会导致无法卸载独显或者性能损失，请谨慎使用") &&
                Descendants(overclockWindow).OfType<CheckBox>()
                    .Count(toggle => toggle.IsChecked == true) == 3 &&
                GetPrivateField<CheckBox>(

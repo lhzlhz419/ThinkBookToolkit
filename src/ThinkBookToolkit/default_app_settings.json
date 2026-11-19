@@ -192,6 +192,8 @@
   "NvApiPowerSettingsLocksByMode": {},
   "GpuOverclock": {
     "Enabled": false,
+    "PStateLockEnabled": false,
+    "PStateLockLevel": "P0.Max",
     "CoreFrequencyOffsetEnabled": true,
     "MemoryFrequencyOffsetEnabled": true,
     "CoreFrequencyLimitEnabled": true,

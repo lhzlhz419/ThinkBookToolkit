@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace ThinkBookToolkit;
 
 public sealed class GpuOverclockSettings
 {
     public bool Enabled { get; set; }
+    public bool PStateLockEnabled { get; set; }
+    public string PStateLockLevel { get; set; } = GpuPStateLevel.DefaultName;
     public bool CoreFrequencyOffsetEnabled { get; set; } = true;
     public bool MemoryFrequencyOffsetEnabled { get; set; } = true;
     public bool CoreFrequencyLimitEnabled { get; set; } = true;
@@ -16,6 +19,26 @@ public sealed class GpuOverclockSettings
     public int? MaximumCoreFrequencyMhz { get; set; }
     public uint? MinimumMemoryFrequencyMhz { get; set; }
     public uint? MaximumMemoryFrequencyMhz { get; set; }
+}
+
+internal sealed record GpuPStateLevel(string Name, int State, bool Minimum = false)
+{
+    internal const string DefaultName = "P0.Max";
+    internal bool RatedTdp => Name == "P0.TDP";
+    internal static IReadOnlyList<GpuPStateLevel> Choices { get; } = CreateChoices();
+
+    private static IReadOnlyList<GpuPStateLevel> CreateChoices()
+    {
+        var choices = new List<GpuPStateLevel> { new(DefaultName, 0), new("P0.TDP", 0), new("P0.Min", 0, true) };
+        for (int state = 1; state <= 15; state++)
+        {
+            choices.Add(new($"P{state}.Max", state));
+            choices.Add(new($"P{state}.Min", state, true));
+        }
+        return choices.AsReadOnly();
+    }
+
+    internal static GpuPStateLevel? Find(string? name) => Choices.FirstOrDefault(level => level.Name == name);
 }
 
 internal static class GpuOverclockPolicy
@@ -42,9 +65,12 @@ internal static class GpuOverclockPolicy
             maximumMemory = null;
         }
 
+        var pState = GpuPStateLevel.Find(value.PStateLockLevel);
         return new GpuOverclockSettings
         {
             Enabled = value.Enabled,
+            PStateLockEnabled = value.PStateLockEnabled && pState is not null,
+            PStateLockLevel = pState?.Name ?? GpuPStateLevel.DefaultName,
             CoreFrequencyOffsetEnabled = value.CoreFrequencyOffsetEnabled,
             MemoryFrequencyOffsetEnabled = value.MemoryFrequencyOffsetEnabled,
             CoreFrequencyLimitEnabled = value.CoreFrequencyLimitEnabled,
@@ -65,6 +91,11 @@ internal static class GpuOverclockPolicy
         if (value is null)
         {
             error = "GPU overclock settings are missing.";
+            return false;
+        }
+        if (value.PStateLockEnabled && GpuPStateLevel.Find(value.PStateLockLevel) is null)
+        {
+            error = "Unknown GPU P-State lock level.";
             return false;
         }
         if (value.CoreFrequencyOffsetEnabled && !FitsDriverUnits(value.CoreFrequencyOffsetMhz))
@@ -116,6 +147,7 @@ internal static class GpuOverclockPolicy
     }
 
     public static bool IsDefault(GpuOverclockSettings value) =>
+        !value.PStateLockEnabled &&
         value.CoreFrequencyOffsetEnabled &&
         value.MemoryFrequencyOffsetEnabled &&
         value.CoreFrequencyLimitEnabled &&
@@ -130,6 +162,7 @@ internal static class GpuOverclockPolicy
     public static string Signature(GpuOverclockSettings value) =>
         string.Join(
             ":",
+            value.PStateLockEnabled ? value.PStateLockLevel : "dynamic",
             value.CoreFrequencyOffsetEnabled,
             value.MemoryFrequencyOffsetEnabled,
             value.CoreFrequencyLimitEnabled,
@@ -204,6 +237,7 @@ internal sealed record GpuWorkerCommandResponse(
     int AffectedProcesses = 0)
 {
     public GpuOverclockRanges? OverclockRanges { get; init; }
+    public bool? PStateLockMayBeActive { get; init; }
     public static GpuWorkerCommandResponse Failure(string error) =>
         new(false, error, [], 0);
 
@@ -227,4 +261,7 @@ internal sealed record GpuClockOffsetRange(int MinimumMhz, int MaximumMhz)
     }
 }
 
-internal sealed record GpuOverclockRanges(GpuClockOffsetRange? Core, GpuClockOffsetRange? Memory);
+internal sealed record GpuOverclockRanges(GpuClockOffsetRange? Core, GpuClockOffsetRange? Memory)
+{
+    public string[] PStateLevels { get; init; } = [];
+}

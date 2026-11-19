@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -30,6 +31,9 @@ internal sealed class GpuOverclockWindow : Window
     private readonly CheckBox _memoryOffsetEnabled = new();
     private readonly CheckBox _coreLimitEnabled = new();
     private readonly CheckBox _memoryLimitEnabled = new();
+    private readonly CheckBox _pStateLockEnabled = new();
+    private readonly ComboBox _pStateLevel = new() { MinWidth = 125, DisplayMemberPath = nameof(GpuPStateLevel.Name) };
+    private string _preferredPState;
     private readonly CheckBox _autoEnableOnStartup = new();
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Button _restore;
@@ -152,6 +156,19 @@ internal sealed class GpuOverclockWindow : Window
                 "Both limits must be positive integers; leave both blank for no limit. Supported on Ampere and newer architectures."),
             _memoryLimitEditor,
             _memoryLimitEnabled));
+        _preferredPState = settings.PStateLockLevel;
+        _pStateLevel.SelectionChanged += (_, _) =>
+        {
+            if (_pStateLevel.SelectedItem is GpuPStateLevel level) _preferredPState = level.Name;
+        };
+        BindOption(_pStateLockEnabled, _pStateLevel, settings.PStateLockEnabled);
+        _pStateLockEnabled.IsEnabled = settings.PStateLockEnabled;
+        var warning = new TextBlock();
+        root.Children.Add(Field(T("锁定P-State", "Lock P-State"),
+            T("锁定P-state可能会导致无法卸载独显或者性能损失，请谨慎使用",
+              "Locking the P-state may prevent the discrete GPU from powering down or reduce performance. Use with caution."),
+            _pStateLevel, _pStateLockEnabled, warning));
+        warning.Foreground = Brush(_palette.Danger);
         _autoEnableOnStartup.IsChecked =
             runtime.Settings.AutoEnableGpuOverclockOnStartup;
         _autoEnableOnStartup.Click += (_, _) =>
@@ -250,6 +267,14 @@ internal sealed class GpuOverclockWindow : Window
     internal void ApplyRanges(GpuWorkerCommandResponse response)
     {
         _ranges = response.Success && response.OverclockRanges is { } ranges ? ranges : new(null, null);
+        var preferred = _preferredPState;
+        var levels = GpuPStateLevel.Choices.Where(level => _ranges.PStateLevels.Contains(level.Name)).ToArray();
+        _pStateLevel.ItemsSource = levels;
+        _pStateLevel.SelectedItem = Array.Find(levels, level => level.Name == preferred);
+        if (_pStateLevel.SelectedIndex < 0 && _pStateLockEnabled.IsChecked != true && levels.Length > 0)
+            _pStateLevel.SelectedIndex = 0;
+        _pStateLevel.IsEnabled = _pStateLockEnabled.IsChecked == true && levels.Length > 0;
+        _pStateLockEnabled.IsEnabled = levels.Length > 0 || _pStateLockEnabled.IsChecked == true;
         _coreOffset.SetRange(_ranges.Core);
         _memoryOffset.SetRange(_ranges.Memory);
         string Label(GpuClockOffsetRange? range) => range is null
@@ -408,6 +433,9 @@ internal sealed class GpuOverclockWindow : Window
         SetOption(_memoryOffsetEnabled, _memoryOffset.View, true);
         SetOption(_coreLimitEnabled, _coreLimitEditor, true);
         SetOption(_memoryLimitEnabled, _memoryLimitEditor, true);
+        SetOption(_pStateLockEnabled, _pStateLevel, false);
+        _preferredPState = GpuPStateLevel.DefaultName;
+        _pStateLevel.SelectedIndex = _pStateLevel.Items.Count > 0 ? 0 : -1;
         SyncOffsetEditors();
         SetButtonsEnabled(false);
         _status.Text = T("正在恢复默认设置……", "Restoring defaults…");
@@ -460,6 +488,11 @@ internal sealed class GpuOverclockWindow : Window
         out string error)
     {
         settings = new GpuOverclockSettings();
+        if (_pStateLockEnabled.IsChecked == true && _pStateLevel.SelectedItem is not GpuPStateLevel)
+        {
+            error = T("请选择当前驱动报告的 P-State 档位，或关闭锁定。", "Select a P-State reported by the current driver or turn off locking.");
+            return false;
+        }
         if (!_coreOffset.TryGetValue(out var core, validateRange: false))
         {
             error = T("核心频率偏移量必须是整数。", "Core frequency offset must be an integer.");
@@ -538,6 +571,8 @@ internal sealed class GpuOverclockWindow : Window
 
         settings = new GpuOverclockSettings
         {
+            PStateLockEnabled = _pStateLockEnabled.IsChecked == true,
+            PStateLockLevel = (_pStateLevel.SelectedItem as GpuPStateLevel)?.Name ?? _preferredPState,
             CoreFrequencyOffsetEnabled = _coreOffsetEnabled.IsChecked == true,
             MemoryFrequencyOffsetEnabled = _memoryOffsetEnabled.IsChecked == true,
             CoreFrequencyLimitEnabled = _coreLimitEnabled.IsChecked == true,

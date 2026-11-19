@@ -18,12 +18,21 @@ internal static class GpuMonitorRecoveryTests
         pipe.Connect(5000);
         using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 1024, true);
         using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, true) { AutoFlush = true };
+        string? lockedLevel = null;
+        var releases = 0;
         while (reader.ReadLine() is { } command)
         {
             if (command == "EXIT") return 0;
             if (command == "CRASH") Environment.Exit(123);
             if (command == "HANG") Thread.Sleep(30000);
             var response = GpuWorkerCommandResponse.Ok(affectedProcesses: Environment.ProcessId);
+            if (command.StartsWith(Guardian.GpuMonitorWorker.ApplyOverclockCommand, StringComparison.Ordinal))
+            {
+                var settings = JsonSerializer.Deserialize<GpuOverclockSettings>(Convert.FromBase64String(command.Split(':')[1]))!;
+                if (settings.PStateLockEnabled) lockedLevel = settings.PStateLockLevel;
+            }
+            if (command == Guardian.GpuMonitorWorker.ReleasePStateCommand) { lockedLevel = null; releases++; }
+            if (command == "LOCK_STATUS") response = new(true, lockedLevel ?? "dynamic", [], releases);
             if (command == ThinkBookToolkit.Guardian.GpuMonitorWorker.ReadOverclockRangesCommand)
                 response = response with { OverclockRanges = new(new(-210, 720), new(-1400, 4200)) };
             writer.WriteLine(command == "MALFORMED" ? "invalid json" : JsonSerializer.Serialize(response));
@@ -39,6 +48,22 @@ internal static class GpuMonitorRecoveryTests
             TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(200));
         var first = client.QueryApplications();
         Check(first.Success, "Initial query failed.");
+        var prefs = new GpuOverclockSettings();
+        Check(client.ApplyOverclock(prefs, true).Success && Execute(client, "LOCK_STATUS").AffectedProcesses == 0,
+            "Normal overclock must not touch another program's P-State lock.");
+        prefs.PStateLockEnabled = true;
+        foreach (var level in new[] { "P0.Max", "P0.TDP", "P8.Min" })
+        {
+            prefs.PStateLockLevel = level;
+            Check(client.ApplyOverclock(prefs).Success && Execute(client, "LOCK_STATUS").Error == level,
+                "Changing a P-State was lost by the worker cache or IPC.");
+        }
+        prefs.PStateLockEnabled = false;
+        Check(client.ApplyOverclock(prefs).Success && Execute(client, "LOCK_STATUS") is { Error: "dynamic", AffectedProcesses: 1 },
+            "Unchecking the P-State option did not release it.");
+        prefs.PStateLockEnabled = true;
+        Check(client.ApplyOverclock(prefs).Success && client.ResetOverclock().Success &&
+            Execute(client, "LOCK_STATUS") is { Error: "dynamic", AffectedProcesses: 2 }, "Restoring defaults left a driver lock.");
         var ranges = client.ReadOverclockRanges();
         Check(ranges.Success && ranges.OverclockRanges?.Core == new GpuClockOffsetRange(-210, 720) &&
             ranges.OverclockRanges.Memory == new GpuClockOffsetRange(-1400, 4200), "Driver offset ranges did not cross the worker pipe.");
