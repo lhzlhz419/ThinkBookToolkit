@@ -31,7 +31,10 @@ internal sealed record PerformanceRuntimeSnapshot(
     FanRpmLimits FanRpmLimits,
     bool EffectiveGameMode,
     bool GamesRunning,
-    string Status);
+    string Status)
+{
+    public bool ResumeControlAfterFullSpeed { get; init; }
+}
 
 internal sealed record ToolkitRuntimeSnapshot(
     TemperatureSnapshot? Temperatures,
@@ -49,6 +52,7 @@ internal sealed record ToolkitRuntimeSnapshot(
     string? Error)
 {
     public string PendingGpuModeSource { get; init; } = string.Empty;
+    public bool ResumeControlAfterFullSpeed { get; init; }
     public QuietPerformanceStatus QuietPerformance { get; init; } = QuietPerformanceStatus.Unsupported;
     public ItsMode PerformanceMode => QuietPerformance.Selection(ItsMode);
     internal bool SupportsSelection(ItsMode mode, ItsModeControlPath path) =>
@@ -2713,6 +2717,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
                 null)
             {
                 PendingGpuModeSource = Settings.PendingGpuModeSource,
+                ResumeControlAfterFullSpeed = performance?.ResumeControlAfterFullSpeed == true,
                 QuietPerformance = Snapshot.QuietPerformance,
                 PowerSettings = _cachedPowerSettings,
                 PluginSensors = Plugins.Sensors,
@@ -5449,7 +5454,7 @@ internal sealed class ToolkitRuntimeService : IDisposable
     internal static FanControlMode ResolveTrayFanMode(
         ToolkitRuntimeSnapshot snapshot)
     {
-        if (!snapshot.FanControlRunning && !snapshot.FullSpeed)
+        if (!snapshot.FanControlRunning && !(snapshot.FullSpeed && snapshot.ResumeControlAfterFullSpeed))
             return FanControlMode.FirmwareAutomatic;
         return snapshot.FanStrategy switch
         {

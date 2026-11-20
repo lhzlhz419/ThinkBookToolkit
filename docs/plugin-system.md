@@ -81,6 +81,19 @@
 
 ### 传感器绘图范围
 
+要在“记录传感器信息”的同一张图中绘制多条曲线，可在同一插件的多个传感器上声明相同的 `RecordingChart`。例如，下列两个传感器会在“风扇转速”图中各有一条曲线和一个可单独切换的图例：
+
+```json
+[
+  { "Id": "example.fans.cpu", "Name": { "Chinese": "CPU 风扇", "English": "CPU fan" }, "Unit": "RPM", "Category": "fans",
+    "RecordingChart": { "Id": "rpm", "Title": { "Chinese": "风扇转速", "English": "Fan speed" } } },
+  { "Id": "example.fans.gpu", "Name": { "Chinese": "GPU 风扇", "English": "GPU fan" }, "Unit": "RPM", "Category": "fans",
+    "RecordingChart": { "Id": "rpm", "Title": { "Chinese": "风扇转速", "English": "Fan speed" } } }
+]
+```
+
+图表 ID 在插件内有效，同图成员使用相同标题。新增和替换内置读数的传感器都可参与，图例显示各自的名称和单位。曲线共用一个纵轴；所有成员都声明下限或上限时，对应边界取最小下限或最大上限，否则该端自动缩放。跨记录分类的图放在“其他记录”。录制时选中的曲线及图表声明随记录保存，卸载插件后仍可按原样回看。省略此字段沿用原有布局。
+
 传感器还可声明记录图表的纵轴范围：`ChartMinimum`（下限）和 `ChartMaximum`（上限），两者都是可选数字。例如：
 
 ```json

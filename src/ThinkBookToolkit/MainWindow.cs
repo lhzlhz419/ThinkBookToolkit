@@ -50,7 +50,7 @@ public sealed class MainWindow : Window
     private const uint ModNoRepeat = 0x4000;
 
     private readonly bool _embeddedMode;
-    private readonly FanController _fanController = new();
+    private readonly FanController _fanController;
     private TemperatureReader? _temperatureReader;
     private readonly DispatcherTimer _timer = new();
     private readonly DispatcherTimer _trayMenuTimer = new();
@@ -252,7 +252,12 @@ public sealed class MainWindow : Window
         bool embeddedMode = false,
         AppSettings? sharedSettings = null,
         GameProcessDetector? sharedGameProcessDetector = null)
+        : this(startToTrayRequested, embeddedMode, sharedSettings, sharedGameProcessDetector, new FanController()) { }
+
+    internal MainWindow(bool startToTrayRequested, bool embeddedMode, AppSettings? sharedSettings,
+        GameProcessDetector? sharedGameProcessDetector, FanController fanController)
     {
+        _fanController = fanController;
         _embeddedMode = embeddedMode;
         Title = "ThinkBook Toolkit - Performance & Cooling";
         Width = 1220;
@@ -401,7 +406,7 @@ public sealed class MainWindow : Window
         CurveProfileStore.NormalizeFanRpmLimits(_settings.FanRpmLimits),
         _effectiveGameMode,
         _confirmedGamesRunning,
-        _statusText.Text);
+        _statusText.Text) { ResumeControlAfterFullSpeed = _resumeFanControlAfterFullSpeed };
 
     internal FanBackendControlSemantics RuntimeFanControlSemantics =>
         _fanController.ControlSemantics;
@@ -2581,37 +2586,25 @@ public sealed class MainWindow : Window
         UnregisterFixedModeHotkey();
         UnregisterSuspendResumeNotifications();
         _hotkeySource?.RemoveHook(WndProc);
-        if (_running || _fullSpeedEnabled)
+        // Pending samples release _fanIoLock on the dispatcher. Waiting for
+        // that semaphore during Closed deadlocks even after backend I/O ends.
+        // Stop queued writes, then serialize the final restore with hardware I/O
+        // itself, as in the system shutdown path.
+        Interlocked.Exchange(ref _systemShutdownPending, 1);
+        if (_running || _fullSpeedEnabled || _fullSpeedSwitching)
         {
-            try
+            var clearNativeFullSpeed = (_fullSpeedEnabled || _fullSpeedSwitching) && !_fullSpeedUsesAlternativeMethod;
+            _running = false;
+            ExecuteFanHardwareOperation(() =>
             {
-                _fanIoLock.Wait();
-                try
+                if (clearNativeFullSpeed)
                 {
-                    if (_fullSpeedEnabled)
-                    {
-                        try
-                        {
-                            ExecuteFanHardwareOperation(() => _fanController.SetFullSpeed(false));
-                        }
-                        catch
-                        {
-                            // Still attempt to clear manual backend targets below.
-                        }
-                    }
-
-                    try
-                    {
-                        ExecuteFanHardwareOperation(_fanController.RestoreAuto);
-                    }
-                    catch
-                    {
-                        // The window is already closing; this is a last resort.
-                    }
+                    try { _fanController.SetFullSpeed(false); }
+                    catch (Exception ex) { ToolkitLog.Error("Could not release full speed during close.", ex); }
                 }
-                finally { _fanIoLock.Release(); }
-            }
-            catch { }
+                try { _fanController.RestoreAuto(); }
+                catch (Exception ex) { ToolkitLog.Error("Could not restore automatic fan control during close.", ex); }
+            });
         }
         _temperatureReader?.Dispose();
         if (_ownsGameProcessDetector)

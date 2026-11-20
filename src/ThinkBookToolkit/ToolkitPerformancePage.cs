@@ -2562,14 +2562,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         _fullSpeedRow.Visibility = Runtime.CanUseFanFullSpeed
             ? Visibility.Visible
             : Visibility.Collapsed;
-        var fanMode = snapshot.FanControlRunning || snapshot.FullSpeed
-            ? snapshot.FanStrategy switch
-            {
-                ControlStrategy.FanCurve => FanControlMode.FanCurve,
-                ControlStrategy.AdvancedCurve => FanControlMode.AdvancedCurve,
-                _ => FanControlMode.FixedRpm
-            }
-            : FanControlMode.FirmwareAutomatic;
+        var fanMode = ToolkitRuntimeService.ResolveTrayFanMode(snapshot);
         Select(_strategy, fanMode);
         if (Runtime.FanRuntime?.RuntimeSnapshot() is { } fanRuntime)
             Select(_fixedMode, fanRuntime.EffectiveGameMode);

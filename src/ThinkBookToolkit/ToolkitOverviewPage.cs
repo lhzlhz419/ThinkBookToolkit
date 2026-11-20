@@ -635,14 +635,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
         }
         Select(
             _fanMode,
-            snapshot.FanControlRunning
-                ? snapshot.FanStrategy switch
-                {
-                    ControlStrategy.FanCurve => FanControlMode.FanCurve,
-                    ControlStrategy.AdvancedCurve => FanControlMode.AdvancedCurve,
-                    _ => FanControlMode.FixedRpm
-                }
-                : FanControlMode.FirmwareAutomatic);
+            ToolkitRuntimeService.ResolveTrayFanMode(snapshot));
         _itsMode.IsEnabled = !_modeWriteBusy &&
                              Runtime.Report?.IsAvailable(FeatureIds.PerformanceMode) == true;
         _gpuMode.IsEnabled = !_modeWriteBusy &&

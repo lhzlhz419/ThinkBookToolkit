@@ -80,6 +80,34 @@ internal static class PluginSensorChartTests
         Check(empty.Maximum == -10 && empty.Minimum < -10 && constant.Minimum < 42 && constant.Maximum > 42 &&
             double.IsFinite(extreme.Minimum) && double.IsFinite(extreme.Maximum) && extreme.Minimum < extreme.Maximum &&
             SensorHistoryChart.NormalizeReading(0, double.MinValue, double.MaxValue) == .5, "Empty/constant/extreme readings produced an invalid axis.");
+        var recordingChart = new PluginRecordingChart("rpm", new("风扇转速", "Fan speeds"));
+        var combined = manifest with { Sensors = [
+            sensors[0] with { Unit = "RPM", Category = "fans", ChartMinimum = 800, ChartMaximum = 4500, RecordingChart = recordingChart },
+            sensors[4] with { RecordingChart = recordingChart }] };
+        ToolkitPluginManager.ValidateManifest(combined, root);
+        Reject(() => ToolkitPluginManager.ValidateManifest(combined with { Sensors =
+            [combined.Sensors[0] with { RecordingChart = recordingChart with { Title = new("其他", "Other") } }, combined.Sensors[1]] }, root));
+        var combinedPlugin = new PluginInstallation(root, combined, "combined") { Enabled = true };
+        var metadata = PluginRecordingMetadata.Capture([combinedPlugin], samples[0].Values.Keys.ToArray());
+        var replayMetadata = PluginRecordingMetadata.Parse(JsonSerializer.Serialize(metadata));
+        Check(replayMetadata is not null, "Grouped recording metadata failed to round-trip.");
+        foreach (var chartGroups in new[] {
+            SensorRecordingViewerWindow.BuildChartGroups(samples, [combinedPlugin], false),
+            SensorRecordingViewerWindow.BuildChartGroups(samples, [], false, replayMetadata) })
+        {
+            var charts = chartGroups.SelectMany(g => g.Charts).ToArray();
+            var multi = charts.Single(c => c.English == "Fan speeds");
+            Check(multi.Minimum == 800 && multi.Maximum == 4500 && multi.Series.Select(s => s.Key).ToHashSet()
+                .SetEquals(["fan1Rpm", "plugin:test.chart.both"]) && charts.Count(c => c.Series.Any(s => s.Key == "fan1Rpm")) == 1,
+                "Live or offline grouped chart duplicated or dropped an added/replacement sensor.");
+            var view = new SensorHistoryChart(multi.English, multi.Series, samples, true, false, multi.Minimum, multi.Maximum);
+            view.Measure(new Size(400, double.PositiveInfinity)); view.Arrange(new Rect(0, 0, 400, view.DesiredSize.Height));
+            var rendered = new RenderTargetBitmap(400, (int)Math.Ceiling(view.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+            rendered.Render(view);
+            view.ToggleSeriesForTesting("fan1Rpm");
+            Check(!view.IsSeriesVisibleForTesting("fan1Rpm") && view.IsSeriesVisibleForTesting("plugin:test.chart.both"),
+                "Hiding a grouped curve also hid its sibling.");
+        }
         var original = SensorRecordingFormat.Batch(samples, SensorRecordingFormat.OrderKeys(samples[0].Values.Keys));
         Check(original.Contains("7000") && SensorHistoryChart.NormalizeReading(7000, 800, 4500) == 1, "Plot limits altered recorded readings instead of only the display.");
 

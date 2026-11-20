@@ -404,25 +404,13 @@ internal sealed class LowMemoryVideoPlayer : IDisposable
             cancellation?.Dispose();
             return;
         }
-        try
+        // Media Foundation may be inside a driver read. Its worker owns and
+        // releases the native resources; window teardown must not join it.
+        _ = worker.ContinueWith(completed =>
         {
-            if (!worker.Wait(TimeSpan.FromSeconds(3)))
-            {
-                _ = worker.ContinueWith(
-                    _ => cancellation?.Dispose(),
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-                return;
-            }
-        }
-        catch (AggregateException exception)
-            when (exception.Flatten().InnerExceptions.All(
-                inner => inner is OperationCanceledException ||
-                         inner is TaskCanceledException))
-        {
-        }
-        cancellation?.Dispose();
+            _ = completed.Exception;
+            cancellation?.Dispose();
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     public void Dispose()
@@ -431,8 +419,5 @@ internal sealed class LowMemoryVideoPlayer : IDisposable
             return;
         _disposed = true;
         Stop();
-        // A synchronous frame callback can still be returning from the UI
-        // dispatcher. The slim event is intentionally left for finalization
-        // instead of blocking the UI thread during media teardown.
     }
 }

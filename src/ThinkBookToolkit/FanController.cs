@@ -30,6 +30,12 @@ public sealed class FanController
 
     public string BackendName => _backend.Name;
 
+    internal FanController(IFanBackend backend, string identity)
+    {
+        _backend = backend;
+        BackendIdentity = identity;
+    }
+
     public string Transport => _backend.Transport;
 
     public string BackendIdentity { get; }

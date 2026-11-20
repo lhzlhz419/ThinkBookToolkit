@@ -53,6 +53,7 @@ internal static class FanBackendPluginTests
         IFanBackend Load(PluginFanBackendSelection selected) => (IFanBackend)loader.Invoke(null, [directory, selected])!;
         FanBackendRuntimeContext.DeclaredFanCount = 2;
         var backend = Load(selection);
+        VerifyFirmwareAutomaticOverride(new FanController(backend, selection.Identity));
         Check(backend.GetType().Assembly == Load(selection).GetType().Assembly, "Probe and runtime must share backend static synchronization.");
         Check(backend.Name == "Plugin test backend" && AssemblyLoadContext.GetLoadContext(backend.GetType().Assembly) != AssemblyLoadContext.Default,
             "Same-name plugin backend resolved to the legacy assembly.");
@@ -74,6 +75,40 @@ internal static class FanBackendPluginTests
         Reject(() => Load(Selection(directory, manifest)));
         Reject(() => PluginFanBackendPackage.ValidatePackage(directory, selection));
         Console.WriteLine("Fan plugin contract/loader tests passed: " + directory);
+    }
+
+    private static void VerifyFirmwareAutomaticOverride(FanController controller)
+    {
+        var original = System.Threading.SynchronizationContext.Current;
+        System.Threading.SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext());
+        try
+        {
+            var fan = new MainWindow(false, true, new AppSettings(), null, controller);
+            Check(controller.BackendName == "Plugin test backend", "Fan override fixture must use the mock backend.");
+            var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+            var toggle = (System.Windows.Controls.CheckBox)typeof(MainWindow).GetField("_fullSpeedCheck", flags)!.GetValue(fan)!;
+            var action = typeof(MainWindow).GetMethod("ToggleFullSpeedAsync", flags)!;
+            foreach (var enabled in new[] { true, false, true })
+            {
+                toggle.IsChecked = enabled;
+                var task = (Task)action.Invoke(fan, null)!;
+                var frame = new System.Windows.Threading.DispatcherFrame();
+                task.GetAwaiter().OnCompleted(() => fan.Dispatcher.BeginInvoke(new Action(() => frame.Continue = false)));
+                System.Windows.Threading.Dispatcher.PushFrame(frame);
+                task.GetAwaiter().GetResult();
+                var actual = fan.RuntimeSnapshot();
+                Check(actual.IsFullSpeed == enabled && !actual.IsRunning && !actual.ResumeControlAfterFullSpeed,
+                    "Toggling full speed from firmware automatic activated a manual strategy.");
+            }
+            // Emulate an in-flight sample whose dispatcher continuation still owns this semaphore.
+            var gate = (System.Threading.SemaphoreSlim)typeof(MainWindow).GetField("_fanIoLock", flags)!.GetValue(fan)!;
+            gate.Wait();
+            using var rescue = new System.Threading.Timer(_ => gate.Release(), null, 2500, System.Threading.Timeout.Infinite);
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            fan.Close();
+            Check(timer.Elapsed < TimeSpan.FromSeconds(2), "Closing while full speed is active waited on a UI-owned semaphore.");
+        }
+        finally { System.Threading.SynchronizationContext.SetSynchronizationContext(original); }
     }
 
     internal static async Task RunLifecycleAsync(string? hostPath)

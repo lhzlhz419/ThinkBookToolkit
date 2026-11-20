@@ -331,6 +331,8 @@ internal sealed partial class ToolkitPluginManager : IDisposable, INotifyPropert
             manifest.Pages.Any(p => p.Id.Length > 180 || p.Title.Chinese.Length > 160 || p.Title.English.Length > 160) ||
             manifest.Settings.Any(s => string.IsNullOrWhiteSpace(s.Id) || s.Id.Length > 100 || s.Title.Chinese.Length > 160 || s.Title.English.Length > 160) ||
             manifest.Sensors.Any(s => s.Name.Chinese.Length > 160 || s.Name.English.Length > 160 || s.Unit.Length > 32)) throw new InvalidDataException("Invalid metadata length.");
+        if (!PluginSensorChartPolicy.ValidRecordingCharts(manifest.Sensors))
+            throw new InvalidDataException("Invalid recording chart ID or title. Curves sharing a chart must use the same chart title.");
         if (manifest.Sensors.Any(s => !PluginSensorChartPolicy.ValidBounds(s.ChartMinimum, s.ChartMaximum)))
             throw new InvalidDataException("传感器绘图范围无效：上下限必须是有限数字，且下限小于上限。 / Invalid sensor chart range: bounds must be finite and minimum must be less than maximum.");
         if (manifest.Permissions.Except(new[] { "sensors.read", "data.read", "settings.read", "host.control", "replace", "fan.backend", "ui.custom", "ui.toast", "settings.write" }).Any()) throw new InvalidDataException("Unknown permission.");

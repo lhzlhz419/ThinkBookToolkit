@@ -54,18 +54,23 @@ internal sealed class FpsSensorController : IDisposable
 
     private readonly object _sync = new();
     private readonly Func<int?, GameProcessCandidate?>? _fallbackProcessProvider;
+    private readonly Func<int?> _foregroundPid;
+    private readonly Func<CancellationToken, Task> _captureSession;
     private readonly HashSet<string> _consumers = new(
         StringComparer.OrdinalIgnoreCase);
+    private sealed record Target(int ProcessId);
+    private Target? _target;
     private CancellationTokenSource? _monitorCts;
-    private CancellationTokenSource? _processCts;
-    private Process? _currentProcess;
+    private Task _monitorLifetime = Task.CompletedTask;
     private FpsTelemetrySnapshot _current = FpsTelemetrySnapshot.Empty;
-    private bool _running;
 
     public FpsSensorController(
-        Func<int?, GameProcessCandidate?>? fallbackProcessProvider = null)
+        Func<int?, GameProcessCandidate?>? fallbackProcessProvider = null,
+        Func<int?>? foregroundPid = null, Func<CancellationToken, Task>? captureSession = null)
     {
         _fallbackProcessProvider = fallbackProcessProvider;
+        _foregroundPid = foregroundPid ?? GetForegroundProcessId;
+        _captureSession = captureSession ?? RunFastSessionAsync;
     }
 
     public event EventHandler<FpsTelemetrySnapshot>? Updated;
@@ -83,131 +88,159 @@ internal sealed class FpsSensorController : IDisposable
     {
         if (string.IsNullOrWhiteSpace(consumer))
             return;
-        bool shouldRun;
         lock (_sync)
         {
-            if (enabled)
-                _consumers.Add(consumer);
-            else
-                _consumers.Remove(consumer);
-            shouldRun = _consumers.Count > 0;
+            if (enabled) _consumers.Add(consumer);
+            else _consumers.Remove(consumer);
+            if (_consumers.Count > 0) Start();
+            else Stop();
         }
-        if (shouldRun)
-            Start();
-        else
-            Stop();
     }
 
     public void Start()
     {
-        if (_running)
-            return;
-        _running = true;
-        _monitorCts = new CancellationTokenSource();
-        _ = Task.Run(() => MonitorForegroundProcessAsync(_monitorCts.Token));
+        lock (_sync)
+        {
+            if (_monitorCts is not null) return;
+            var cts = _monitorCts = new CancellationTokenSource();
+            var previous = _monitorLifetime;
+            _monitorLifetime = Task.Run(async () =>
+            {
+                try
+                {
+                    await previous.ConfigureAwait(false);
+                    if (!cts.IsCancellationRequested) await MonitorForegroundProcessAsync(cts.Token);
+                }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
+                catch (Exception ex) { ToolkitLog.Warning("FPS monitoring failed: " + ex.GetBaseException().Message); }
+                finally
+                {
+                    lock (_sync)
+                    {
+                        if (ReferenceEquals(_monitorCts, cts)) _monitorCts = null;
+                        cts.Dispose();
+                    }
+                }
+            });
+        }
     }
 
     public void Stop()
     {
-        _running = false;
-        var monitor = _monitorCts;
-        _monitorCts = null;
-        monitor?.Cancel();
-        StopProcessMonitoring();
-        monitor?.Dispose();
+        lock (_sync)
+        {
+            if (_monitorCts is null) return;
+            _monitorCts.Cancel();
+            _monitorCts = null;
+            SetTarget(null);
+        }
+    }
+
+    private void SetTarget(int? pid)
+    {
+        lock (_sync)
+        {
+            Volatile.Write(ref _target, pid.HasValue ? new Target(pid.Value) : null);
+            _current = FpsTelemetrySnapshot.Empty;
+        }
+        Updated?.Invoke(this, FpsTelemetrySnapshot.Empty);
     }
 
     private async Task MonitorForegroundProcessAsync(CancellationToken token)
     {
-        int? targetProcessId = null;
-        var targetProcessName = string.Empty;
-        int? lastForegroundProcessId = null;
-        var targetStartedAt = DateTimeOffset.MinValue;
-        var usingFallback = false;
-        while (!token.IsCancellationRequested)
+        Task? capture = null;
+        var retryAfter = DateTimeOffset.MinValue;
+        try
         {
-            try
+            int? targetProcessId = null;
+            int? lastForegroundProcessId = null;
+            var targetStartedAt = DateTimeOffset.MinValue;
+            var usingFallback = false;
+            while (!token.IsCancellationRequested)
             {
-                using var foreground = GetForegroundProcess();
-                var foregroundProcessId = foreground?.Id;
-                var foregroundChanged =
-                    foregroundProcessId != lastForegroundProcessId;
-                lastForegroundProcessId = foregroundProcessId;
-                int? desiredProcessId = targetProcessId;
-                var desiredProcessName = targetProcessName;
-                if (foregroundChanged)
+                try
                 {
-                    desiredProcessId = foregroundProcessId;
-                    desiredProcessName = foreground?.ProcessName ?? string.Empty;
-                    usingFallback = false;
-                }
-                var needsFallback = !desiredProcessId.HasValue ||
-                    !usingFallback &&
-                    DateTimeOffset.UtcNow - targetStartedAt >=
-                        TimeSpan.FromSeconds(1.5) &&
-                    !Current.IsFresh;
-                if (needsFallback &&
-                    _fallbackProcessProvider?.Invoke(desiredProcessId) is { } game &&
-                    game.ProcessId != desiredProcessId)
-                {
-                    desiredProcessId = game.ProcessId;
-                    desiredProcessName = game.ProcessName;
-                    usingFallback = true;
-                    ToolkitLog.Info(
-                        "FPS foreground monitoring produced no usable frames; " +
-                        $"using configured game process {game.ProcessName} " +
-                        $"(pid={game.ProcessId}) instead.");
-                }
-                else if (usingFallback)
-                {
-                    var fallbackGame = _fallbackProcessProvider?.Invoke(
-                        foregroundProcessId);
-                    if (fallbackGame is null)
+                    var foregroundProcessId = _foregroundPid();
+                    var foregroundChanged =
+                        foregroundProcessId != lastForegroundProcessId;
+                    lastForegroundProcessId = foregroundProcessId;
+                    int? desiredProcessId = targetProcessId;
+                    if (foregroundChanged)
                     {
                         desiredProcessId = foregroundProcessId;
-                        desiredProcessName = foreground?.ProcessName ?? string.Empty;
                         usingFallback = false;
                     }
-                    else if (fallbackGame.ProcessId != desiredProcessId)
+                    var needsFallback = !desiredProcessId.HasValue ||
+                        !usingFallback &&
+                        DateTimeOffset.UtcNow - targetStartedAt >=
+                            TimeSpan.FromSeconds(1.5) &&
+                        !Current.IsFresh;
+                    if (needsFallback &&
+                        _fallbackProcessProvider?.Invoke(desiredProcessId) is { } game &&
+                        game.ProcessId != desiredProcessId)
                     {
-                        desiredProcessId = fallbackGame.ProcessId;
-                        desiredProcessName = fallbackGame.ProcessName;
+                        desiredProcessId = game.ProcessId;
+                        usingFallback = true;
+                        ToolkitLog.Info(
+                            "FPS foreground monitoring produced no usable frames; " +
+                            $"using configured game process {game.ProcessName} " +
+                            $"(pid={game.ProcessId}) instead.");
                     }
+                    else if (usingFallback)
+                    {
+                        var fallbackGame = _fallbackProcessProvider?.Invoke(
+                            foregroundProcessId);
+                        if (fallbackGame is null)
+                        {
+                            desiredProcessId = foregroundProcessId;
+                            usingFallback = false;
+                        }
+                        else if (fallbackGame.ProcessId != desiredProcessId)
+                        {
+                            desiredProcessId = fallbackGame.ProcessId;
+                        }
+                    }
+                    if (desiredProcessId != targetProcessId)
+                    {
+                        targetProcessId = desiredProcessId;
+                        targetStartedAt = DateTimeOffset.UtcNow;
+                        lock (_sync)
+                        {
+                            token.ThrowIfCancellationRequested();
+                            SetTarget(targetProcessId);
+                        }
+                    }
+                    if (capture is { IsCompleted: true })
+                    {
+                        try { await capture; }
+                        catch (Exception ex) when (!token.IsCancellationRequested)
+                        {
+                            ToolkitLog.Warning("FPS trace ended: " + ex.GetBaseException().Message);
+                        }
+                        capture = null;
+                        retryAfter = DateTimeOffset.UtcNow.AddSeconds(5);
+                    }
+                    if (targetProcessId.HasValue && capture is null && DateTimeOffset.UtcNow >= retryAfter)
+                        capture = Task.Run(() => _captureSession(token), token);
+                    await Task.Delay(250, token);
                 }
-                var exited = false;
-                try { exited = _currentProcess?.HasExited == true; }
-                catch { exited = true; }
-                var missing = targetProcessId.HasValue && _currentProcess is null;
-                if (desiredProcessId != targetProcessId || exited || missing)
+                catch (OperationCanceledException)
                 {
-                    StopProcessMonitoring();
-                    targetProcessId = desiredProcessId;
-                    targetProcessName = desiredProcessName;
-                    targetStartedAt = DateTimeOffset.UtcNow;
-                    if (desiredProcessId.HasValue)
-                    {
-                        StartProcessMonitoring(
-                            desiredProcessId.Value,
-                            desiredProcessName);
-                    }
+                    break;
                 }
-                await Task.Delay(250, token);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                ToolkitLog.Warning(
-                    "FPS foreground monitoring failed: " + ex.Message);
-                try { await Task.Delay(500, token); }
-                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    ToolkitLog.Warning(
+                        "FPS foreground monitoring failed: " + ex.Message);
+                    try { await Task.Delay(500, token); }
+                    catch (OperationCanceledException) { break; }
+                }
             }
         }
+        finally { if (capture is not null) await capture; }
     }
 
-    private static Process? GetForegroundProcess()
+    private static int? GetForegroundProcessId()
     {
         try
         {
@@ -217,77 +250,44 @@ internal sealed class FpsSensorController : IDisposable
             _ = GetWindowThreadProcessId(window, out var processId);
             if (processId is 0 or 4)
                 return null;
-            var process = Process.GetProcessById((int)processId);
+            using var process = Process.GetProcessById((int)processId);
             if (process.HasExited ||
                 string.IsNullOrWhiteSpace(process.ProcessName) ||
                 Blacklist.Contains(process.ProcessName))
             {
-                process.Dispose();
                 return null;
             }
-            return process;
+            return process.Id;
         }
         catch (ArgumentException) { return null; }
         catch (InvalidOperationException) { return null; }
         catch (Win32Exception) { return null; }
     }
 
-    private void StartProcessMonitoring(int processId, string processName)
-    {
-        try
-        {
-            _processCts = CancellationTokenSource.CreateLinkedTokenSource(
-                _monitorCts?.Token ?? CancellationToken.None);
-            _currentProcess = Process.GetProcessById(processId);
-            var token = _processCts.Token;
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await RunFastSessionAsync(processId, token);
-                }
-                catch (OperationCanceledException)
-                {
-                }
-                catch (Exception ex)
-                {
-                    ToolkitLog.Warning(
-                        $"FPS monitoring failed for {processName}: " +
-                        ex.GetBaseException().Message);
-                    Publish(FpsTelemetrySnapshot.Empty);
-                }
-            }, token);
-            ToolkitLog.Info(
-                $"FPS monitoring started: process={processName}; pid={processId}.");
-        }
-        catch (Exception ex)
-        {
-            ToolkitLog.Warning(
-                $"FPS monitoring could not start for {processName}: " +
-                ex.Message);
-            StopProcessMonitoring();
-        }
-    }
-
-    private async Task RunFastSessionAsync(
-        int processId,
-        CancellationToken token)
+    private async Task RunFastSessionAsync(CancellationToken token)
     {
         var sessionName = "ThinkBookToolkit-Fps-" + Guid.NewGuid().ToString("N");
         using var session = new TraceEventSession(
             sessionName,
             TraceEventSessionOptions.Create);
         var samples = new Queue<long>(RollingSampleCapacity);
-        var sync = new object();
+        Target? sampledTarget = null;
         long previousTimestamp = 0;
         long lastPublishTimestamp = 0;
         session.Source.AllEvents += data =>
         {
-            if (data.ProviderGuid != DxgKrnlGuid ||
+            var target = Volatile.Read(ref _target);
+            if (target is null || data.ProviderGuid != DxgKrnlGuid ||
                 (int)data.ID != PresentEventId ||
-                data.ProcessID != processId)
+                data.ProcessID != target.ProcessId)
             {
                 return;
+            }
+            if (!ReferenceEquals(sampledTarget, target))
+            {
+                sampledTarget = target;
+                samples.Clear();
+                previousTimestamp = lastPublishTimestamp = 0;
             }
             var timestamp = data.TimeStamp.Ticks;
             if (previousTimestamp == 0)
@@ -299,81 +299,64 @@ internal sealed class FpsSensorController : IDisposable
             previousTimestamp = timestamp;
             if (frameTicks <= 0 || frameTicks > TimeSpan.TicksPerSecond)
                 return;
-            lock (sync)
+            samples.Enqueue(frameTicks);
+            while (samples.Count > RollingSampleCapacity)
+                _ = samples.Dequeue();
+            if (timestamp - lastPublishTimestamp <
+                TimeSpan.TicksPerMillisecond * 100)
             {
-                samples.Enqueue(frameTicks);
-                while (samples.Count > RollingSampleCapacity)
-                    _ = samples.Dequeue();
-                if (timestamp - lastPublishTimestamp <
-                    TimeSpan.TicksPerMillisecond * 100)
-                {
-                    return;
-                }
-                lastPublishTimestamp = timestamp;
-                var values = samples.ToArray();
-                var totalTicks = values.Sum();
-                var fps = totalTicks > 0
-                    ? values.Length * (double)TimeSpan.TicksPerSecond /
-                      totalTicks
-                    : 0;
-                double? low = null;
-                if (values.Length >= FastLowSampleMinimum)
-                {
-                    var instantaneous = values
-                        .Select(value => TimeSpan.TicksPerSecond /
-                                         (double)value)
-                        .OrderBy(value => value)
-                        .ToArray();
-                    var lowCount = Math.Max(
-                        1,
-                        (int)Math.Ceiling(instantaneous.Length * .01));
-                    low = instantaneous.Take(lowCount).Average();
-                }
-                Publish(new FpsTelemetrySnapshot(
-                    IsFinitePositive(fps) ? fps : null,
-                    low is > 0 && double.IsFinite(low.Value) ? low : null,
-                    frameTicks / (double)TimeSpan.TicksPerMillisecond,
-                    DateTimeOffset.UtcNow));
+                return;
             }
+            lastPublishTimestamp = timestamp;
+            var values = samples.ToArray();
+            var totalTicks = values.Sum();
+            var fps = totalTicks > 0
+                ? values.Length * (double)TimeSpan.TicksPerSecond /
+                  totalTicks
+                : 0;
+            double? low = null;
+            if (values.Length >= FastLowSampleMinimum)
+            {
+                var instantaneous = values
+                    .Select(value => TimeSpan.TicksPerSecond /
+                                     (double)value)
+                    .OrderBy(value => value)
+                    .ToArray();
+                var lowCount = Math.Max(
+                    1,
+                    (int)Math.Ceiling(instantaneous.Length * .01));
+                low = instantaneous.Take(lowCount).Average();
+            }
+            Publish(target, new FpsTelemetrySnapshot(
+                IsFinitePositive(fps) ? fps : null,
+                low is > 0 && double.IsFinite(low.Value) ? low : null,
+                frameTicks / (double)TimeSpan.TicksPerMillisecond,
+                DateTimeOffset.UtcNow));
         };
         session.EnableProvider(
             DxgKrnlGuid,
             TraceEventLevel.Verbose,
             1UL);
-        var processing = Task.Factory.StartNew(
-            session.Source.Process,
-            token,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default);
-        try
-        {
-            await Task.Delay(Timeout.Infinite, token);
-        }
-        catch (OperationCanceledException)
-        {
-        }
+        var processing = Task.Factory.StartNew(session.Source.Process, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        try { await Task.WhenAny(processing, Task.Delay(Timeout.Infinite, timeout.Token)); }
         finally
         {
-            session.Source.StopProcessing();
-            _ = await Task.WhenAny(processing, Task.Delay(1000));
+            timeout.Cancel();
+            session.Stop();
+            await processing;
         }
     }
 
-    private void Publish(FpsTelemetrySnapshot value)
+    private void Publish(Target target, FpsTelemetrySnapshot value)
     {
         lock (_sync)
+        {
+            if (!ReferenceEquals(_target, target)) return;
             _current = value;
+        }
         Updated?.Invoke(this, value);
-    }
-
-    private void StopProcessMonitoring()
-    {
-        _processCts?.Cancel();
-        _processCts?.Dispose();
-        _processCts = null;
-        _currentProcess?.Dispose();
-        _currentProcess = null;
-        Publish(FpsTelemetrySnapshot.Empty);
     }
 
     private static bool IsFinitePositive(double value) =>

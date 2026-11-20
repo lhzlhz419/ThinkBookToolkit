@@ -27,12 +27,11 @@ internal sealed class AnimatedBackgroundImage : Grid, IDisposable
         HorizontalAlignment = HorizontalAlignment.Stretch,
         VerticalAlignment = VerticalAlignment.Stretch
     };
-    private LowMemoryVideoPlayer? _video;
+    private volatile LowMemoryVideoPlayer? _video;
     private WriteableBitmap? _videoOutput;
     private readonly object _videoFrameGate = new();
     private byte[]? _queuedVideoFrame;
     private byte[]? _drawingVideoFrame;
-    private byte[]? _videoBlurScratch;
     private int _queuedVideoWidth;
     private int _queuedVideoHeight;
     private int _videoBlurRadiusX;
@@ -205,10 +204,17 @@ internal sealed class AnimatedBackgroundImage : Grid, IDisposable
         {
             _image.Visibility = Visibility.Visible;
             _videoPreviewOnly = !enableAnimatedPlayback;
-            _video = new LowMemoryVideoPlayer();
+            var player = new LowMemoryVideoPlayer();
+            _video = player;
             _video.Opened += OnVideoOpened;
-            _video.FrameReady += OnVideoFrameReady;
-            _video.Failed += (_, error) => ReportVideoFailure(error);
+            // Only the decoder thread uses these buffers. Blur never holds the UI frame lock.
+            byte[]? prepared = null, scratch = null;
+            player.FrameReady += (frame, width, height) =>
+                OnVideoFrameReady(player, frame, width, height, ref prepared, ref scratch);
+            _video.Failed += (_, error) => Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (ReferenceEquals(player, _video)) ReportVideoFailure(error);
+            }));
             _video.SetSpeedPercent(_playbackSpeedPercent);
             _video.SetMaximumFrameRate(_blurRadius > 0 ? 15 : 30);
             _video.Open(LoadedPath);
@@ -280,15 +286,14 @@ internal sealed class AnimatedBackgroundImage : Grid, IDisposable
         var video = _video;
         if (video is not null)
         {
-            try { video.Dispose(); } catch { }
             _video = null;
+            try { video.Dispose(); } catch { }
         }
         _videoOutput = null;
         lock (_videoFrameGate)
         {
             _queuedVideoFrame = null;
             _drawingVideoFrame = null;
-            _videoBlurScratch = null;
             _videoFrameDispatchPending = false;
         }
         _videoOpened = false;
@@ -465,10 +470,10 @@ internal sealed class AnimatedBackgroundImage : Grid, IDisposable
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.Invoke(() => OnVideoOpened(sender, format));
+            Dispatcher.BeginInvoke(new Action(() => OnVideoOpened(sender, format)));
             return;
         }
-        if (_video is null || Dispatcher.HasShutdownStarted)
+        if (!ReferenceEquals(_video, sender) || Dispatcher.HasShutdownStarted)
             return;
         _videoOpenWatchdog.Stop();
         _videoOpened = true;
@@ -492,34 +497,25 @@ internal sealed class AnimatedBackgroundImage : Grid, IDisposable
         SyncPlaybackState();
     }
 
-    private void OnVideoFrameReady(byte[] frame, int width, int height)
+    private void OnVideoFrameReady(LowMemoryVideoPlayer player, byte[] frame, int width, int height,
+        ref byte[]? prepared, ref byte[]? scratch)
     {
-        if (Dispatcher.HasShutdownStarted || _videoOutput is null ||
-            !_playbackActive || !IsVisible)
+        if (Dispatcher.HasShutdownStarted || !ReferenceEquals(player, _video))
             return;
+        if (prepared?.Length != frame.Length) prepared = new byte[frame.Length];
+        Buffer.BlockCopy(frame, 0, prepared, 0, frame.Length);
+        if (_inverted) InvertPixels(prepared);
+        var radiusX = Volatile.Read(ref _videoBlurRadiusX);
+        var radiusY = Volatile.Read(ref _videoBlurRadiusY);
+        if (radiusX > 0 && radiusY > 0)
+        {
+            if (scratch?.Length != frame.Length) scratch = new byte[frame.Length];
+            BoxBlurBgra(prepared, scratch, width, height, radiusX, radiusY);
+        }
         lock (_videoFrameGate)
         {
-            if (_queuedVideoFrame is null ||
-                _queuedVideoFrame.Length != frame.Length)
-                _queuedVideoFrame = new byte[frame.Length];
-            Buffer.BlockCopy(frame, 0, _queuedVideoFrame, 0, frame.Length);
-            if (_inverted)
-                InvertPixels(_queuedVideoFrame);
-            var radiusX = Volatile.Read(ref _videoBlurRadiusX);
-            var radiusY = Volatile.Read(ref _videoBlurRadiusY);
-            if (radiusX > 0 && radiusY > 0)
-            {
-                if (_videoBlurScratch is null ||
-                    _videoBlurScratch.Length != frame.Length)
-                    _videoBlurScratch = new byte[frame.Length];
-                BoxBlurBgra(
-                    _queuedVideoFrame,
-                    _videoBlurScratch,
-                    width,
-                    height,
-                    radiusX,
-                    radiusY);
-            }
+            if (!ReferenceEquals(player, _video)) return;
+            (_queuedVideoFrame, prepared) = (prepared, _queuedVideoFrame);
             _queuedVideoWidth = width;
             _queuedVideoHeight = height;
             if (_videoFrameDispatchPending)
@@ -527,10 +523,10 @@ internal sealed class AnimatedBackgroundImage : Grid, IDisposable
             _videoFrameDispatchPending = true;
         }
         if (_videoPreviewOnly)
-            _video?.SetActive(false);
+            player.SetActive(false);
         _ = Dispatcher.BeginInvoke(
             DispatcherPriority.Background,
-            new Action(PresentQueuedVideoFrame));
+            new Action(() => { if (ReferenceEquals(player, _video)) PresentQueuedVideoFrame(); }));
     }
 
     private void PresentQueuedVideoFrame()

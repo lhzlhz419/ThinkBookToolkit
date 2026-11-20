@@ -106,6 +106,7 @@ internal static class Program
         PluginToastTests.Run();
         PluginSensorSelectionTests.Run();
         PluginSensorChartTests.Run();
+        TelemetryLifetimeTests.Run();
         ToolkitDialogTests.Run();
         PluginManagerLayoutTests.Run();
         FanBackendPluginTests.Run();
@@ -1510,7 +1511,9 @@ internal static class Program
                        FanControlRunning = false,
                        FullSpeed = true,
                        FanStrategy = ControlStrategy.FixedRpm
-                   }) == FanControlMode.FixedRpm &&
+                   }) == FanControlMode.FirmwareAutomatic &&
+               ToolkitRuntimeService.ResolveTrayFanMode(trayFanSnapshot with
+                   { FanControlRunning = false, FullSpeed = true, ResumeControlAfterFullSpeed = true }) == FanControlMode.FanCurve &&
                ToolkitRuntimeService.ResolveTrayFanMode(
                    trayFanSnapshot with
                    {

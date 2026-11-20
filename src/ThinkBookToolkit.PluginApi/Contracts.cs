@@ -39,7 +39,9 @@ public sealed record PluginSensor(string Id, PluginText Name, string Unit, strin
     // Optional plotting metadata; never constrains the recorded reading itself.
     public double? ChartMinimum { get; init; }
     public double? ChartMaximum { get; init; }
+    public PluginRecordingChart? RecordingChart { get; init; }
 }
+public sealed record PluginRecordingChart(string Id, PluginText Title);
 public sealed record PluginSensorCategory(string Id, PluginText Title, int Order = 100);
 public sealed record PluginFanBackend(string Assembly, string Type);
 /// <summary>Overview-only row contribution. Action is add, replace or remove; Target is a built-in item ID.</summary>

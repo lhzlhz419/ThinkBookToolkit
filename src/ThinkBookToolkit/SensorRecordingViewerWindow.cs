@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using ThinkBookToolkit.PluginApi;
 
 namespace ThinkBookToolkit;
 
@@ -669,15 +670,46 @@ internal sealed class SensorRecordingViewerWindow : Window
         IReadOnlyList<PluginInstallation> plugins, bool chinese, PluginRecordingMetadata? recorded = null)
     {
         var categories = (recorded?.Categories ?? plugins.SelectMany(p => p.Manifest.SensorCategories).ToArray()).OrderBy(c => c.Order).ThenBy(c => c.Id, StringComparer.Ordinal).ToArray();
-        var keys = samples.SelectMany(s => s.Values.Keys).Where(k => k.StartsWith("plugin:", StringComparison.Ordinal)).Distinct().ToArray();
-        var pluginCharts = keys.Select(key =>
+        var keys = samples.SelectMany(sample => sample.Values.Keys).Distinct(StringComparer.Ordinal).ToArray();
+        var descriptors = new Dictionary<string, PluginSensor>(StringComparer.Ordinal);
+        var pluginCharts = new List<(string? Group, ChartDefinition Chart)>();
+        var shared = new List<(string Owner, PluginRecordingChart Chart, string? Section, string Key, PluginSensor Sensor)>();
+        foreach (var key in keys)
         {
-            var sensor = recorded is not null ? recorded.Sensors.GetValueOrDefault(key)?.Sensor : plugins.SelectMany(p => p.Manifest.Sensors).FirstOrDefault(s => "plugin:" + s.Id == key);
-            var label = sensor?.Name.Resolve(chinese) ?? key["plugin:".Length..];
-            var group = PluginSensorPlacement.HistoryGroup(sensor?.Category) ?? categories.FirstOrDefault(c => c.Id == sensor?.Category)?.Id;
-            return (Group: group, Chart: new ChartDefinition(sensor?.Name.Chinese ?? label, sensor?.Name.English ?? label,
-                [S(key, label)], sensor?.ChartMinimum, sensor?.ChartMaximum));
-        }).ToArray();
+            var added = key.StartsWith("plugin:", StringComparison.Ordinal);
+            var metadata = recorded?.Sensors.GetValueOrDefault(key);
+            var sensor = metadata?.Sensor;
+            var owner = metadata?.PluginId;
+            if (recorded is null)
+            {
+                sensor = added ? plugins.SelectMany(p => p.Manifest.Sensors).FirstOrDefault(s => s.Id == key[7..])
+                    : PluginSensorChartPolicy.Replacement(key, plugins);
+                if (sensor is not null)
+                    owner = plugins.First(p => p.Manifest.Sensors.Any(s => ReferenceEquals(s, sensor))).Manifest.Id;
+            }
+            if (sensor is not null) descriptors[key] = sensor;
+            if (!added && sensor?.RecordingChart is null) continue;
+            var label = sensor?.Name.Resolve(chinese) ?? key[7..];
+            var section = PluginSensorPlacement.HistoryGroup(sensor?.Category) ?? categories.FirstOrDefault(c => c.Id == sensor?.Category)?.Id;
+            if (sensor?.RecordingChart is { } chart && owner is not null)
+            {
+                shared.Add((owner, chart, section, key, sensor));
+            }
+            else if (added)
+                pluginCharts.Add((section, new(sensor?.Name.Chinese ?? label, sensor?.Name.English ?? label,
+                    [S(key, label)], sensor?.ChartMinimum, sensor?.ChartMaximum)));
+        }
+        foreach (var plot in shared.GroupBy(member => (member.Owner, member.Chart.Id)))
+        {
+            var first = plot.First();
+            var title = first.Chart.Title;
+            var section = plot.All(m => m.Section == first.Section) ? first.Section : null;
+            var series = plot.Select(m => S(m.Key, string.IsNullOrWhiteSpace(m.Sensor.Unit)
+                ? m.Sensor.Name.Resolve(chinese) : $"{m.Sensor.Name.Resolve(chinese)} ({m.Sensor.Unit})")).ToArray();
+            var minimum = plot.All(m => m.Sensor.ChartMinimum.HasValue) ? plot.Min(m => m.Sensor.ChartMinimum) : null;
+            var maximum = plot.All(m => m.Sensor.ChartMaximum.HasValue) ? plot.Max(m => m.Sensor.ChartMaximum) : null;
+            pluginCharts.Add((section, new(title.Chinese, title.English, series, minimum, maximum)));
+        }
         var result = new List<ChartGroupDefinition>();
         foreach (var group in Definitions.Concat(categories.Select(c => new ChartGroupDefinition(c.Title.Chinese, c.Title.English, [], c.Id))))
         {
@@ -688,7 +720,8 @@ internal sealed class SensorRecordingViewerWindow : Window
                 var separate = new List<ChartDefinition>();
                 foreach (var series in chart.Series)
                 {
-                    var sensor = recorded is not null ? recorded.Sensors.GetValueOrDefault(series.Key)?.Sensor : PluginSensorChartPolicy.Replacement(series.Key, plugins);
+                    var sensor = descriptors.GetValueOrDefault(series.Key);
+                    if (sensor?.RecordingChart is not null) continue;
                     if (sensor is null || !PluginSensorChartPolicy.HasBounds(sensor)) { remaining.Add(series); continue; }
                     // Each declared range belongs to one sensor, not every curve
                     // which previously happened to share the built-in chart.
@@ -792,7 +825,7 @@ internal sealed class SensorHistoryChart : FrameworkElement
         _minimumBound = minimumBound;
         _maximumBound = maximumBound;
         _hiddenSeries = hiddenSeries ?? new HashSet<string>(StringComparer.Ordinal);
-        Height = 250;
+        MinHeight = 250;
         MinWidth = 360;
         MouseMove += OnMouseMove;
         MouseLeave += (_, _) =>
@@ -801,6 +834,35 @@ internal sealed class SensorHistoryChart : FrameworkElement
             InvalidateVisual();
         };
         MouseLeftButtonDown += OnMouseLeftButtonDown;
+    }
+
+    private Point[] _legendPositions = [];
+    private double _legendWidth = double.NaN, _legendDpi;
+
+    private Point[] LegendPositions(double width)
+    {
+        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        if (_legendWidth == width && _legendDpi == dpi && _legendPositions.Length == _cachedLegendItems.Length)
+            return _legendPositions;
+        var x = 14d;
+        var y = 0d;
+        var positions = new Point[_cachedLegendItems.Length];
+        for (var i = 0; i < positions.Length; i++)
+        {
+            var size = 25 + MeasureText(_cachedLegendItems[i].series.Label, 10, FontWeights.Normal);
+            if (x > 14 && x + size > width - 10) { x = 14; y += 22; }
+            positions[i] = new Point(x, y);
+            x += size;
+        }
+        _legendWidth = width;
+        _legendDpi = dpi;
+        return _legendPositions = positions;
+    }
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        EnsureDataCache();
+        return new Size(MinWidth, 250 + LegendPositions(availableSize.Width).LastOrDefault().Y);
     }
 
     protected override void OnRender(DrawingContext drawing)
@@ -829,13 +891,15 @@ internal sealed class SensorHistoryChart : FrameworkElement
         if (legendItems.Length == 0 || _samples.Count == 0)
             return;
         var available = _cachedAvailable;
+        var positions = LegendPositions(ActualWidth);
+        var legendOffset = positions[^1].Y;
         var minimum = _cachedAxisMinimum;
         var maximum = _cachedAxisMaximum;
         _plot = new Rect(
             48,
             42,
             Math.Max(1, ActualWidth - 62),
-            Math.Max(1, ActualHeight - 78));
+            Math.Max(1, ActualHeight - 78 - legendOffset));
         drawing.DrawLine(new Pen(muted, 1), _plot.BottomLeft, _plot.TopLeft);
         drawing.DrawLine(new Pen(muted, 1), _plot.BottomLeft, _plot.BottomRight);
         DrawText(drawing, maximum.ToString("0.##", CultureInfo.InvariantCulture), 10, FontWeights.Normal, muted, 4, _plot.Top - 6);
@@ -857,14 +921,16 @@ internal sealed class SensorHistoryChart : FrameworkElement
         }
         DrawHover(drawing, available, start, duration, muted);
         _legendHits.Clear();
-        var legendX = 14d;
-        foreach (var item in legendItems)
+        for (int i = 0; i < legendItems.Length; i++)
         {
+            var item = legendItems[i];
+            var legendX = positions[i].X;
+            var bottom = ActualHeight - legendOffset + positions[i].Y;
             var hidden = _hiddenSeries.Contains(item.series.Key);
             var color = new SolidColorBrush(hidden
                 ? (_dark ? Color.FromRgb(82, 92, 110) : Color.FromRgb(165, 172, 184))
                 : SeriesColors[item.index % SeriesColors.Length]);
-            var marker = new Rect(legendX, ActualHeight - 24, 9, 9);
+            var marker = new Rect(legendX, bottom - 24, 9, 9);
             drawing.DrawRectangle(color, null, marker);
             legendX += 13;
             var labelX = legendX;
@@ -875,10 +941,10 @@ internal sealed class SensorHistoryChart : FrameworkElement
                 FontWeights.Normal,
                 hidden ? muted : textColor,
                 labelX,
-                ActualHeight - 28);
+                bottom - 28);
             var hit = new Rect(
                 marker.Left - 3,
-                ActualHeight - 31,
+                bottom - 31,
                 width + 19,
                 22);
             _legendHits.Add(new LegendHit(item.series.Key, hit));
@@ -886,10 +952,9 @@ internal sealed class SensorHistoryChart : FrameworkElement
             {
                 drawing.DrawLine(
                     new Pen(muted, 1),
-                    new Point(labelX, ActualHeight - 19),
-                    new Point(labelX + width, ActualHeight - 19));
+                    new Point(labelX, bottom - 19),
+                    new Point(labelX + width, bottom - 19));
             }
-            legendX += width + 12;
         }
     }
 
