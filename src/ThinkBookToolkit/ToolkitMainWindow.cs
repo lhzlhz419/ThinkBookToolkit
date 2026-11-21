@@ -701,6 +701,10 @@ internal sealed class ToolkitMainWindow : Window
         _ => (L("概览", "Overview"), L("设备状态与当前控制模式", "Device status and current control modes"), "\uE80F")
     };
 
+    internal static bool HasDisplayFeatures(FeatureAvailabilityReport report) =>
+        report.AnyAvailable(FeatureIds.DisplayRefreshRate, FeatureIds.VantageEyeCare, FeatureIds.PcManagerEyeCare,
+            FeatureIds.ColorManagement, FeatureIds.ZeroTouch, FeatureIds.OledProtection);
+
     private bool PageAvailable(string page)
     {
         if (page == "plugins" || _runtime.Plugins.Page(page) is not null) return true;
@@ -712,7 +716,7 @@ internal sealed class ToolkitMainWindow : Window
             "performance" => report.AnyAvailable(FeatureIds.TemperatureMonitoring, FeatureIds.PerformanceMode, FeatureIds.GpuMode, FeatureIds.DiscreteGpuManagement, FeatureIds.GpuOverclock, FeatureIds.PowerSettings, FeatureIds.NvApiGpuPower, FeatureIds.IntelMmioCpuPower, FeatureIds.AmdZenStatesCpuPower),
             "cooling" => report.AnyAvailable(FeatureIds.FanControl),
             "battery" => report.AnyAvailable(FeatureIds.BatteryChargeMode, FeatureIds.OvernightCharging, FeatureIds.AlwaysOnUsb, FeatureIds.FlipToStart, FeatureIds.BatteryInformation),
-            "display" => report.AnyAvailable(FeatureIds.DisplayRefreshRate, FeatureIds.VantageEyeCare, FeatureIds.PcManagerEyeCare, FeatureIds.ColorManagement),
+            "display" => HasDisplayFeatures(report),
             "sound" => report.AnyAvailable(FeatureIds.DolbyAtmos, FeatureIds.SpeakerNoiseCancellation, FeatureIds.MicrophoneNoiseCancellation),
             "input" => report.AnyAvailable(FeatureIds.KeyboardBacklight, FeatureIds.KeyboardBacklightAutoOff, FeatureIds.FunctionLock, FeatureIds.CapsLockOsd, FeatureIds.NumLockOsd, FeatureIds.FnCtrlSwap, FeatureIds.Touchpad, FeatureIds.FnKeyTakeover),
             "device" => report.AnyAvailable(FeatureIds.DeviceInformation, FeatureIds.WarrantyInformation),

@@ -99,6 +99,8 @@ internal static class Program
         AutomationCompletionTests.Run();
         PowerLockReadbackTests.Run();
         DisplayAndResumeTests.Run();
+        System.Threading.Tasks.Task.Run(DisplayExtrasTests.Run).GetAwaiter().GetResult();
+        DisplayExtrasTests.VerifyPage();
         RefreshRateCompatibilityTests.Run();
         DriverCatalogVisibilityTests.Run();
         AuditFixTests.Run();

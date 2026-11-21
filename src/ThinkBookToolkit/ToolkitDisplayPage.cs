@@ -151,6 +151,8 @@ internal sealed partial class ToolkitDisplayPage : ToolkitPageBase,
         }
 
         _status.Margin = new Thickness(4, 2, 4, 10);
+        BuildExtraCard(root, _presenceCard);
+        BuildExtraCard(root, _oledCard);
         root.Children.Add(_status);
         if (root.Children.Count == 1)
             root.Children.Insert(0, EmptyState(L("此设备没有可用的显示调节功能。", "No display controls are available on this device.")));
@@ -254,6 +256,7 @@ internal sealed partial class ToolkitDisplayPage : ToolkitPageBase,
 
     private async Task LoadAsync()
     {
+        var extras = RefreshExtraCards();
         await ReloadPanelLayoutAsync();
         if (!_loadedOnce)
         {
@@ -266,6 +269,7 @@ internal sealed partial class ToolkitDisplayPage : ToolkitPageBase,
             await _viewModel.ReloadRefreshRateAsync();
         }
         SyncControls();
+        await extras;
     }
 
     public async Task RefreshControlStateAsync()
@@ -275,9 +279,11 @@ internal sealed partial class ToolkitDisplayPage : ToolkitPageBase,
         _refreshRateReloading = true;
         try
         {
+            var extras = RefreshExtraCards();
             await _viewModel.LoadAsync();
             await ReloadPanelLayoutAsync();
             SyncControls();
+            await extras;
         }
         finally
         {
@@ -293,15 +299,14 @@ internal sealed partial class ToolkitDisplayPage : ToolkitPageBase,
 
     private void OnUnloaded(object sender, RoutedEventArgs args)
     {
+        InvalidateExtras();
         _displayChangeTimer.Stop();
         UnsubscribeFromDisplayChanges();
     }
 
     private void SubscribeToDisplayChanges()
     {
-        if (_displayEventsSubscribed ||
-            Runtime.Report?.IsAvailable(
-                FeatureIds.DisplayRefreshRate) == false)
+        if (_displayEventsSubscribed)
             return;
         try
         {
@@ -334,6 +339,8 @@ internal sealed partial class ToolkitDisplayPage : ToolkitPageBase,
 
     private void ScheduleDisplayStateReload()
     {
+        if (_extrasDisposed) return;
+        InvalidateExtras();
         _displayChangeTimer.Stop();
         _displayChangeTimer.Start();
     }
@@ -354,9 +361,12 @@ internal sealed partial class ToolkitDisplayPage : ToolkitPageBase,
         _refreshRateReloading = true;
         try
         {
-            await _viewModel.ReloadRefreshRateAsync();
+            var extras = RefreshExtraCards();
+            if (Runtime.Report?.IsAvailable(FeatureIds.DisplayRefreshRate) != false)
+                await _viewModel.ReloadRefreshRateAsync();
             await ReloadPanelLayoutAsync();
             SyncControls();
+            await extras;
         }
         finally
         {

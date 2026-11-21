@@ -1584,6 +1584,8 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             FeatureIds.VantageEyeCare => "Vantage eye care",
             FeatureIds.PcManagerEyeCare => "PC Manager eye care",
             FeatureIds.ColorManagement => "Color management",
+            FeatureIds.ZeroTouch => "Intelligent sensing",
+            FeatureIds.OledProtection => "OLED screen protection",
             FeatureIds.DisplayRefreshRate =>
                 "Laptop display refresh-rate switching",
             FeatureIds.DolbyAtmos => "Dolby Atmos",

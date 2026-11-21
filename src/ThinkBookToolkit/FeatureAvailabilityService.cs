@@ -69,6 +69,8 @@ internal static class FeatureIds
     public const string VantageEyeCare = "display.vantage-eye-care";
     public const string PcManagerEyeCare = "display.pc-manager-eye-care";
     public const string ColorManagement = "display.color";
+    public const string ZeroTouch = "display.zero-touch";
+    public const string OledProtection = "display.oled-power";
     public const string DisplayRefreshRate = "display.refresh-rate";
     public const string DolbyAtmos = "sound.dolby";
     public const string SpeakerNoiseCancellation = "sound.speaker-noise";
@@ -144,6 +146,8 @@ internal static class FeatureAvailabilityService
     {
         ToolkitLog.Info("Feature detection started.");
         var result = new FeatureDetectionCollector();
+        var presenceProbe = DisplayExtras.Shared.ReadAsync(false);
+        var oledProbe = DisplayExtras.Shared.ReadAsync(true);
 
         Probe(result, FeatureIds.TemperatureMonitoring, "监控", "温度与功耗监控", () =>
         {
@@ -401,6 +405,12 @@ internal static class FeatureAvailabilityService
             DisplaySettingsController.Shutdown();
         }
 
+        foreach (var (probe, id, label) in new[] { (presenceProbe, FeatureIds.ZeroTouch, "智能感知"),
+                     (oledProbe, FeatureIds.OledProtection, "OLED屏幕保护") })
+        {
+            var state = probe.GetAwaiter().GetResult();
+            AddState(result, id, "显示", label, state.Available, state.Available ? $"{state.Source} · {state.Values.Count}" : state.Detail);
+        }
         if (RefreshRateController.TryReadState(
                 out var refreshRate,
                 out var refreshRateError) &&
