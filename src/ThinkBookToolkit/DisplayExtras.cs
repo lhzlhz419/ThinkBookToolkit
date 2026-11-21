@@ -19,19 +19,25 @@ internal sealed record DisplayExtraState(DisplayBackend Source, Dictionary<strin
 
 internal sealed class DisplayExtras
 {
-    internal static readonly DisplayExtras Shared = new(DisplayExtrasTransport.CallAsync);
+    internal static readonly DisplayExtras Shared = new(DisplayExtrasTransport.CallAsync,
+        preferLocal: DisplayExtrasTransport.PreferLocal, hostAvailable: DisplayExtrasTransport.HasHost);
     internal static readonly int[] Timers = [0, -1, 30, 60, 120, 180, 300, 600, 900, 1200, 1800];
     internal static readonly string[] DimmerKeys = ["TaskbarDimmer", "BackgroundDimmer", "DisplayDimmer"];
     internal static readonly string[] PresenceKeys = ["Approach", "PresentLeave", "Video"];
     private readonly SemaphoreSlim _presence = new(1), _oled = new(1);
     private readonly Func<DisplayBackend, string, string, JsonObject?, Task<JsonObject>> _call;
     private readonly Func<bool> _darkTaskbar, _cvEnabled;
+    private readonly Func<DisplayBackend, bool> _preferLocal;
+    private readonly Func<bool> _hostAvailable;
     private const string Zero = "SystemManagement.ZeroTouch", Think = "SystemManagement.SmartSense", Spectrum = "SystemManagement.Spectrum";
 
     internal DisplayExtras(Func<DisplayBackend, string, string, JsonObject?, Task<JsonObject>> call,
-        Func<bool>? darkTaskbar = null, Func<bool>? cvEnabled = null)
+        Func<bool>? darkTaskbar = null, Func<bool>? cvEnabled = null, Func<DisplayBackend, bool>? preferLocal = null,
+        Func<bool>? hostAvailable = null)
     {
         _call = call;
+        _preferLocal = preferLocal ?? (_ => false);
+        _hostAvailable = hostAvailable ?? (() => true);
         _darkTaskbar = darkTaskbar ?? TaskbarDimmingRestricted;
         _cvEnabled = cvEnabled ?? (() =>
         {
@@ -88,19 +94,28 @@ internal sealed class DisplayExtras
         try
         {
             var errors = new List<string>();
-            var consumerAnswered = false;
-            foreach (var source in oled ? new[] { DisplayBackend.Spectrum } :
-                new[] { DisplayBackend.ZeroTouch, DisplayBackend.Think, DisplayBackend.DirectHpd })
+            var families = oled ? new[] { (DisplayBackend.DirectSpectrum, DisplayBackend.Spectrum) } :
+                new[] { (DisplayBackend.DirectHpd, DisplayBackend.ZeroTouch), (DisplayBackend.DirectThink, DisplayBackend.Think) };
+            foreach (var (local, hosted) in families)
             {
-                if (source == DisplayBackend.DirectHpd && consumerAnswered) continue;
-                try
+                DisplayBackend[] order;
+                try { order = !_hostAvailable() ? [local] : _preferLocal(local) ? [local, hosted] : [hosted, local]; }
+                catch (Exception ex)
                 {
-                    var (state, _) = await ReadSource(source).ConfigureAwait(false);
-                    if (source == DisplayBackend.ZeroTouch) consumerAnswered = true;
-                    if (state.Available) return state with { Detail = "" };
-                    errors.Add(source + ": " + state.Detail);
+                    errors.Add("Display dependency discovery: " + ex.GetBaseException().Message);
+                    order = [local, hosted];
                 }
-                catch (Exception ex) { errors.Add(source + ": " + ex.GetBaseException().Message); }
+                foreach (var source in order)
+                {
+                    try
+                    {
+                        var (state, _) = await ReadSource(source).ConfigureAwait(false);
+                        if (state.Available) return state with { Detail = "" };
+                        errors.Add(source + ": " + state.Detail);
+                        break;
+                    }
+                    catch (Exception ex) { errors.Add(source + ": " + ex.GetBaseException().Message); }
+                }
             }
             var detail = string.Join(" · ", errors);
             ToolkitLog.Info("Display capability probe: " + detail);
@@ -112,7 +127,7 @@ internal sealed class DisplayExtras
     private async Task<(DisplayExtraState State, JsonObject? List)> ReadSource(DisplayBackend source)
     {
         var result = new DisplayExtraState(source, new(), "无可用设置 / No supported setting with a readable value.");
-        if (source == DisplayBackend.Spectrum)
+        if (source is DisplayBackend.Spectrum or DisplayBackend.DirectSpectrum)
         {
             var caps = await Call(source, Spectrum, "Get-Capability").ConfigureAwait(false);
             var supported = Bool(Unique(caps["CapabilityList"]?["Items"], "BurningProtectionControl")?["value"]);
@@ -135,7 +150,7 @@ internal sealed class DisplayExtras
             }
             return (result, data);
         }
-        if (source == DisplayBackend.Think)
+        if (source is DisplayBackend.Think or DisplayBackend.DirectThink)
         {
             var data = await Call(source, Think, "Get-HPDSettings").ConfigureAwait(false);
             JsonNode? Value(string key) => Unique(data["SettingList"], key)?["value"];
@@ -158,6 +173,7 @@ internal sealed class DisplayExtras
         if (Number(hpd["sensorType"]) == 4)
         {
             if (!_cvEnabled()) return (result with { Detail = "EnableCVDSP policy unavailable or disabled." }, null);
+            if (!_hostAvailable()) return (result with { Detail = "Cannot verify CVDSP camera permission and shutter status without the Lenovo host." }, null);
             var status = await Call(DisplayBackend.ZeroTouch, Zero, "Get-HPDStatus").ConfigureAwait(false);
             var camera = await Call(DisplayBackend.ZeroTouch, "SystemManagement.Camera", "Get-Capability").ConfigureAwait(false);
             var permissions = (camera["capabilityList"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault()?["capability"];
@@ -172,7 +188,7 @@ internal sealed class DisplayExtras
     internal async Task<(DisplayExtraState State, string? Error)> SetAsync(DisplayBackend source, string key, int value,
         Func<bool> stillCurrent)
     {
-        var oled = source == DisplayBackend.Spectrum;
+        var oled = source is DisplayBackend.Spectrum or DisplayBackend.DirectSpectrum;
         var gate = oled ? _oled : _presence;
         await gate.WaitAsync().ConfigureAwait(false);
         try
@@ -199,7 +215,7 @@ internal sealed class DisplayExtras
                     if (value is not (0 or 1)) throw new ArgumentOutOfRangeException(nameof(value));
                     var enabled = value == 1;
                     JsonObject reply;
-                    if (source == DisplayBackend.Think)
+                    if (source is DisplayBackend.Think or DisplayBackend.DirectThink)
                         reply = await Call(source, Think, "Set-HPDSetting", new JsonObject { ["SettingList"] = new JsonArray(new JsonObject {
                             ["Setting"] = new JsonArray(new JsonObject { ["key"] = key, ["value"] = enabled.ToString() }) }) }).ConfigureAwait(false);
                     else

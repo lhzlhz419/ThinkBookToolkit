@@ -13,7 +13,10 @@ internal static class LenovoVantageAddinLocator
 
     public static string? FindLatestFile(
         string addinName,
-        string fileName)
+        string fileName) => FindDependencyFile(addinName, fileName) ??
+            FindLatestFileInRoot(Path.Combine(InstalledAddinsRoot, addinName), fileName);
+
+    internal static string? FindDependencyFile(string addinName, string fileName)
     {
         var roots = new List<string>();
         roots.Add(Path.Combine(ToolkitStoragePaths.Dependency, LocalAddinsDirectory, addinName));
@@ -29,12 +32,7 @@ internal static class LenovoVantageAddinLocator
             AppContext.BaseDirectory,
             LocalAddinsDirectory,
             addinName);
-        var installedRoot = Path.Combine(
-            InstalledAddinsRoot,
-            addinName);
-
         roots.Add(localRoot);
-        roots.Add(installedRoot);
         return FindLatestFileInRoots(roots, fileName);
     }
 

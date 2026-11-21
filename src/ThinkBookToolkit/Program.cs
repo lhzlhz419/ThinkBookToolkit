@@ -28,7 +28,11 @@ public static class Program
             var restartRequested = false;
             ToolkitLog.Initialize();
             AppDomain.CurrentDomain.UnhandledException += (_, args) => LogException(args.ExceptionObject as Exception);
-            AppDomain.CurrentDomain.ProcessExit += (_, _) => ToolkitLog.Shutdown();
+            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            {
+                SpectrumDisplayWorker.Shutdown();
+                ToolkitLog.Shutdown();
+            };
             TaskScheduler.UnobservedTaskException += (_, args) =>
             {
                 ToolkitLog.Error("Unobserved background task exception.", args.Exception);

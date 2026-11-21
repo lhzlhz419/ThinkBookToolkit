@@ -191,6 +191,13 @@ dotnet run --project .\tests\ThinkBookToolkit.UiPreview\ThinkBookToolkit.UiPrevi
 自定义目录，再使用原有回退位置（程序目录；适用时也包括系统中安装的 Vantage 插件目录）。自定义根目录中应包含
 `VantageAddins` 和/或 `LenovoPcManager`；安装器只保存目录引用，不会把这些文件复制到安装目录。
 
+未安装 Vantage 时，显示页可以直接使用依赖文件夹中的联想组件。将依赖根目录选为包含
+`VantageAddins` 的文件夹，保留 `SmartInteractAddin`、`ThinkSmartSenseAddin` 和
+`LenovoDisplayAddin` 各自的版本子目录及其配套文件。查找顺序依次为 Toolkit 设置中的依赖文件夹、
+已启用的自定义联想 DLL 目录、程序目录、系统 Vantage 插件目录。只有后端报告能力并读到当前值才显示对应行。
+独立 OLED 监控随 Toolkit 运行，离开显示页后仍工作，退出 Toolkit 时结束。智能感知仍依赖设备的
+HPD 驱动或服务，视觉感知机型还需能验证联想策略和摄像头权限。
+
 如果需要在本机发布包中加入从您自己的安装环境取得的文件，可把 MSBuild 属性 `ExternalDependenciesRoot` 指向包含 `VantageAddins` 和/或 `LenovoPcManager` 的目录。默认本地路径是仓库旁的 `ThinkBookToolkit.Dependencies`。没有该目录的全新源码副本仍可构建；如果程序也无法从已安装的软件中找到必需组件，对应的可选功能会显示为不可用。
 
 当前本地依赖目录结构如下。版本目录名表示开发时使用的组件版本，不构成兼容性保证。
@@ -201,6 +208,10 @@ ThinkBookToolkit.Dependencies/
 |-- LenovoPcManager/
 |   `-- WrapPlugin.dll
 `-- VantageAddins/
+    |-- LenovoDisplayAddin/
+    |   `-- 1.0.1.78/                  # Spectrum OLED 屏幕保护
+    |-- ThinkSmartSenseAddin/
+    |   `-- 1.0.0.77/                  # Think 平台智能感知
     |-- LenovoProductivitySystemAddin/
     |   `-- 1.0.0.138/                 # BIOS 工具、元数据和声明文件
     |-- LenovoSystemUpdateAddin/

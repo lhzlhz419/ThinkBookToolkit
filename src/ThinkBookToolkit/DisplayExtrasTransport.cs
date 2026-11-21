@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace ThinkBookToolkit;
 
-internal enum DisplayBackend { ZeroTouch, DirectHpd, Think, Spectrum }
+internal enum DisplayBackend { ZeroTouch, DirectHpd, Think, DirectThink, Spectrum, DirectSpectrum }
 
 internal static class DisplayExtrasTransport
 {
@@ -42,6 +42,30 @@ internal static class DisplayExtrasTransport
                     }
                     [Console]::WriteLine(($reply | ConvertTo-Json -Compress))
                 } finally { $hpd.Dispose() }
+            } elseif ($env:TBT_DISPLAY_BACKEND -eq 'DirectThink') {
+                $handler = [ThinkSmartSenseAddin.ContractHandlers.HPDCommand]
+                if ($env:TBT_DISPLAY_COMMAND -eq 'Get-HPDSettings') { $r = $handler::GetHandler('', $null) }
+                elseif ($env:TBT_DISPLAY_COMMAND -eq 'Set-HPDSetting') { $r = $handler::SetHandler($env:TBT_DISPLAY_PAYLOAD, $null) }
+                else { throw 'Unknown Think HPD command.' }
+                if ($null -eq $r -or $r.ErrorCode -ne 0) { throw "Think HPD error: $($r.ErrorCode) $($r.ErrorDesc)" }
+                if ($env:TBT_DISPLAY_COMMAND -eq 'Get-HPDSettings') {
+                    # The legacy handler substitutes False for absent driver values.
+                    $data = $r.Payload | ConvertFrom-Json
+                    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Services\SmartSense\Parameters\HPD')
+                    try {
+                        $data.SettingList = @(if ($null -ne $key) {
+                            $version = $key.GetValue('Version')
+                            foreach ($row in $data.SettingList) {
+                                if ($row.key -notin 'Version','Capability','Approach','PresentLeave','FacialFeatureRegistered') { continue }
+                                $value = $key.GetValue($row.key)
+                                if ($value -isnot [int] -or $version -isnot [int]) { continue }
+                                if ($version -lt 0x02000100 -and $row.key -ne 'Version' -and $value -notin 0,1) { continue }
+                                $row
+                            }
+                        })
+                        [Console]::WriteLine(($data | ConvertTo-Json -Depth 8 -Compress))
+                    } finally { if ($null -ne $key) { $key.Dispose() } }
+                } else { [Console]::WriteLine($r.Payload) }
             } else {
                 $client = [Lenovo.VantageService.Utilities.Messaging.RpcClientWrapper]::new()
                 $r = $client.SendRequest($env:TBT_DISPLAY_CONTRACT, $env:TBT_DISPLAY_COMMAND, [string]$env:TBT_DISPLAY_PAYLOAD)
@@ -57,17 +81,43 @@ internal static class DisplayExtrasTransport
         }
         """;
 
+    private static (string Addin, string File) Component(DisplayBackend backend) => backend switch
+    {
+        DisplayBackend.DirectHpd => ("SmartInteractAddin", "Lenovo.Vantage.SmartSenseRpcClient.dll"),
+        DisplayBackend.DirectThink => ("ThinkSmartSenseAddin", "ThinkSmartSenseAddin.dll"),
+        DisplayBackend.DirectSpectrum => ("LenovoDisplayAddin", "Spectrum_CoreWrap.dll"),
+        _ => throw new ArgumentOutOfRangeException(nameof(backend))
+    };
+
+    private static string? HostLibrary() => LenovoVantageAddinLocator.FindLatestFileInRoots(
+        [Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Lenovo", "VantageService")],
+        "Lenovo.VantageService.Utilities.dll");
+
+    internal static bool PreferLocal(DisplayBackend backend)
+    {
+        var (addin, file) = Component(backend);
+        return LenovoVantageAddinLocator.FindDependencyFile(addin, file) is not null;
+    }
+
+    internal static bool HasHost() => HostLibrary() is not null;
+
     internal static async Task<JsonObject> CallAsync(DisplayBackend backend, string contract, string command, JsonObject? payload)
     {
         string? library;
-        if (backend == DisplayBackend.DirectHpd)
-            library = LenovoVantageAddinLocator.FindLatestFile("SmartInteractAddin", "Lenovo.Vantage.SmartSenseRpcClient.dll");
+        if (backend is DisplayBackend.DirectHpd or DisplayBackend.DirectThink or DisplayBackend.DirectSpectrum)
+        {
+            var (addin, file) = Component(backend);
+            library = LenovoVantageAddinLocator.FindLatestFile(addin, file);
+        }
         else
         {
-            var host = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Lenovo", "VantageService");
-            library = LenovoVantageAddinLocator.FindLatestFileInRoots([host], "Lenovo.VantageService.Utilities.dll");
+            var addin = backend switch { DisplayBackend.Think => "ThinkSmartSenseAddin",
+                DisplayBackend.Spectrum => "LenovoDisplayAddin", _ => "SmartInteractAddin" };
+            library = LenovoVantageAddinLocator.FindDependencyFile(addin, "Lenovo.VantageService.Utilities.dll") ?? HostLibrary();
         }
         if (library is null) throw new FileNotFoundException($"未找到 {backend} 客户端组件 / Missing {backend} client.");
+        if (backend == DisplayBackend.DirectSpectrum)
+            return await SpectrumDisplayWorker.CallAsync(library, command, payload).ConfigureAwait(false);
         var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"))
         {
             WorkingDirectory = Path.GetDirectoryName(library)!,

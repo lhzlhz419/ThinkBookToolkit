@@ -142,6 +142,27 @@ internal static class DisplayExtrasTests
         Check(!(await oled.ReadAsync(true)).Available, "A card with no readable values should be hidden.");
         Check(DisplayExtrasTransport.DecodeReply(DisplayBackend.ZeroTouch, "Set-Settings", "false")["errorCode"]!.ToString() == "-1",
             "ZeroTouch negative acknowledgement was accepted.");
+        var standaloneCalls = new List<DisplayBackend>();
+        var standalone = new DisplayExtras((source, contract, cmd, body) =>
+        {
+            standaloneCalls.Add(source);
+            if (source == DisplayBackend.DirectHpd) return Task.FromResult(Json("""{"capacity":false,"errorCode":0}"""));
+            if (source == DisplayBackend.DirectThink) return Task.FromResult(thinkData);
+            if (source == DisplayBackend.DirectSpectrum)
+            {
+                if (cmd == "Get-Capability") return Task.FromResult(caps);
+                if (cmd == "Get-DisplaySettings") return Task.FromResult(raw);
+                raw = body!;
+                return Task.FromResult(Json("""{"ErrorCode":"Success"}"""));
+            }
+            throw new Exception("Standalone mode attempted a Vantage host request.");
+        }, darkTaskbar: () => false, preferLocal: _ => true);
+        rows[0]!["timer"] = "0";
+        Check((await standalone.ReadAsync(false)) is { Source: DisplayBackend.DirectThink, Available: true } &&
+            (await standalone.ReadAsync(true)) is { Source: DisplayBackend.DirectSpectrum, Available: true } &&
+            (await standalone.SetAsync(DisplayBackend.DirectSpectrum, "TaskbarDimmer", 60, () => true)).Error is null &&
+            standaloneCalls.All(s => s is DisplayBackend.DirectHpd or DisplayBackend.DirectThink or DisplayBackend.DirectSpectrum),
+            "External add-ins must supply capability, setting and readback without Vantage.");
         Console.WriteLine("Presence capability, backend-specific writes, CVDSP policy, OLED transactions and readback tests passed.");
     }
 }

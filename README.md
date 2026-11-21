@@ -302,11 +302,20 @@ The installer offers an optional custom Lenovo DLL directory, disabled by
 default. When enabled, its value is saved in
 `%USERPROFILE%\.thinkbook_toolkit\app_settings.csharp.json` as
 `UseCustomLenovoDllDirectory` and `CustomLenovoDllDirectory`. Toolkit searches
-an enabled, valid custom directory first, then uses its existing fallback
+the Toolkit dependency folder first, followed by an enabled, valid custom directory and the fallback
 locations (the application directory, plus installed Vantage add-ins where
 applicable). The custom root must contain
 `VantageAddins` and/or `LenovoPcManager`; the installer references the directory
 and does not copy those files into the installation.
+
+On machines without Vantage, the Display page can load presence detection and OLED protection
+from the dependency folder. Select the parent of `VantageAddins` and keep each add-in's version
+directory and companion files together. The search order is the Toolkit dependency folder,
+the enabled custom Lenovo DLL directory, the application directory, then installed Vantage add-ins.
+Toolkit shows settings that the device reports and can read. Standalone OLED monitoring runs
+while Toolkit is open, including after leaving the Display page. Presence detection needs the
+device's sensor driver or service. Camera-based CVDSP also requires verified Lenovo policy,
+camera permission and shutter status.
 
 For a local publish that bundles files obtained from your own installation, set
 the MSBuild property `ExternalDependenciesRoot` to a directory containing
@@ -325,6 +334,10 @@ ThinkBookToolkit.Dependencies/
 |-- LenovoPcManager/
 |   `-- WrapPlugin.dll
 `-- VantageAddins/
+    |-- LenovoDisplayAddin/
+    |   `-- 1.0.1.78/                  # Spectrum OLED protection
+    |-- ThinkSmartSenseAddin/
+    |   `-- 1.0.0.77/                  # Think presence detection
     |-- LenovoProductivitySystemAddin/
     |   `-- 1.0.0.138/                 # BIOS utility, metadata, notices
     |-- LenovoSystemUpdateAddin/
