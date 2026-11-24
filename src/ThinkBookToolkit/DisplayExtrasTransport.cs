@@ -27,15 +27,27 @@ internal static class DisplayExtrasTransport
                         $s = $hpd.GetAllSetting()
                         $reply = @{ errorCode=0; capacity=$s.Capacity; capability=[int]$hpd.Capability;
                             approachEnabled=$s.ApproachEnabled; presenceLeaveEnabled=$s.PresenceLeaveEnabled;
+                            approachDistance=$(if ($null -ne $s.ApproachDistance) { [int]$s.ApproachDistance })
+                            approachDistanceAutoAdjust=$s.ApproachDistanceAutoAdjust; presenceLeaveWaitTime=$s.PresenceLeaveWaitTime
+                            presenceLeaveCameraAssist=$s.PresenceLeaveCameraAssist
                             videoAutoPauseResumeEnabled=$s.VideoAutoPauseResumeEnabled; faceIdRegistered=$s.FaceIdRegistered;
                             sensorType=$(if ($null -ne $s.SensorType) { [int]$s.SensorType }) }
+                        if ($null -ne $s.PresenceLeaveCameraAssist) {
+                            try {
+                                $access = [Windows.Devices.Enumeration.DeviceAccessInformation,Windows.Devices.Enumeration,ContentType=WindowsRuntime]
+                                $reply.cameraAllowed = $access::CreateFromDeviceClass('VideoCapture').CurrentStatus.ToString() -eq 'Allowed'
+                            } catch { $reply.cameraAllowed = $false }
+                        }
                     } else {
                         $setting = ($env:TBT_DISPLAY_PAYLOAD | ConvertFrom-Json).SettingList.PSObject.Properties | Select-Object -First 1
-                        $enabled = [bool]::Parse($setting.Value)
                         switch ($setting.Name) {
-                            'SetApproachEnabled' { $hpd.SetApproachEnabled($enabled) }
-                            'SetPresenceLeaveEnabled' { $hpd.SetPresenceLeaveEnabled($enabled) }
-                            'SetVideoAutoPauseResume' { $hpd.SetVideoAutoPauseResume($enabled) }
+                            'SetApproachEnabled' { $hpd.SetApproachEnabled([bool]::Parse($setting.Value)) }
+                            'SetApproachDistanceAutoAdjust' { $hpd.SetApproachDistanceAutoAdjust([bool]::Parse($setting.Value)) }
+                            'SetApproachDistance' { $hpd.SetApproachDistance([SmartSenseHsaRpcClient.ApproachDistanceType][int]$setting.Value) }
+                            'SetPresenceLeaveEnabled' { $hpd.SetPresenceLeaveEnabled([bool]::Parse($setting.Value)) }
+                            'SetPresenceLeaveWaitTime' { $hpd.SetPresenceLeaveWaitTime([uint32]$setting.Value) }
+                            'SetPresenceLeaveCameraAssist' { $hpd.SetPresenceLeaveCameraAssist([bool]::Parse($setting.Value)) }
+                            'SetVideoAutoPauseResume' { $hpd.SetVideoAutoPauseResume([bool]::Parse($setting.Value)) }
                             default { throw 'Unknown HPD setting.' }
                         }
                         $reply = @{ errorCode=0 }
@@ -56,10 +68,10 @@ internal static class DisplayExtrasTransport
                         $data.SettingList = @(if ($null -ne $key) {
                             $version = $key.GetValue('Version')
                             foreach ($row in $data.SettingList) {
-                                if ($row.key -notin 'Version','Capability','Approach','PresentLeave','FacialFeatureRegistered') { continue }
+                                if ($row.key -notin 'Version','Capability','Approach','PresentLeave','FacialFeatureRegistered','ApproachDistance','LeaveWait') { continue }
                                 $value = $key.GetValue($row.key)
                                 if ($value -isnot [int] -or $version -isnot [int]) { continue }
-                                if ($version -lt 0x02000100 -and $row.key -ne 'Version' -and $value -notin 0,1) { continue }
+                                if ($version -lt 0x02000100 -and $row.key -notin 'Version','LeaveWait' -and $value -notin 0,1) { continue }
                                 $row
                             }
                         })

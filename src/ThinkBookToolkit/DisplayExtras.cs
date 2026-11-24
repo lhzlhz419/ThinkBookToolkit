@@ -12,7 +12,8 @@ namespace ThinkBookToolkit;
 
 internal sealed record DisplayExtraValue(int Value, bool Writable = true);
 internal sealed record DisplayExtraState(DisplayBackend Source, Dictionary<string, DisplayExtraValue> Values,
-    string Detail = "", bool NeedsHello = false, bool CameraBlocked = false)
+    string Detail = "", bool NeedsHello = false, bool CameraBlocked = false,
+    int[]? DistanceMillimeters = null, int[]? LockSeconds = null)
 {
     internal bool Available => Values.Count > 0;
 }
@@ -87,6 +88,22 @@ internal sealed class DisplayExtras
         return reply;
     }
 
+    private async Task<JsonObject?> OptionalZeroTouchQuery(string contract, string command)
+    {
+        try { return await Call(DisplayBackend.ZeroTouch, contract, command).ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            ToolkitLog.Info($"Optional display setting {command}: {ex.GetBaseException().Message}");
+            return null;
+        }
+    }
+
+    private static bool CameraAllowed(JsonObject? camera)
+    {
+        var items = (camera?["capabilityList"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault()?["capability"];
+        return Text(Unique(items, "PrivacyPermission")?["value"]) == "Allowed";
+    }
+
     internal async Task<DisplayExtraState> ReadAsync(bool oled)
     {
         var gate = oled ? _oled : _presence;
@@ -131,7 +148,8 @@ internal sealed class DisplayExtras
         {
             var caps = await Call(source, Spectrum, "Get-Capability").ConfigureAwait(false);
             var supported = Bool(Unique(caps["CapabilityList"]?["Items"], "BurningProtectionControl")?["value"]);
-            if (supported != true) return (result with { Detail = supported == false ? "BurningProtectionControl=False" : "Missing or invalid BurningProtectionControl." }, null);
+            var evidence = Text(caps["detail"]);
+            if (supported != true) return (result with { Detail = supported == false ? "BurningProtectionControl=False " + evidence : "Missing or invalid BurningProtectionControl." }, null);
             var data = await Call(source, Spectrum, "Get-DisplaySettings").ConfigureAwait(false);
             foreach (var key in DimmerKeys)
             {
@@ -148,6 +166,7 @@ internal sealed class DisplayExtras
                 };
                 if (timer.HasValue) result.Values[key] = new(timer.Value, writable && (key != "TaskbarDimmer" || !_darkTaskbar()));
             }
+            if (evidence is not null) ToolkitLog.Info($"Spectrum: {evidence}; readable settings={result.Values.Count}.");
             return (result, data);
         }
         if (source is DisplayBackend.Think or DisplayBackend.DirectThink)
@@ -163,6 +182,13 @@ internal sealed class DisplayExtras
                 bool? value = legacy ? Bool(Value(key)) : Number(Value(key)) switch { 2 or 4 => false, 3 or 5 => true, _ => (bool?)null };
                 if (value.HasValue) result.Values[key] = new(value.Value ? 1 : 0);
             }
+            foreach (var (key, parent) in new[] { ("ApproachDistance", "Approach"), ("LeaveWait", "PresentLeave") })
+            {
+                if (Number(Value(key)) is not int encoded || encoded <= 0 ||
+                    !result.Values.TryGetValue(parent, out var parentRow)) continue;
+                var index = (encoded & 15) - 1;
+                if (index is >= 0 and <= 2) result.Values[key] = new(index, parentRow.Value == 1);
+            }
             return (result with { NeedsHello = Bool(Value("FacialFeatureRegistered")) == false || Number(Value("FacialFeatureRegistered")) == 1 }, null);
         }
         var hpd = await Call(source, Zero, "Get-Settings").ConfigureAwait(false);
@@ -170,19 +196,56 @@ internal sealed class DisplayExtras
         if (!Success(hpd["errorCode"]) || Bool(hpd["capacity"]) != true || Number(hpd["capability"]) is not int bits || bits < 0)
             return (result with { Detail = "Missing or invalid HPD status/capability." }, null);
         var blocked = false;
-        if (Number(hpd["sensorType"]) == 4)
+        var cameraAllowed = false;
+        int[]? distances = Number(hpd["sensorType"]) switch { 1 => [420, 600, 1200], 2 => [550, 1000, 1500], _ => null };
+        int[]? lockSeconds = null;
+        var cv = Number(hpd["sensorType"]) == 4;
+        if (cv)
         {
             if (!_cvEnabled()) return (result with { Detail = "EnableCVDSP policy unavailable or disabled." }, null);
             if (!_hostAvailable()) return (result with { Detail = "Cannot verify CVDSP camera permission and shutter status without the Lenovo host." }, null);
             var status = await Call(DisplayBackend.ZeroTouch, Zero, "Get-HPDStatus").ConfigureAwait(false);
             var camera = await Call(DisplayBackend.ZeroTouch, "SystemManagement.Camera", "Get-Capability").ConfigureAwait(false);
-            var permissions = (camera["capabilityList"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault()?["capability"];
-            blocked = Text(Unique(permissions, "PrivacyPermission")?["value"]) != "Allowed" ||
+            cameraAllowed = CameraAllowed(camera);
+            blocked = !cameraAllowed ||
                 Text(status["Camera_Shutter_Supported"]) switch { "0" => false, "1" => Text(status["Camera_Shutter"]) != "1", _ => true };
+            if ((bits & 4) != 0 && Text(status["DistanceDefinition_Supported"]) == "1")
+            {
+                var definition = await OptionalZeroTouchQuery(Zero, "Get-HPDDistanceDefinition").ConfigureAwait(false);
+                var levels = new[] { "Near", "Middle", "Far" }.Select(x => Number(definition?["approach"]?[x]) ?? 0).ToArray();
+                if (levels.All(x => x > 0)) distances = levels;
+            }
+            else if (Text(status["DistanceDefinition_Supported"]) == "0") distances = [450, 750, 1200];
+            if ((bits & 32) != 0)
+            {
+                var options = await OptionalZeroTouchQuery(Zero, "Get-PresenceLeaveWaitTimeVal").ConfigureAwait(false);
+                var times = options?.Where(p => !p.Key.Equals("errorCode", StringComparison.OrdinalIgnoreCase))
+                    .Select(p => Number(p.Value) ?? 0).Order().ToArray();
+                if (times is { Length: > 0 } && times.All(x => x > 0) && times.Distinct().Count() == times.Length) lockSeconds = times;
+            }
         }
+        else if ((bits & 64) != 0 && Bool(hpd["presenceLeaveCameraAssist"]).HasValue)
+            cameraAllowed = source == DisplayBackend.DirectHpd ? Bool(hpd["cameraAllowed"]) == true :
+                CameraAllowed(await OptionalZeroTouchQuery("SystemManagement.Camera", "Get-Capability").ConfigureAwait(false));
         foreach (var (key, mask, field) in new[] { ("Approach", 2, "approachEnabled"), ("PresentLeave", 16, "presenceLeaveEnabled"), ("Video", 512, "videoAutoPauseResumeEnabled") })
             if ((bits & mask) != 0 && Bool(hpd[field]) is bool value) result.Values[key] = new(value ? 1 : 0, !blocked);
-        return (result with { NeedsHello = Bool(hpd["faceIdRegistered"]) == false, CameraBlocked = blocked }, null);
+        if (result.Values.TryGetValue("Approach", out var login))
+        {
+            var automatic = (bits & 8) != 0 ? Bool(hpd["approachDistanceAutoAdjust"]) : null;
+            if (automatic.HasValue) result.Values["AutoAdjust"] = new(automatic.Value ? 1 : 0, login.Writable && login.Value == 1);
+            if ((bits & 4) != 0 && Number(hpd["approachDistance"]) is int distance and >= 0 and <= 2)
+                result.Values["ApproachDistance"] = new(distance, login.Writable && login.Value == 1 && ((bits & 8) == 0 || automatic == false));
+        }
+        if (result.Values.TryGetValue("PresentLeave", out var leave))
+        {
+            var writable = leave.Writable && leave.Value == 1;
+            if ((bits & 32) != 0 && Number(hpd["presenceLeaveWaitTime"]) is int wait && wait >= 0 && wait < (cv ? lockSeconds?.Length ?? 0 : 3))
+                result.Values["LeaveWait"] = new(wait, writable);
+            if ((bits & 64) != 0 && Bool(hpd["presenceLeaveCameraAssist"]) is bool assist)
+                result.Values["CameraAssist"] = new(assist ? 1 : 0, writable && cameraAllowed);
+        }
+        return (result with { NeedsHello = Bool(hpd["faceIdRegistered"]) == false, CameraBlocked = blocked,
+            DistanceMillimeters = distances, LockSeconds = lockSeconds }, null);
     }
 
     internal async Task<(DisplayExtraState State, string? Error)> SetAsync(DisplayBackend source, string key, int value,
@@ -212,17 +275,22 @@ internal sealed class DisplayExtras
                 }
                 else
                 {
-                    if (value is not (0 or 1)) throw new ArgumentOutOfRangeException(nameof(value));
+                    var indexed = key is "ApproachDistance" or "LeaveWait";
+                    int count = key == "LeaveWait" ? before.LockSeconds?.Length ?? 3 : indexed ? 3 : 2;
+                    if (value < 0 || value >= count) throw new ArgumentOutOfRangeException(nameof(value));
                     var enabled = value == 1;
                     JsonObject reply;
                     if (source is DisplayBackend.Think or DisplayBackend.DirectThink)
                         reply = await Call(source, Think, "Set-HPDSetting", new JsonObject { ["SettingList"] = new JsonArray(new JsonObject {
-                            ["Setting"] = new JsonArray(new JsonObject { ["key"] = key, ["value"] = enabled.ToString() }) }) }).ConfigureAwait(false);
+                            ["Setting"] = new JsonArray(new JsonObject { ["key"] = key, ["value"] = indexed ?
+                                (value + 1).ToString(CultureInfo.InvariantCulture) : enabled.ToString() }) }) }).ConfigureAwait(false);
                     else
                     {
-                        var field = key switch { "Approach" => "SetApproachEnabled", "PresentLeave" => "SetPresenceLeaveEnabled", "Video" => "SetVideoAutoPauseResume", _ => throw new ArgumentException(key) };
+                        var field = key switch { "Approach" => "SetApproachEnabled", "PresentLeave" => "SetPresenceLeaveEnabled", "Video" => "SetVideoAutoPauseResume",
+                            "AutoAdjust" => "SetApproachDistanceAutoAdjust", "ApproachDistance" => "SetApproachDistance",
+                            "LeaveWait" => "SetPresenceLeaveWaitTime", "CameraAssist" => "SetPresenceLeaveCameraAssist", _ => throw new ArgumentException(key) };
                         reply = await Call(source, Zero, "Set-Settings", new JsonObject { ["SettingList"] = new JsonObject {
-                            [field] = enabled ? "true" : "false" } }).ConfigureAwait(false);
+                            [field] = indexed ? value.ToString(CultureInfo.InvariantCulture) : enabled ? "true" : "false" } }).ConfigureAwait(false);
                     }
                     if (!Success(reply["ErrorCode"] ?? reply["errorCode"])) throw new InvalidDataException("Missing HPD setting result.");
                 }

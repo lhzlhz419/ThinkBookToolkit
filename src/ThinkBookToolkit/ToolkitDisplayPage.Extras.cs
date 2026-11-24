@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -16,6 +18,9 @@ internal sealed partial class ToolkitDisplayPage
         internal readonly TextBlock Status = new() { Visibility = Visibility.Collapsed, TextWrapping = TextWrapping.Wrap };
         internal readonly TextBlock Hint = new() { Visibility = Visibility.Collapsed, TextWrapping = TextWrapping.Wrap };
         internal readonly Dictionary<string, (FrameworkElement Row, Control Editor)> Rows = new();
+        internal readonly Dictionary<string, Expander> Advanced = new();
+        internal FrameworkElement? UnitsRow, PowerSettings;
+        internal bool Imperial;
         internal DisplayExtraState? State;
         internal bool Syncing, Writing;
         internal int Generation;
@@ -30,14 +35,24 @@ internal sealed partial class ToolkitDisplayPage
             ("TaskbarDimmer", "任务栏调暗", "Dim taskbar"), ("BackgroundDimmer", "背景窗口调暗", "Dim background windows"),
             ("DisplayDimmer", "整屏调暗", "Dim entire screen") } : new[] {
             ("Approach", "靠近时唤醒并通过 Windows Hello 登录", "Wake and sign in with Windows Hello on approach"),
-            ("PresentLeave", "离开时自动锁屏", "Lock when you leave"), ("Video", "零触摸视频播放", "Pause and resume video automatically") };
+            ("AutoAdjust", "距离灵敏度调整", "Detection distance adjustment"),
+            ("ApproachDistance", "最大检测距离", "Maximum detection distance"),
+            ("PresentLeave", "离开时自动锁屏", "Lock when you leave"),
+            ("LeaveWait", "自动屏幕锁定计时器", "Automatic screen lock timer"),
+            ("CameraAssist", "面部识别", "Facial recognition"),
+            ("Video", "零触摸视频播放", "Pause and resume video automatically") };
         foreach (var (key, cn, en) in definitions)
         {
             Control editor;
-            if (group.Oled)
+            if (group.Oled || key is "ApproachDistance" or "AutoAdjust" or "LeaveWait")
             {
                 var combo = new ComboBox { MinWidth = 150 };
-                foreach (var seconds in DisplayExtras.Timers)
+                if (key == "AutoAdjust")
+                {
+                    AddChoice(combo, L("自动", "Automatic"), 1);
+                    AddChoice(combo, L("手动", "Manual"), 0);
+                }
+                if (group.Oled) foreach (var seconds in DisplayExtras.Timers)
                     AddChoice(combo, seconds switch { -1 => L("始终调暗", "Always dim"), 0 => L("永不调暗", "Never dim"),
                         30 => L("闲置 30 秒", "Idle for 30 seconds"), _ => L($"闲置 {seconds / 60} 分钟", $"Idle for {seconds / 60} min") }, seconds);
                 combo.SelectionChanged += async (_, _) =>
@@ -52,10 +67,55 @@ internal sealed partial class ToolkitDisplayPage
                 toggle.Click += async (_, _) => await ChangeExtra(group, key, toggle.IsChecked == true ? 1 : 0);
                 editor = toggle;
             }
-            var row = SettingRow(L(cn, en), "", editor);
+            var description = key switch
+            {
+                "LeaveWait" => L("此设置会覆盖 Windows 的屏幕和睡眠设置。", "This overrides the Windows screen and sleep timeout."),
+                "CameraAssist" => L("使用摄像头在设备上识别人脸，减少意外锁屏。需要摄像头权限。", "Recognize faces on this device to reduce unintended locks. Requires camera access."),
+                _ => ""
+            };
+            var row = SettingRow(L(cn, en), description, editor);
             group.Rows.Add(key, (row, editor));
             row.Visibility = Visibility.Collapsed;
-            body.Children.Add(row);
+            var parent = key switch { "AutoAdjust" or "ApproachDistance" => "Approach", "LeaveWait" or "CameraAssist" => "PresentLeave", _ => null };
+            if (parent is null) { body.Children.Add(row); continue; }
+            if (!group.Advanced.TryGetValue(parent, out var expander))
+            {
+                expander = new Expander { Header = L("高级设置", "Advanced settings"), Content = new StackPanel(),
+                    Margin = new Thickness(12, 0, 0, 8), Visibility = Visibility.Collapsed };
+                group.Advanced[parent] = expander;
+                body.Children.Add(expander);
+            }
+            var advanced = (StackPanel)expander.Content;
+            advanced.Children.Add(row);
+            if (key == "ApproachDistance")
+            {
+                var units = new ComboBox { MinWidth = 100 };
+                AddChoice(units, L("公制（米）", "Metric (m)"), 0);
+                AddChoice(units, L("英制（英尺）", "Imperial (ft)"), 1);
+                units.SelectedIndex = 0;
+                units.SelectionChanged += (_, _) =>
+                {
+                    group.Imperial = units.SelectedIndex == 1;
+                    if (group.State is { } state && !group.Syncing)
+                    {
+                        group.Syncing = true;
+                        try { UpdatePresenceChoices(group, state, key, (ComboBox)editor); }
+                        finally { group.Syncing = false; }
+                    }
+                };
+                advanced.Children.Add(group.UnitsRow = SettingRow(L("距离单位", "Distance units"), "", units));
+            }
+            if (key == "LeaveWait")
+            {
+                var link = new Button { Content = L("Windows 电源和电池设置", "Windows power and sleep settings"),
+                    HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8) };
+                link.Click += (_, _) =>
+                {
+                    try { Process.Start(new ProcessStartInfo("ms-settings:powersleep") { UseShellExecute = true }); }
+                    catch (Exception ex) { group.Status.Text = ex.Message; group.Status.Visibility = Visibility.Visible; }
+                };
+                advanced.Children.Add(group.PowerSettings = link);
+            }
         }
         body.Children.Add(group.Hint);
         group.Card = Card(group.Oled ? L("OLED屏幕保护", "OLED screen protection") : L("智能感知", "Intelligent sensing"), body);
@@ -127,7 +187,19 @@ internal sealed partial class ToolkitDisplayPage
                 row.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
                 editor.IsEnabled = value?.Writable == true;
                 if (editor is CheckBox toggle) toggle.IsChecked = value?.Value == 1;
-                if (editor is ComboBox combo) Select(combo, value?.Value ?? int.MinValue);
+                if (editor is ComboBox combo)
+                {
+                    if (key is "ApproachDistance" or "LeaveWait") UpdatePresenceChoices(group, state, key, combo);
+                    else Select(combo, value?.Value ?? int.MinValue);
+                }
+            }
+            if (!group.Oled)
+            {
+                Visibility Show(bool condition) => condition ? Visibility.Visible : Visibility.Collapsed;
+                group.Advanced["Approach"].Visibility = Show(state.Values.ContainsKey("ApproachDistance") || state.Values.ContainsKey("AutoAdjust"));
+                group.Advanced["PresentLeave"].Visibility = Show(state.Values.ContainsKey("LeaveWait") || state.Values.ContainsKey("CameraAssist"));
+                group.UnitsRow!.Visibility = Show(state.Values.ContainsKey("ApproachDistance") && state.DistanceMillimeters is not null);
+                group.PowerSettings!.Visibility = Show(state.Values.ContainsKey("LeaveWait"));
             }
             var hints = new List<string>();
             if (state.NeedsHello && state.Values.ContainsKey("Approach"))
@@ -142,5 +214,25 @@ internal sealed partial class ToolkitDisplayPage
             group.Status.Visibility = error is null ? Visibility.Collapsed : Visibility.Visible;
         }
         finally { group.Syncing = false; }
+    }
+
+    private void UpdatePresenceChoices(ExtraCard group, DisplayExtraState state, string key, ComboBox combo)
+    {
+        combo.Items.Clear();
+        if (!state.Values.TryGetValue(key, out var current)) return;
+        var distance = key == "ApproachDistance";
+        var labels = distance ? new[] { L("近", "Near"), L("中", "Medium"), L("远", "Far") } :
+            new[] { L("快", "Fast"), L("中", "Medium"), L("慢", "Slow") };
+        if (!distance && state.LockSeconds is { } times)
+            labels = times.Select(seconds => L($"{seconds} 秒", $"{seconds} s")).ToArray();
+        for (int i = 0; i < labels.Length; i++)
+        {
+            var label = labels[i];
+            if (distance && state.DistanceMillimeters is { } mm)
+                label += group.Imperial ? L($"（最多 {mm[i] / 304.8:0.0} 英尺）", $" (up to {mm[i] / 304.8:0.0} ft)") :
+                    L($"（最多 {mm[i] / 1000d:0.##} 米）", $" (up to {mm[i] / 1000d:0.##} m)");
+            AddChoice(combo, label, i);
+        }
+        Select(combo, current.Value);
     }
 }

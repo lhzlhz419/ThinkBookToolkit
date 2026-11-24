@@ -45,6 +45,9 @@ internal static class DisplayExtrasTests
             Check((status.Visibility == Visibility.Visible) == (error is not null), "Readback error was lost.");
         }
         Render("_presenceCard", new(DisplayBackend.Think, new() { ["PresentLeave"] = new(0) }));
+        Render("_presenceCard", new(DisplayBackend.DirectHpd, new() { ["Approach"] = new(1), ["AutoAdjust"] = new(1),
+            ["ApproachDistance"] = new(2, false), ["PresentLeave"] = new(0), ["LeaveWait"] = new(1, false),
+            ["CameraAssist"] = new(0, false) }, DistanceMillimeters: [420, 600, 1200]));
         Render("_oledCard", new(DisplayBackend.Spectrum, new() { ["TaskbarDimmer"] = new(-1, false), ["DisplayDimmer"] = new(120) }));
         Render("_oledCard", new(DisplayBackend.Spectrum, new()), "Disconnected");
     }
@@ -108,6 +111,72 @@ internal static class DisplayExtrasTests
         Check(!(await camera.ReadAsync(false)).Available, "CVDSP policy disabled.");
         cvAllowed = true;
         Check((await camera.ReadAsync(false)).Values["Approach"].Writable == false, "Covered CVDSP camera allowed mutation.");
+
+        var advancedData = Json("""{"errorCode":0,"capacity":true,"capability":126,"sensorType":1,"approachEnabled":true,"approachDistanceAutoAdjust":true,"approachDistance":1,"presenceLeaveEnabled":false,"presenceLeaveWaitTime":1,"presenceLeaveCameraAssist":true,"cameraAllowed":false}""");
+        var advancedWrites = new List<string>();
+        var advanced = new DisplayExtras((source, _, cmd, body) =>
+        {
+            Check(source == DisplayBackend.DirectHpd, "Wrong backend for advanced settings.");
+            if (cmd == "Get-Settings") return Task.FromResult(advancedData);
+            var change = body!["SettingList"]!.AsObject().Single();
+            advancedWrites.Add(change.Key);
+            var value = change.Value!.GetValue<string>();
+            switch (change.Key)
+            {
+                case "SetApproachDistanceAutoAdjust": advancedData["approachDistanceAutoAdjust"] = bool.Parse(value); break;
+                case "SetApproachDistance": advancedData["approachDistance"] = int.Parse(value); break;
+                case "SetPresenceLeaveWaitTime": advancedData["presenceLeaveWaitTime"] = int.Parse(value); break;
+                case "SetPresenceLeaveCameraAssist": advancedData["presenceLeaveCameraAssist"] = bool.Parse(value); break;
+                default: throw new Exception(change.Key);
+            }
+            return Task.FromResult(Json("""{"errorCode":0}"""));
+        }, hostAvailable: () => false);
+        var snapshot = await advanced.ReadAsync(false);
+        Check(snapshot.DistanceMillimeters!.SequenceEqual([420,600,1200]) && !snapshot.Values["ApproachDistance"].Writable &&
+            !snapshot.Values["LeaveWait"].Writable, "Parent switch or automatic mode did not disable advanced controls.");
+        async Task Change(string key, int value) =>
+            Check((await advanced.SetAsync(DisplayBackend.DirectHpd, key, value, () => true)).Error == null, "Write/readback failed: " + key);
+        await Change("AutoAdjust", 0);
+        await Change("ApproachDistance", 2);
+        advancedData["presenceLeaveEnabled"] = true;
+        await Change("LeaveWait", 2);
+        Check((await advanced.SetAsync(DisplayBackend.DirectHpd, "CameraAssist", 0, () => true)).Error != null && advancedWrites.Count == 3,
+            "Facial recognition was changed without camera permission.");
+        advancedData["cameraAllowed"] = true;
+        await Change("CameraAssist", 0);
+        advancedData["capability"] = 18;
+        Check((await advanced.ReadAsync(false)).Values.Count == 2, "Unavailable advanced capabilities produced controls.");
+
+        var cvData = (JsonObject)advancedData.DeepClone();
+        cvData["sensorType"] = 4;
+        cvData["capability"] = 126;
+        cvData["presenceLeaveWaitTime"] = 3;
+        var cvOptions = new DisplayExtras((_, contract, cmd, _) => Task.FromResult(cmd switch
+        {
+            "Get-Settings" => cvData,
+            "Get-HPDStatus" => Json("""{"DistanceDefinition_Supported":"1","Camera_Shutter_Supported":"0"}"""),
+            "Get-Capability" => Json("""{"capabilityList":[{"capability":[{"key":"PrivacyPermission","value":"Allowed"}]}]}"""),
+            "Get-HPDDistanceDefinition" => Json("""{"approach":{"Near":"350","Middle":"550","Far":"1100"}}"""),
+            "Get-PresenceLeaveWaitTimeVal" => Json("""{"Slow":"120","Immediately":"1","Short":"10","Medium":"30"}"""),
+            _ => throw new InvalidOperationException(cmd)
+        }), cvEnabled: () => true);
+        var cvOptionsState = await cvOptions.ReadAsync(false);
+        Check(cvOptionsState.LockSeconds!.SequenceEqual([1,10,30,120]) && cvOptionsState.Values["LeaveWait"].Value == 3 &&
+            cvOptionsState.DistanceMillimeters!.SequenceEqual([350,550,1100]), "CVDSP device-specific options were lost.");
+
+        var thinkAdvanced = Json("""{"SettingList":[{"key":"Version","value":"0x02000100"},{"key":"Capability","value":"0x2"},{"key":"Approach","value":"0x3"},{"key":"ApproachDistance","value":"0x12"},{"key":"PresentLeave","value":"0x3"},{"key":"LeaveWait","value":"0x11"}]}""");
+        var thinkOptions = new DisplayExtras((s, _, cmd, body) =>
+        {
+            if (s != DisplayBackend.DirectThink) throw new InvalidOperationException();
+            if (cmd == "Get-HPDSettings") return Task.FromResult(thinkAdvanced);
+            var setting = body!["SettingList"]![0]!["Setting"]![0]!;
+            Check(setting["key"]!.ToString() == "LeaveWait" && setting["value"]!.ToString() == "3", "Wrong Think timer encoding.");
+            thinkAdvanced["SettingList"]![5]!["value"] = "0x13";
+            return Task.FromResult(Json("""{"ErrorCode":"0"}"""));
+        }, hostAvailable: () => false);
+        Check((await thinkOptions.ReadAsync(false)).Values["ApproachDistance"].Value == 1 &&
+            (await thinkOptions.SetAsync(DisplayBackend.DirectThink, "LeaveWait", 2, () => true)).Error == null,
+            "Think distance decoding or timer readback failed.");
 
         var caps = Json("""{"CapabilityList":{"Items":[{"key":"BurningProtectionControl","value":"True"}]}}""");
         var raw = Json("""{"vendorExtension":"keep","SettingList":{"Items":[{"key":"TaskbarDimmer","enabled":"true","trigger":"Running","timer":"0"},{"key":"BackgroundDimmer","enabled":"true","trigger":"None","timer":"0","extension":7},{"key":"Unknown","x":true},{"key":"DisplayDimmer","enabled":"true","trigger":"KeyMouseIdleHalf","timer":"0"}]}}""");

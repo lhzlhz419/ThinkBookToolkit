@@ -15,26 +15,86 @@ internal static class SpectrumDisplayWorker
     private static Process? _process;
     private static ChildProcessJob? _job;
     private static string? _library;
+    private static bool _vendorMonitor;
     private const string Script = """
         $ErrorActionPreference = 'Stop'
         [Console]::InputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
         $initialized = $false
         $monitor = $null
+        function Get-SpectrumCapability {
+            # The add-in merges these machine tag stores from both registry views.
+            $tag = 'absent'
+            foreach ($path in 'SOFTWARE\Lenovo\ImController\Applicability\Tags',
+                    'SOFTWARE\WOW6432Node\Lenovo\ImController\Applicability\Tags',
+                    'SOFTWARE\WOW6432Node\Lenovo\VantageService\DeviceTags') {
+                $key = $null
+                try {
+                    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($path)
+                    if (!$key) { continue }
+                    foreach ($name in $key.GetValueNames()) {
+                        if ($name -eq 'System.Profile.OLED' -or $key.GetValue($name) -eq 'System.Profile.OLED') {
+                            return @{supported=$true;detail='System.Profile.OLED'}
+                        }
+                    }
+                } catch { $tag = 'unavailable' }
+                finally { if ($key) { $key.Dispose() } }
+            }
+            $panels = [Collections.Generic.List[string]]::new()
+            $bios = ''
+            $policy = 'unavailable'
+            try {
+                $entries = $null
+                try {
+                    $json = [Lenovo.VantageService.Utilities.Addin.AddinEnvironment]::CloudSettings['Spectrum']
+                    if ($json) { $entries = ($json | ConvertFrom-Json).WhiteList; $policy = 'cloud' }
+                } catch {}
+                if ($null -eq $entries) {
+                    $manifest = [IO.Path]::Combine([IO.Directory]::GetParent($dir).FullName,'AddinManifest.xml')
+                    if ([IO.File]::Exists($manifest)) {
+                        $xml = [Xml.XmlDocument]::new()
+                        $xml.XmlResolver = $null
+                        $xml.Load($manifest)
+                        $setting = $xml.SelectSingleNode('/Addin[@name="LenovoDisplayAddin"]/Settings/Setting[@key="Spectrum"]')
+                        if ($setting) { $entries = ($setting.InnerText | ConvertFrom-Json).WhiteList; $policy = 'manifest' }
+                    }
+                }
+                [void]$core::GetPanelInfoAndBiosHeader($panels,[ref]$bios)
+                $matched = [Collections.Generic.List[string]]::new()
+                if ($bios) {
+                    foreach ($id in $panels) {
+                        if (!$id) { continue }
+                        foreach ($item in $entries) {
+                            if ($item.PANELID -eq $id -or ($item.EDID -eq $id -and $item.BIOS -contains $bios)) {
+                                $matched.Add($id)
+                                break
+                            }
+                        }
+                    }
+                }
+                if ($matched.Count) {
+                    [void]$core::SetPanelInfos($matched)
+                    return @{supported=$true;detail="$policy panel=$($matched -join ',') BIOS=$bios"}
+                }
+            } catch { $policy = "$policy ($($_.Exception.GetBaseException().Message))" }
+            $native = $core::IsCapable()
+            return @{supported=$native;detail="OLED tag=$tag; $policy panel=$($panels -join ',') BIOS=$bios; native=$native"}
+        }
         while ($null -ne ($line = [Console]::ReadLine())) {
             try {
                 if (!$initialized) {
                     $dir = [IO.Path]::GetDirectoryName($env:TBT_SPECTRUM_LIBRARY)
                     [Environment]::CurrentDirectory = $dir
-                    foreach ($name in 'Newtonsoft.Json.dll','Spectrum_Contract.dll','Spectrum_CoreWrap.dll','LenovoDisplayAddin.dll') {
+                    foreach ($name in 'Newtonsoft.Json.dll','Lenovo.VantageService.Utilities.dll','Spectrum_Contract.dll','Spectrum_CoreWrap.dll','LenovoDisplayAddin.dll') {
                         [void][Reflection.Assembly]::LoadFrom([IO.Path]::Combine($dir,$name))
                     }
                     $core = [Spectrum_CoreWrap.Spectrum_CoreAccessor]
                     $initialized = $true
                 }
                 $request = $line | ConvertFrom-Json
-                $capable = $core::IsCapable()
+                $probe = Get-SpectrumCapability
+                $capable = $probe.supported
                 if ($request.command -eq 'Get-Capability') {
-                    $data = @{CapabilityList=@{Items=@(@{key='BurningProtectionControl';value=$capable.ToString()})}}
+                    $data = @{detail=$probe.detail;CapabilityList=@{Items=@(@{key='BurningProtectionControl';value=$capable.ToString()})}}
                 } elseif (!$capable) { throw 'OLED capability is no longer available.' }
                 elseif ($request.command -eq 'Get-DisplaySettings') {
                     $raw = $core::GetDisplaySettings()
@@ -51,7 +111,7 @@ internal static class SpectrumDisplayWorker
                     $result = $core::SetDisplaySettings($typed)
                     $data = @{ErrorCode=$result.ErrorCode}
                 } else { throw 'Unknown Spectrum command.' }
-                if ($capable -and $request.command -eq 'Get-DisplaySettings' -and $data.SettingList.Items.Count -gt 0) {
+                if ($capable -and $env:TBT_VENDOR_MONITOR -ne '1' -and $request.command -eq 'Get-DisplaySettings' -and $data.SettingList.Items.Count -gt 0) {
                     if ($null -eq $monitor) {
                         $run = [Delegate]::CreateDelegate([Action],$core,'StartMonitor')
                         $monitor = [Threading.Tasks.Task]::Factory.StartNew($run,[Threading.CancellationToken]::None,
@@ -70,9 +130,8 @@ internal static class SpectrumDisplayWorker
         await Gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (VendorMonitorActive())
-                throw new InvalidOperationException("Lenovo's display add-in is running in this session. Use the hosted Spectrum backend.");
-            if (_process is null || _process.HasExited || !string.Equals(library, _library, StringComparison.OrdinalIgnoreCase))
+            var vendorMonitor = VendorMonitorActive();
+            if (_process is null || _process.HasExited || _vendorMonitor != vendorMonitor || !string.Equals(library, _library, StringComparison.OrdinalIgnoreCase))
             {
                 Stop();
                 var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"))
@@ -84,11 +143,13 @@ internal static class SpectrumDisplayWorker
                 foreach (var arg in new[] { "-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(Script)) })
                     start.ArgumentList.Add(arg);
                 start.Environment["TBT_SPECTRUM_LIBRARY"] = library;
+                start.Environment["TBT_VENDOR_MONITOR"] = vendorMonitor ? "1" : "0";
                 _job = new ChildProcessJob();
                 _process = Process.Start(start) ?? throw new IOException("Spectrum worker did not start.");
                 _job.Assign(_process);
                 _process.BeginErrorReadLine();
                 _library = library;
+                _vendorMonitor = vendorMonitor;
             }
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(6));
             var line = new JsonObject { ["command"] = command, ["payload"] = payload?.ToJsonString() }.ToJsonString();
