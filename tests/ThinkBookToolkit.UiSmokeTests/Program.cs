@@ -4421,7 +4421,7 @@ internal static class Program
                labels.Contains("高性能（独立显卡）") ==
                    availability.HasDiscreteGpu &&
                ContainsText(page, "更改后需要重启") &&
-               ContainsText(page, "会阻止独显卸载"),
+               ContainsText(page, "会阻止独显卸载") == availability.HasDiscreteGpu,
             "Hardware acceleration choices or restart/hybrid warning are incorrect.");
 
         var global = Descendants(page)
