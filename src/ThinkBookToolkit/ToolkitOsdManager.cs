@@ -932,6 +932,7 @@ internal static class OsdSensorCatalog
             OsdSensor.CpuAverageFrequency,
             OsdSensor.CpuPerformanceCoreAverageFrequency,
             OsdSensor.CpuEfficiencyCoreAverageFrequency,
+            OsdSensor.CpuLpeAverageFrequency,
             OsdSensor.CpuMaximumFrequency,
             OsdSensor.CpuTemperature,
             OsdSensor.CpuPower
@@ -1004,6 +1005,7 @@ internal static class OsdSensorCatalog
         OsdSensor.CpuAverageFrequency => "平均频率",
         OsdSensor.CpuPerformanceCoreAverageFrequency => "性能核平均频率",
         OsdSensor.CpuEfficiencyCoreAverageFrequency => "能效核平均频率",
+        OsdSensor.CpuLpeAverageFrequency => "LPE 核平均频率",
         OsdSensor.CpuMaximumFrequency => "最高频率",
         OsdSensor.CpuTemperature => "温度",
         OsdSensor.CpuPower => "功耗",
@@ -1045,6 +1047,7 @@ internal static class OsdSensorCatalog
         OsdSensor.CpuAverageFrequency => "Average clock",
         OsdSensor.CpuPerformanceCoreAverageFrequency => "P-core average clock",
         OsdSensor.CpuEfficiencyCoreAverageFrequency => "E-core average clock",
+        OsdSensor.CpuLpeAverageFrequency => "LP E-core average clock",
         OsdSensor.CpuMaximumFrequency => "Maximum clock",
         OsdSensor.CpuTemperature => "Temperature",
         OsdSensor.CpuPower => "Power",
@@ -1096,6 +1099,7 @@ internal static class OsdSensorCatalog
                 value?.CpuPerformanceCoreAverageClockMhz),
             OsdSensor.CpuEfficiencyCoreAverageFrequency => Frequency(
                 value?.CpuEfficiencyCoreAverageClockMhz),
+            OsdSensor.CpuLpeAverageFrequency => Frequency(value?.CpuLpeAverageClockMhz),
             OsdSensor.CpuMaximumFrequency => Frequency(value?.CpuMaximumClockMhz),
             OsdSensor.CpuTemperature => Temperature(value?.CpuTempC),
             OsdSensor.CpuPower => Power(value?.CpuPowerW),

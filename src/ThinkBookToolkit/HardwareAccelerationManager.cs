@@ -129,14 +129,16 @@ internal static class HardwareAccelerationManager
 
     private static bool IsIntegratedAdapter(string name) =>
         name.Contains("Intel", StringComparison.OrdinalIgnoreCase) &&
-        name.Contains("Graphics", StringComparison.OrdinalIgnoreCase) &&
-        !name.Contains("Arc", StringComparison.OrdinalIgnoreCase) ||
+        (name.Contains("Graphics", StringComparison.OrdinalIgnoreCase) || name.Contains("Arc", StringComparison.OrdinalIgnoreCase)) &&
+        !IsDiscreteAdapter(name) ||
         name.Contains("AMD Radeon(TM) Graphics", StringComparison.OrdinalIgnoreCase) ||
         name.Equals("AMD Radeon Graphics", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsDiscreteAdapter(string name) =>
+    internal static bool IsDiscreteAdapter(string name) =>
         name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) ||
         name.Contains("GeForce", StringComparison.OrdinalIgnoreCase) ||
         name.Contains("AMD Radeon RX", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("Intel Arc", StringComparison.OrdinalIgnoreCase);
+        (name.Contains("Intel", StringComparison.OrdinalIgnoreCase) &&
+         System.Text.RegularExpressions.Regex.IsMatch(name, @"\bArc(?:\(TM\))?\s+(?:Pro\s+)?[AB]\d{2,3}\w*\b",
+             System.Text.RegularExpressions.RegexOptions.IgnoreCase));
 }

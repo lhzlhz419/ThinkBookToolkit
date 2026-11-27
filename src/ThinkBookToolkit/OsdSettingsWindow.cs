@@ -430,6 +430,7 @@ internal sealed partial class OsdSettingsWindow : Window
                         .CpuPerformanceCoreAverageClockMhz.HasValue == true &&
                     _runtime.Snapshot.Temperatures?
                         .CpuEfficiencyCoreAverageClockMhz.HasValue == true;
+                if (sensor == OsdSensor.CpuLpeAverageFrequency && _runtime.Snapshot.Temperatures?.CpuLpeAverageClockMhz is null) continue;
                 if ((sensor is
                          OsdSensor.CpuPerformanceCoreAverageFrequency or
                          OsdSensor.CpuEfficiencyCoreAverageFrequency) &&

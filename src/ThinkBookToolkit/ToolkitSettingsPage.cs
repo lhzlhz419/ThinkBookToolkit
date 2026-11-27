@@ -297,7 +297,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             "\uEB9F"));
         global.Children.Add(SettingRow(
             L("硬件加速", "Hardware acceleration"),
-            L(
+            !_hardwareAccelerationAvailability.HasDiscreteGpu ? L("更改后需要重启。", "Restart after changing this setting.") : L(
                 "更改后需要重启。混合模式下使用独立显卡加速会阻止独显卸载。",
                 "A restart is required after changing this setting. Using the discrete GPU for acceleration in hybrid mode prevents it from being disconnected."),
             _hardwareAcceleration,
@@ -514,7 +514,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
                 Visibility = Visibility.Collapsed,
                 Margin = new Thickness(0, 10, 0, 0)
             };
-            foreach (var group in Runtime.Report.Items.GroupBy(item => CategoryName(item.Category)))
+            foreach (var group in Runtime.Report.Items.Where(item => Runtime.Snapshot.ShowDiscreteGpuControls || item.Id is not (FeatureIds.GpuMode or FeatureIds.DiscreteGpuManagement or FeatureIds.GpuOverclock or FeatureIds.NvApiGpuPower)).GroupBy(item => CategoryName(item.Category)))
             {
                 details.Children.Add(new TextBlock
                 {
@@ -1103,6 +1103,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
         var heroItems = new StackPanel { Margin = new Thickness(0, 5, 0, 0) };
         foreach (var heroId in OverviewLayoutDefaults.HeroCardDefinitions)
         {
+            if (!Runtime.Snapshot.ShowDiscreteGpuControls && OverviewHeroIds.RequiresDiscreteGpu(heroId)) continue;
             var toggle = new CheckBox
             {
                 Content = OverviewHeroName(heroId),
@@ -1149,9 +1150,12 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             var displayedItems = definition.Value
                 .Where(item => DeviceModelDetector.HasSecondFan() ||
                                item is not ("fan2-speed" or "fan2-target"))
+                .Where(item => item != "lpe-average-frequency" || Runtime.Snapshot.Temperatures?.CpuLpeAverageClockMhz.HasValue == true)
                 .Where(item => hasHybridCores ||
                                item is not ("performance-core-average-frequency" or
                                    "efficiency-core-average-frequency"))
+                .Where(item => definition.Key != OverviewCardIds.Power || Runtime.Snapshot.ShowDiscreteGpuControls ||
+                    !(item.StartsWith("gpu-") || item.StartsWith("nv-")))
                 .Where(item => definition.Key != OverviewCardIds.Power ||
                     (Runtime.NvApiGpuPowerEnabled
                         ? item is not ("gpu-boost" or "gpu-tgp" or
@@ -1366,6 +1370,7 @@ internal sealed class ToolkitSettingsPage : ToolkitPageBase
             (OverviewCardIds.Cpu, "average-frequency") => L("平均频率", "Average frequency"),
             (OverviewCardIds.Cpu, "performance-core-average-frequency") => L("性能核平均频率", "Performance-core average frequency"),
             (OverviewCardIds.Cpu, "efficiency-core-average-frequency") => L("能效核平均频率", "Efficiency-core average frequency"),
+            (OverviewCardIds.Cpu, "lpe-average-frequency") => L("LPE 核平均频率", "LP E-core average frequency"),
             (OverviewCardIds.Cpu, "maximum-frequency") => L("最高频率", "Maximum frequency"),
             (OverviewCardIds.Cpu, "temperature") => L("温度", "Temperature"),
             (OverviewCardIds.Cpu, "power") => L("功耗", "Power"),

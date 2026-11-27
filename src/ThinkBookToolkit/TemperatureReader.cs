@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
@@ -24,7 +25,7 @@ public sealed class TemperatureReader : IDisposable
     private TemperatureSnapshot? _lastSnapshot;
     private readonly object _sampleLock = new();
     private long _lastSuccessfulSample;
-    private readonly Dictionary<(string Name, string Identifier), int> _coreClockClasses = new();
+    private readonly Dictionary<(string Name, string Identifier), CoreClockKind> _coreClockClasses = new();
 
     internal static IReadOnlyDictionary<int, byte>
         HybridCoreEfficiencyClassesForTesting() =>
@@ -59,7 +60,7 @@ public sealed class TemperatureReader : IDisposable
                         .OrderBy(pair => pair.Key)
                         .Select(pair =>
                             $"{pair.Key}=" +
-                            (pair.Value ==
+                            (_hybridCoreTopology.LowPowerIndices.Contains(pair.Key) ? "LPE" : pair.Value ==
                              _hybridCoreTopology.PerformanceClass
                                 ? "P"
                                 : "E"))) + ".");
@@ -194,7 +195,7 @@ public sealed class TemperatureReader : IDisposable
             .Where(sensor => sensor.SensorType == SensorType.Clock)
             .Where(sensor => IsHybridCoreClock(
                 sensor,
-                performance: true))
+                CoreClockKind.Performance))
             .Select(sensor => sensor.Value)
             .Where(IsPlausibleClock)
             .ToArray();
@@ -202,10 +203,14 @@ public sealed class TemperatureReader : IDisposable
             .Where(sensor => sensor.SensorType == SensorType.Clock)
             .Where(sensor => IsHybridCoreClock(
                 sensor,
-                performance: false))
+                CoreClockKind.Efficiency))
             .Select(sensor => sensor.Value)
             .Where(IsPlausibleClock)
             .ToArray();
+
+        var lowPowerClocks = cpuSensors.Where(sensor => sensor.SensorType == SensorType.Clock &&
+                IsHybridCoreClock(sensor, CoreClockKind.LowPowerEfficiency) && IsPlausibleClock(sensor.Value))
+            .Select(sensor => sensor.Value).ToArray();
 
         var memoryTemperatures = sensors
             .Where(sensor => sensor.SensorType == SensorType.Temperature)
@@ -254,6 +259,7 @@ public sealed class TemperatureReader : IDisposable
                 efficiencyCoreClocks.Length > 0
                     ? efficiencyCoreClocks.Average()
                     : null,
+            CpuLpeAverageClockMhz = lowPowerClocks.Length > 0 ? lowPowerClocks.Average() : null,
             CpuMaximumClockMhz = cpuClocks.Length > 0
                 ? cpuClocks.Max()
                 : null,
@@ -499,7 +505,7 @@ public sealed class TemperatureReader : IDisposable
 
     private bool IsHybridCoreClock(
         SensorReading sensor,
-        bool performance)
+        CoreClockKind kind)
     {
         var key = (sensor.Name, sensor.Identifier);
         if (!_coreClockClasses.TryGetValue(key, out var classification))
@@ -507,26 +513,28 @@ public sealed class TemperatureReader : IDisposable
             classification = ClassifyCoreClock(sensor);
             _coreClockClasses[key] = classification;
         }
-        return classification == (performance ? 1 : 2);
+        return classification == kind;
     }
 
-    private int ClassifyCoreClock(SensorReading sensor)
+    private enum CoreClockKind { Unknown, Performance, Efficiency, LowPowerEfficiency }
+
+    private CoreClockKind ClassifyCoreClock(SensorReading sensor)
     {
-        var explicitlyPerformance = ContainsAny(
-            sensor,
-            ["p-core", "p core", "performance core"]);
-        var explicitlyEfficient = ContainsAny(
-            sensor,
-            ["e-core", "e core", "efficiency core", "efficient core"]);
-        // A labelled core must never fall through and be accepted by the
-        // opposite group because of a firmware/core-index mismatch.
-        if (explicitlyPerformance || explicitlyEfficient)
-            return explicitlyPerformance ? 1 : 2;
-        if (!_hybridCoreTopology.IsHybrid ||
-            !TryParseCpuCoreIndex(sensor.Name, sensor.Identifier, out var index) ||
-            !_hybridCoreTopology.EfficiencyClasses.TryGetValue(index, out var value))
-            return 0;
-        return value == _hybridCoreTopology.PerformanceClass ? 1 : 2;
+        string label = sensor.Name;
+        if (Regex.IsMatch(label, @"\b(?:lp[ -]?e[ -]?core|low[ -]power (?:e|efficient|efficiency)[ -]core)", RegexOptions.IgnoreCase))
+            return CoreClockKind.LowPowerEfficiency;
+        if (Regex.IsMatch(label, @"\b(?:p[ -]core|performance core)", RegexOptions.IgnoreCase))
+            return CoreClockKind.Performance;
+        if ((!label.Contains("core", StringComparison.OrdinalIgnoreCase) && !label.Contains("核心")) ||
+            label.Contains("uncore", StringComparison.OrdinalIgnoreCase))
+            return CoreClockKind.Unknown;
+        if (TryParseCpuCoreIndex(label, sensor.Identifier, out var index) && _hybridCoreTopology.LowPowerIndices.Contains(index))
+            return CoreClockKind.LowPowerEfficiency;
+        if (Regex.IsMatch(label, @"\b(?:e[ -]core|efficien(?:t|cy) core)", RegexOptions.IgnoreCase))
+            return CoreClockKind.Efficiency;
+        if (!_hybridCoreTopology.IsHybrid || !_hybridCoreTopology.EfficiencyClasses.TryGetValue(index, out var value))
+            return CoreClockKind.Unknown;
+        return value == _hybridCoreTopology.PerformanceClass ? CoreClockKind.Performance : CoreClockKind.Efficiency;
     }
 
     internal static bool TryParseCpuCoreIndex(
@@ -617,9 +625,31 @@ public sealed class TemperatureReader : IDisposable
         SensorType SensorType,
         double Value);
 
+    internal static HashSet<int> FindLowPowerCores(
+        (ushort Group, byte Processor, byte EfficiencyClass, byte CacheIndex)[] cores,
+        int signature, Func<ushort, byte, int> readCacheLevel)
+    {
+        var classes = cores.Select(x => x.EfficiencyClass).Distinct().Order().ToArray();
+        if (classes.Length < 2) return [];
+        var efficient = Enumerable.Range(0, cores.Length).Where(i => cores[i].EfficiencyClass == classes[0]).ToArray();
+        if (classes.Length == 3) return efficient.ToHashSet();
+
+        // Meteor Lake and Arrow Lake-H have two SoC E-cores outside the compute tile LLC.
+        var model = ((signature >> 12) & 0xf0) | ((signature >> 4) & 15);
+        if (classes.Length != 2 || ((signature >> 8) & 15) != 6 || model is not (0xaa or 0xac or 0xc5) || efficient.Length <= 2) return [];
+        var computeCaches = cores.Where(x => x.EfficiencyClass == classes[1]).Select(x => (x.Group, x.CacheIndex)).ToHashSet();
+        var isolated = efficient.Where(i => !computeCaches.Contains((cores[i].Group, cores[i].CacheIndex))).ToArray();
+        if (isolated.Length == 2) return isolated.ToHashSet();
+
+        // When Windows combines the cache groups, check CPUID.4 on each E-core.
+        var levels = efficient.Select(i => readCacheLevel(cores[i].Group, cores[i].Processor)).ToArray();
+        if (levels.Count(level => level == 2) != 2 || !levels.Contains(3) || levels.Any(level => level is not (2 or 3))) return [];
+        return efficient.Where((_, index) => levels[index] == 2).ToHashSet();
+    }
+
     private sealed record HybridCoreTopology(
         IReadOnlyDictionary<int, byte> EfficiencyClasses,
-        byte PerformanceClass)
+        byte PerformanceClass, HashSet<int> LowPowerIndices)
     {
         public bool IsHybrid =>
             EfficiencyClasses.Count > 0 &&
@@ -653,7 +683,7 @@ public sealed class TemperatureReader : IDisposable
                         return Empty;
                     var physicalCores = new Dictionary<
                         (ushort Group, byte CoreIndex),
-                        (byte FirstLogicalProcessor, byte EfficiencyClass)>();
+                        (byte FirstLogicalProcessor, byte EfficiencyClass, byte CacheIndex)>();
                     var offset = 0;
                     while (offset + 20 <= length)
                     {
@@ -677,7 +707,7 @@ public sealed class TemperatureReader : IDisposable
                             {
                                 physicalCores[key] = (
                                     logicalProcessorIndex,
-                                    efficiencyClass);
+                                    efficiencyClass, Marshal.ReadByte(address, 16));
                             }
                         }
                         offset += size;
@@ -688,22 +718,17 @@ public sealed class TemperatureReader : IDisposable
                     // topology identifier and can be non-contiguous or ordered
                     // very differently on hybrid CPUs, so it must not be used
                     // directly as the sensor index.
-                    var classes = physicalCores
-                        .OrderBy(pair => pair.Key.Group)
-                        .ThenBy(pair => pair.Value.FirstLogicalProcessor)
-                        .Select((pair, index) => (
-                            Index: index,
-                            pair.Value.EfficiencyClass))
-                        .ToDictionary(
-                            pair => pair.Index,
-                            pair => pair.EfficiencyClass);
-                    var distinct = classes.Values.Distinct().OrderBy(value => value)
-                        .ToArray();
-                    return distinct.Length > 1
-                        ? new HybridCoreTopology(
-                            classes,
-                            distinct[^1])
-                        : Empty;
+                    var ordered = physicalCores.OrderBy(pair => pair.Key.Group)
+                        .ThenBy(pair => pair.Value.FirstLogicalProcessor).ToArray();
+                    var classes = ordered.Select((pair, index) => (index, pair.Value.EfficiencyClass))
+                        .ToDictionary(x => x.index, x => x.EfficiencyClass);
+                    var distinct = classes.Values.Distinct().Order().ToArray();
+                    if (distinct.Length < 2) return Empty;
+                    var cores = ordered.Select(x => (x.Key.Group, x.Value.FirstLogicalProcessor,
+                        x.Value.EfficiencyClass, x.Value.CacheIndex)).ToArray();
+                    var intel = X86Base.IsSupported && X86Base.CpuId(0, 0).Ebx == 0x756e6547;
+                    var lowPower = intel ? FindLowPowerCores(cores, X86Base.CpuId(1, 0).Eax, HighestDataCacheLevel) : [];
+                    return new(classes, distinct[^1], lowPower);
                 }
                 finally
                 {
@@ -717,7 +742,34 @@ public sealed class TemperatureReader : IDisposable
         }
 
         private static HybridCoreTopology Empty { get; } =
-            new(new Dictionary<int, byte>(), 0);
+            new(new Dictionary<int, byte>(), 0, []);
+
+        private static int HighestDataCacheLevel(ushort group, byte processor)
+        {
+            if (processor >= 64) return 0;
+            var target = new GroupAffinity { Mask = (nuint)1 << processor, Group = group };
+            var thread = GetCurrentThread();
+            if (!SetThreadGroupAffinity(thread, ref target, out var previous)) return 0;
+            try
+            {
+                int highest = 0;
+                for (int i = 0; i < 32; i++)
+                {
+                    var eax = X86Base.CpuId(4, i).Eax;
+                    if ((eax & 31) == 0) break;
+                    if ((eax & 31) is 1 or 3) highest = Math.Max(highest, (eax >> 5) & 7);
+                }
+                return highest;
+            }
+            finally { SetThreadGroupAffinity(thread, ref previous, out _); }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct GroupAffinity { public nuint Mask; public ushort Group, Reserved1, Reserved2, Reserved3; }
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentThread();
+        [DllImport("kernel32.dll")]
+        private static extern bool SetThreadGroupAffinity(IntPtr thread, ref GroupAffinity target, out GroupAffinity previous);
     }
 
     [DllImport("kernel32.dll", SetLastError = true)]

@@ -220,6 +220,7 @@ internal sealed class SensorRecordingSettingsWindow : Window
     {
         if (sensor == OsdSensor.Fan2Speed && !DeviceModelDetector.HasSecondFan())
             return false;
+        if (sensor == OsdSensor.CpuLpeAverageFrequency && _runtime.Snapshot.Temperatures?.CpuLpeAverageClockMhz is null) return false;
         var hybrid = _runtime.Snapshot.Temperatures?
                          .CpuPerformanceCoreAverageClockMhz.HasValue == true &&
                      _runtime.Snapshot.Temperatures?

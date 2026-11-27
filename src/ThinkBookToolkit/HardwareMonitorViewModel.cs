@@ -35,6 +35,9 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
         _snapshot.Temperatures?.CpuPerformanceCoreAverageClockMhz);
     public string CpuEfficiencyCoreAverageFrequency => Frequency(
         _snapshot.Temperatures?.CpuEfficiencyCoreAverageClockMhz);
+    public string CpuLpeAverageFrequency => Frequency(_snapshot.Temperatures?.CpuLpeAverageClockMhz);
+    public bool CpuLpeAverageFrequencyVisible => HasHybridCoreFrequencies && _snapshot.Temperatures?.CpuLpeAverageClockMhz.HasValue == true &&
+        Show(OverviewCardIds.Cpu, "lpe-average-frequency");
     public string CpuMaximumFrequency => Frequency(_snapshot.Temperatures?.CpuMaximumClockMhz);
     public bool CpuAverageFrequencyVisible =>
         Show(OverviewCardIds.Cpu, "average-frequency");
@@ -375,6 +378,7 @@ internal class HardwareMonitorViewModel : ToolkitViewModelBase
             : "--";
 
     private bool PowerVisible(PowerSetting setting, string itemId) =>
+        _snapshot.ShowPowerSetting(setting) &&
         OverviewLayoutDefaults.IsItemEnabled(
             Runtime.Settings.OverviewLayout,
             OverviewCardIds.Power,

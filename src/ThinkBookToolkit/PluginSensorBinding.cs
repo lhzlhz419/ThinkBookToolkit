@@ -12,7 +12,7 @@ internal sealed class PluginSensorBinding(ToolkitPluginManager plugins, string p
         ["Fan1Speed"] = "fan1Rpm", ["Fan2Speed"] = "fan2Rpm",
         ["CpuUtilization"] = "cpuUtilization", ["CpuTemperature"] = "cpuTemperatureC", ["CpuPower"] = "cpuPowerW",
         ["CpuAverageFrequency"] = "cpuAverageMhz", ["CpuMaximumFrequency"] = "cpuMaximumMhz",
-        ["CpuPerformanceCoreAverageFrequency"] = "cpuPerformanceCoreAverageMhz", ["CpuEfficiencyCoreAverageFrequency"] = "cpuEfficiencyCoreAverageMhz",
+        ["CpuPerformanceCoreAverageFrequency"] = "cpuPerformanceCoreAverageMhz", ["CpuLpeAverageFrequency"] = "cpuLpeAverageMhz", ["CpuEfficiencyCoreAverageFrequency"] = "cpuEfficiencyCoreAverageMhz",
         ["GpuUtilization"] = "gpuUtilization", ["GpuMemoryUtilization"] = "vramUtilization",
         ["GpuCoreFrequency"] = "gpuCoreMhz", ["GpuMemoryFrequency"] = "vramMhz",
         ["GpuCoreTemperature"] = "gpuTemperatureC", ["GpuHotSpotTemperature"] = "gpuHotSpotTemperatureC",

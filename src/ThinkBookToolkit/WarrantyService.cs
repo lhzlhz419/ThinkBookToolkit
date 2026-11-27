@@ -104,13 +104,6 @@ internal static class WarrantyService
     private const string ChinaWarrantyEndpoint =
         "https://newsupport.lenovo.com.cn/api/drive/";
 
-    private const string LenovoSupportWarrantyEndpoint =
-        "https://supportapi.lenovo.com/v2.5/warranty?serial=";
-
-    // Public client identifier embedded in Lenovo's own warranty client.
-    // It identifies the calling application and is not a user credential.
-    private const string LenovoSupportClientId = "F/YmpVl7yDfUc0gDqXHHYQ==";
-
     private static readonly JsonSerializerOptions CacheJsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -167,16 +160,14 @@ internal static class WarrantyService
         var serialHash = HashSerialNumber(serialNumber);
         var cached = await ReadCacheAsync(cancellationToken);
         var matchingCache = cached is not null &&
-                            cached.SchemaVersion >= 4 &&
+                            cached.SchemaVersion == 5 &&
                             string.Equals(
                                 cached.SerialHash,
                                 serialHash,
                                 StringComparison.OrdinalIgnoreCase) &&
                             cached.TryGetDates(out _, out _);
 
-        if (matchingCache &&
-            cached!.IsFromToday() &&
-            cached.SchemaVersion >= 4)
+        if (matchingCache && cached!.IsFromToday())
         {
             cached.TryGetDates(out var cachedStart, out var cachedEnd);
             return WarrantySnapshot.FromDates(
@@ -187,13 +178,13 @@ internal static class WarrantyService
 
         try
         {
-            var result = await FetchWarrantyAsync(
+            var result = await FetchChinaWarrantyAsync(
                 serialNumber,
                 cancellationToken);
             await SaveCacheAsync(
                 new WarrantyCacheEntry
                 {
-                    SchemaVersion = 4,
+                    SchemaVersion = 5,
                     SerialHash = serialHash,
                     StartDate = result.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     EndDate = result.EndDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -248,49 +239,6 @@ internal static class WarrantyService
     }
 
     private static async Task<WarrantyQueryResult>
-        FetchWarrantyAsync(
-            string serialNumber,
-            CancellationToken cancellationToken)
-    {
-        Exception? chinaError = null;
-        try
-        {
-            return await FetchChinaWarrantyAsync(
-                serialNumber,
-                cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            chinaError = ex;
-            ToolkitLog.Warning(
-                "Lenovo China warranty query failed: " + ex.Message);
-        }
-
-        try
-        {
-            var dates = await FetchLenovoSupportWarrantyAsync(
-                serialNumber,
-                cancellationToken);
-            ToolkitLog.Info("Warranty information loaded from Lenovo Support API.");
-            return new WarrantyQueryResult(dates.StartDate, dates.EndDate, []);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception supportError)
-        {
-            throw new InvalidOperationException(
-                "Lenovo did not return warranty information for this device. " +
-                $"China: {chinaError.Message} Support: {supportError.Message}");
-        }
-    }
-
-    private static async Task<WarrantyQueryResult>
         FetchChinaWarrantyAsync(
         string serialNumber,
         CancellationToken cancellationToken)
@@ -308,7 +256,23 @@ internal static class WarrantyService
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        var result = ParseChinaWarranty(json);
+        var serial = Uri.EscapeDataString(serialNumber.Trim());
+        var machine = await HttpClient.GetStringAsync(
+            "https://newsupport.lenovo.com.cn/api/machine/getmachineinfo?sn=" + serial, cancellationToken);
+        using var info = JsonDocument.Parse(machine);
+        var data = info.RootElement.GetProperty("data");
+        var channel = Text(data, "SalePath");
+        if (channel == "中小企业" && Text(data, "SaleArea") == "00")
+            throw new InvalidOperationException("Lenovo does not publish a main warranty period for this sales area.");
+        var result = ParseChinaWarranty(json, channel);
+        if (channel == "消费")
+        {
+            // deviceGuarantee.js applies a published exception list to consumer summaries.
+            var exceptions = await HttpClient.GetStringAsync("https://newsupport.lenovo.com.cn/js/snArr.js", cancellationToken);
+            if (exceptions.Contains("\"" + serialNumber + "\"", StringComparison.Ordinal) ||
+                exceptions.Contains("'" + serialNumber + "'", StringComparison.Ordinal))
+                result = result with { StartDate = new DateOnly(2024, 2, 28), EndDate = new DateOnly(2026, 2, 28) };
+        }
         ToolkitLog.Info(
             $"Warranty information loaded from Lenovo China API: " +
             $"entitlements={result.Entitlements.Count}; " +
@@ -316,7 +280,7 @@ internal static class WarrantyService
         return result;
     }
 
-    internal static WarrantyQueryResult ParseChinaWarranty(string json)
+    internal static WarrantyQueryResult ParseChinaWarranty(string json, string channel)
     {
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
@@ -330,7 +294,7 @@ internal static class WarrantyService
                 "Lenovo China did not return valid warranty data.");
         }
 
-        if (!TryReadBaseSummary(data, out var summaryStart, out var summaryEnd))
+        if (!TryReadMainServicePeriod(data, channel, out var summaryStart, out var summaryEnd))
         {
             throw new InvalidOperationException(
                 "Lenovo China returned no valid base warranty summary.");
@@ -360,46 +324,54 @@ internal static class WarrantyService
             distinct);
     }
 
-    private static bool TryReadBaseSummary(
-        JsonElement data,
-        out DateOnly startDate,
-        out DateOnly endDate)
+    // The official deviceGuarantee page groups detail rows differently for each SalePath.
+    private static bool TryReadMainServicePeriod(JsonElement data, string channel, out DateOnly startDate, out DateOnly endDate)
     {
-        startDate = default;
-        endDate = default;
-        if (!TryGetProperty(data, "baseinfo", out var values) ||
-            values.ValueKind != JsonValueKind.Array)
-        {
+        startDate = endDate = default;
+        if (!TryGetProperty(data, "detailinfo", out var detail) || channel is not ("消费" or "商用" or "中小企业"))
             return false;
-        }
 
-        var starts = new List<DateOnly>();
-        var ends = new List<DateOnly>();
-        foreach (var value in values.EnumerateArray())
+        var seen = new HashSet<(string, string)>();
+        DateOnly? first = null, last = null;
+        foreach (var group in new[] { "warranty", "onsite", "other" })
         {
-            if (Text(value, "ServiceProductName").Trim() == "智询常伴" ||
-                Text(value, "ServiceProductNumber").Trim() == "2010290000001")
-                continue;
-            AddDate(starts, OptionalDate(value, "StartDate"));
-            AddDate(starts, OptionalDate(value, "PartStartDate"));
-            AddDate(starts, OptionalDate(value, "LaborStartDate"));
-            AddDate(starts, OptionalDate(value, "OnSiteStartDate"));
-            AddDate(ends, OptionalDate(value, "EndDate"));
+            if (!TryGetProperty(detail, group, out var rows) || rows.ValueKind != JsonValueKind.Array) continue;
+            foreach (var row in rows.EnumerateArray())
+            {
+                var number = Text(row, "ServiceProductNumber");
+                if (number.Length > 0 && !seen.Add((number, Text(row, "StartDate")))) continue;
+                var name = Text(row, "ServiceProductName").Replace("\r\n", "");
+                var category = Text(row, "ServiceProductSmallClass").Replace("\r\n", "");
+                if (!QualifiesForMainWarranty(channel, name, category)) continue;
+                DateOnly? MainDate(string part, string labor) =>
+                    channel == "中小企业" || TryGetProperty(row, part, out var field) && field.ValueKind != JsonValueKind.Null
+                        ? OptionalDate(row, part) : OptionalDate(row, labor);
+                if (MainDate("PartStartDate", "LaborStartDate") is { } start && (!first.HasValue || start < first)) first = start;
+                if (MainDate("PartEndDate", "LaborEndDate") is { } end && (!last.HasValue || end > last)) last = end;
+            }
         }
-
-        if (starts.Count == 0 || ends.Count == 0)
-            return false;
-        startDate = starts.Min();
-        endDate = ends.Max();
-        return startDate < endDate;
+        if (first is null || last is null || last < first) return false;
+        startDate = first.Value;
+        endDate = last.Value;
+        return true;
     }
 
-    private static void AddDate(
-        ICollection<DateOnly> target,
-        DateOnly? value)
+    private static bool QualifiesForMainWarranty(string channel, string name, string category)
     {
-        if (value.HasValue)
-            target.Add(value.Value);
+        if (name.Contains("部件加装") || name.Contains("保外维修") || channel == "中小企业" && name.Contains("意外保")) return false;
+        if (category is "基础服务" or "EB延保类" or "延保类服务" or "上门类" or "延保及上门类服务") return true;
+        if (channel == "消费")
+            return category is "EB上门类" or "延保类" or "部件延保及上门类服务" or "SB延保类";
+        if (category == "EB延保及上门类" || name is "TCM分体台式尊享服务极速版" or "TCM一体台式尊享服务极速版" or
+            "ThinkStation P3尊享服务极速版" or "TP尊享服务订阅基础版" or "TP尊享服务极速版" or "TS尊享服务订阅基础版" or
+            "XC DT尊享服务极速版" or "XC NB尊享服务极速版" or "启天分体台式尊享服务极速版" or "启天一体台式尊享服务极速版" or
+            "商用DT尊享服务订阅基础版" or "商用NB尊享服务订阅基础版" or "商用TB尊享服务订阅基础版" or
+            "商用笔记本尊享服务极速版（含一诺闪修、7x24电话和3年1次数据拯救服务）" or "商用平板尊享服务极速版" or
+            "扬天台式机三年（有限）保修（上门）") return true;
+        return channel == "中小企业" && category is ("寄修类" or "上门区域扩展类-城市扩展" or "部件延保及上门类服务" or
+            "电池延保及上门类服务" or "闪修类服务" or "4H闪修类服务" or "意外保" or "部件不回收类" or
+            "事前数据恢复服务" or "电话服务支持时间变更类" or "远程电话支持服务" or "联想软件服务" or
+            "快速响应及修复类" or "安装验机类" or "安装部署服务" or "基础硬件安装服务" or "系统安装服务" or "硬件加装" or "大客户第三方软件支持");
     }
 
     private static void AddEntitlements(
@@ -455,79 +427,6 @@ internal static class WarrantyService
         JsonElement value,
         string property) =>
         TryReadDate(value, property, out var date) ? date : null;
-
-    private static async Task<(DateOnly StartDate, DateOnly EndDate)>
-        FetchLenovoSupportWarrantyAsync(
-            string serialNumber,
-            CancellationToken cancellationToken)
-    {
-        var uri = new Uri(
-            LenovoSupportWarrantyEndpoint +
-            Uri.EscapeDataString(serialNumber.Trim()));
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        request.Headers.TryAddWithoutValidation(
-            "clientid",
-            LenovoSupportClientId);
-
-        using var response = await HttpClient.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        await using var stream = await response.Content.ReadAsStreamAsync(
-            cancellationToken);
-        using var document = await JsonDocument.ParseAsync(
-            stream,
-            cancellationToken: cancellationToken);
-        var root = document.RootElement;
-
-        if (!TryGetProperty(root, "Warranty", out var warrantyRecords) ||
-            warrantyRecords.ValueKind != JsonValueKind.Array)
-        {
-            var message = TryGetProperty(root, "ErrorMessage", out var error)
-                ? error.GetString()
-                : null;
-            throw new InvalidOperationException(
-                string.IsNullOrWhiteSpace(message)
-                    ? "Lenovo did not return warranty information for this device."
-                    : message);
-        }
-
-        var validRanges = warrantyRecords
-            .EnumerateArray()
-            .Select(ParseWarrantyRange)
-            .Where(range => range.HasValue)
-            .Select(range => range!.Value)
-            .ToArray();
-
-        if (validRanges.Length == 0)
-        {
-            throw new InvalidOperationException(
-                "Lenovo did not return a valid warranty period for this device.");
-        }
-
-        // Match Lenovo Baiying's entitlement aggregation: use the latest
-        // valid start and the latest valid end returned by Lenovo Support.
-        return (
-            validRanges.Max(range => range.StartDate),
-            validRanges.Max(range => range.EndDate));
-    }
-
-    private static (DateOnly StartDate, DateOnly EndDate)? ParseWarrantyRange(
-        JsonElement record)
-    {
-        if (!TryGetProperty(record, "Start", out var startValue) ||
-            !TryGetProperty(record, "End", out var endValue) ||
-            !TryParseDate(startValue.GetString(), out var startDate) ||
-            !TryParseDate(endValue.GetString(), out var endDate) ||
-            startDate >= endDate)
-        {
-            return null;
-        }
-
-        return (startDate, endDate);
-    }
 
     private static bool TryParseDate(string? value, out DateOnly date)
     {
@@ -752,7 +651,7 @@ internal static class WarrantyService
                 CultureInfo.InvariantCulture,
                 DateTimeStyles.None,
                 out endDate) &&
-            startDate < endDate;
+            startDate <= endDate;
         }
     }
 

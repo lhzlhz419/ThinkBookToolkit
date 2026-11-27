@@ -138,7 +138,8 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
         string? description = null,
         string? glyph = null,
         string? accent = null,
-        UIElement? headerAction = null)
+        UIElement? headerAction = null,
+        TextBlock? titleBlock = null)
     {
         var body = new StackPanel();
         var heading = new ResponsiveGrid();
@@ -160,14 +161,13 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                 : new Thickness(12, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center
         };
-        text.Children.Add(new TextBlock
-        {
-            Text = title,
-            FontSize = 20,
-            TextWrapping = TextWrapping.Wrap,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = Brush(Palette.Text)
-        });
+        titleBlock ??= new TextBlock();
+        titleBlock.Text = title;
+        titleBlock.FontSize = 20;
+        titleBlock.TextWrapping = TextWrapping.Wrap;
+        titleBlock.FontWeight = FontWeights.SemiBold;
+        titleBlock.Foreground = Brush(Palette.Text);
+        text.Children.Add(titleBlock);
         if (!string.IsNullOrWhiteSpace(description))
         {
             text.Children.Add(new TextBlock
@@ -395,6 +395,7 @@ internal abstract class ToolkitPageBase : UserControl, IDisposable
                 new(L("平均频率", "Average frequency"), nameof(HardwareMonitorViewModel.CpuAverageFrequency), ItemId: "average-frequency", VisibilityProperty: nameof(HardwareMonitorViewModel.CpuAverageFrequencyVisible)),
                 new(L("性能核平均频率", "Performance-core average frequency"), nameof(HardwareMonitorViewModel.CpuPerformanceCoreAverageFrequency), ItemId: "performance-core-average-frequency", VisibilityProperty: nameof(HardwareMonitorViewModel.CpuPerformanceCoreAverageFrequencyVisible)),
                 new(L("能效核平均频率", "Efficiency-core average frequency"), nameof(HardwareMonitorViewModel.CpuEfficiencyCoreAverageFrequency), ItemId: "efficiency-core-average-frequency", VisibilityProperty: nameof(HardwareMonitorViewModel.CpuEfficiencyCoreAverageFrequencyVisible)),
+                new(L("LPE 核平均频率", "LP E-core average frequency"), nameof(HardwareMonitorViewModel.CpuLpeAverageFrequency), ItemId: "lpe-average-frequency", VisibilityProperty: nameof(HardwareMonitorViewModel.CpuLpeAverageFrequencyVisible)),
                 new(L("最高频率", "Maximum frequency"), nameof(HardwareMonitorViewModel.CpuMaximumFrequency), ItemId: "maximum-frequency"),
                 new(L("温度", "Temperature"), nameof(HardwareMonitorViewModel.CpuTemperature), ItemId: "temperature"),
                 new(L("功耗", "Power"), nameof(HardwareMonitorViewModel.CpuPower), ItemId: "power")

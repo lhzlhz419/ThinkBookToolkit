@@ -1767,6 +1767,15 @@ internal static class Program
             "Fan backends do not declare full-speed enable/disable semantics.");
         var wmiBackend =
             new ThinkBookToolkit.FanBackend.Wmi.WmiFanBackend();
+        var writePair = wmiBackend.GetType().GetMethod("ApplyQlcnTargets", BindingFlags.Static | BindingFlags.NonPublic)!
+            .CreateDelegate<Action<int, int, Action<uint, int>>>();
+        var writes = new List<(uint, int)>();
+        void Capture(uint id, int rpm) => writes.Add((id, rpm));
+        writePair(3000, 4200, Capture);
+        writePair(2500, 0, Capture);
+        writePair(0, 0, Capture);
+        Assert(writes.SequenceEqual(new (uint, int)[] { (0x04030001,3000), (0x04030004,4200),
+            (0x04030001,0), (0x04030001,2500), (0x04030001,0) }), "QLCN fan mapping or global release ordering regressed.");
         Assert(wmiBackend.MinimumReadInterval == TimeSpan.FromSeconds(0.5) &&
                wmiBackend.MinimumWriteInterval == TimeSpan.FromSeconds(6) &&
                wmiBackend.ApiVersion == new Version(1, 1) &&
@@ -4465,6 +4474,7 @@ internal static class Program
                 {
                   "ServiceProductName": "一诺闪修服务",
                   "ServiceProductNumber": "FLASH",
+                  "ServiceProductSmallClass": "闪修类服务",
                   "StartDate": "2025-11-22",
                   "EndDate": "2035-01-01",
                   "PartStartDate": "2025-11-22 00:00:00",
@@ -4480,7 +4490,19 @@ internal static class Program
           }
         }
         """;
-        var warranty = WarrantyService.ParseChinaWarranty(warrantyJson);
+        var warranty = WarrantyService.ParseChinaWarranty(warrantyJson, "中小企业");
+        var mixed = warrantyJson.Replace("\"ServiceProductName\": \"空日期服务\",", """
+                "ServiceProductName": "IT设备环保处置服务", "ServiceProductSmallClass": "资产回收",
+                "LaborStartDate": "2025-06-30", "LaborEndDate": "2045-07-29",
+                "PartStartDate": "2025-06-30", "PartEndDate": "2045-07-29",
+                """);
+        Assert(WarrantyService.ParseChinaWarranty(mixed, "中小企业").EndDate == warranty.EndDate,
+            "Asset disposal changed the main warranty period.");
+        var absent = ToolkitRuntimeSnapshot.Empty with { Temperatures = new TemperatureSnapshot(null, null, null, null, null, "", "", "")
+            { DiscreteGpuState = DiscreteGpuActivityState.NotPresent, GpuName = "Intel(R) Arc(TM) 130T GPU" } };
+        Assert(!absent.ShowDiscreteGpuControls && !absent.ShowPowerSetting(PowerSetting.GpuConfigurableTgp) &&
+            absent.ShowPowerSetting(PowerSetting.CpuPl1) && (absent with { SupportedGpuModes = [GpuWorkingMode.Hybrid] }).ShowDiscreteGpuControls,
+            "Integrated-only detection removed CPU controls or ignored supported GPU modes.");
         Assert(warranty.StartDate == new DateOnly(2025, 11, 22) &&
                warranty.EndDate == new DateOnly(2031, 3, 5) &&
                warranty.Entitlements.Count == 2 &&
@@ -5524,6 +5546,10 @@ internal static class Program
 
     private static void VerifySensorRecordingContracts()
     {
+        (ushort, byte, byte, byte)[] cores = [(0,0,2,0), (0,1,0,0), (0,2,0,1), (0,3,0,1)];
+        Assert(TemperatureReader.FindLowPowerCores(cores, 0xc0650, (_, _) => 0).SetEquals([2,3]) &&
+            TemperatureReader.FindLowPowerCores(cores, 0xb0670, (_, _) => 0).Count == 0,
+            "SoC core cache grouping must be specific to supported Intel topologies.");
         Assert(TemperatureReader.TryParseCpuCoreIndex(
                    "CPU Core #7",
                    "/intelcpu/0/clock/7",

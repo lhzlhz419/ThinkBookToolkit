@@ -18,7 +18,7 @@ internal static class SensorRecordingFormat
     internal static readonly IReadOnlyList<string> MetricKeys =
     [
         "fps", "fps1Low", "latencyMs", "cpuUtilization", "cpuAverageMhz",
-        "cpuPerformanceCoreAverageMhz", "cpuEfficiencyCoreAverageMhz",
+        "cpuPerformanceCoreAverageMhz", "cpuEfficiencyCoreAverageMhz", "cpuLpeAverageMhz",
         "cpuMaximumMhz", "cpuTemperatureC", "cpuPowerW", "gpuUtilization",
         "vramUtilization", "gpuCoreMhz", "vramMhz", "gpuTemperatureC",
         "gpuHotSpotTemperatureC", "vramTemperatureC", "gpuPowerW",
@@ -410,6 +410,7 @@ internal sealed class SensorRecordingService : IDisposable
                 case OsdSensor.CpuAverageFrequency: Add("cpuAverageMhz", temperatures?.CpuAverageClockMhz); break;
                 case OsdSensor.CpuPerformanceCoreAverageFrequency: Add("cpuPerformanceCoreAverageMhz", temperatures?.CpuPerformanceCoreAverageClockMhz); break;
                 case OsdSensor.CpuEfficiencyCoreAverageFrequency: Add("cpuEfficiencyCoreAverageMhz", temperatures?.CpuEfficiencyCoreAverageClockMhz); break;
+                case OsdSensor.CpuLpeAverageFrequency: Add("cpuLpeAverageMhz", temperatures?.CpuLpeAverageClockMhz); break;
                 case OsdSensor.CpuMaximumFrequency: Add("cpuMaximumMhz", temperatures?.CpuMaximumClockMhz); break;
                 case OsdSensor.CpuTemperature: Add("cpuTemperatureC", temperatures?.CpuTempC); break;
                 case OsdSensor.CpuPower: Add("cpuPowerW", temperatures?.CpuPowerW); break;

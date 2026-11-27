@@ -52,6 +52,12 @@ internal sealed record ToolkitRuntimeSnapshot(
     string? Error)
 {
     public string PendingGpuModeSource { get; init; } = string.Empty;
+    internal bool ShowDiscreteGpuControls =>
+        Temperatures?.DiscreteGpuState != DiscreteGpuActivityState.NotPresent ||
+        SupportedGpuModes.Count != 0 || GpuMode.HasValue ||
+        HardwareAccelerationManager.IsDiscreteAdapter(Temperatures.GpuName ?? "");
+    internal bool ShowPowerSetting(PowerSetting setting) => ShowDiscreteGpuControls ||
+        setting is PowerSetting.CpuPl1 or PowerSetting.CpuPl2 or PowerSetting.CpuTemperatureLimit or PowerSetting.CpuTurboTimeLimit or PowerSetting.Atpp;
     public bool ResumeControlAfterFullSpeed { get; init; }
     public QuietPerformanceStatus QuietPerformance { get; init; } = QuietPerformanceStatus.Unsupported;
     public ItsMode PerformanceMode => QuietPerformance.Selection(ItsMode);

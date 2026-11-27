@@ -54,6 +54,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
     private readonly Button _restartNow;
     private bool _syncingModes;
     private bool _modeWriteBusy;
+    private readonly List<UIElement> _discreteGpuPills = [];
 
     public ToolkitOverviewPage(ToolkitRuntimeService runtime)
         : base(runtime)
@@ -355,6 +356,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
             if (OverviewLayoutDefaults.IsHeroCardEnabled(layout, id))
             {
                 if (element is FrameworkElement pill) pill.Margin = new Thickness(0, 0, 8, 8);
+                if (OverviewHeroIds.RequiresDiscreteGpu(id)) _discreteGpuPills.Add(element);
                 pills.Children.Add(element);
             }
         }
@@ -613,6 +615,7 @@ internal sealed class ToolkitOverviewPage : ToolkitPageBase,
     {
         _syncingModes = true;
         var snapshot = Runtime.Snapshot;
+        foreach (var pill in _discreteGpuPills) pill.Visibility = snapshot.ShowDiscreteGpuControls ? Visibility.Visible : Visibility.Collapsed;
         var itsPath = new ItsModeDetector().GetControlPath();
         SyncPerformanceChoices(_itsMode, snapshot, itsPath, Runtime.IsChinese);
         foreach (var item in _gpuMode.Items.OfType<ComboBoxItem>())

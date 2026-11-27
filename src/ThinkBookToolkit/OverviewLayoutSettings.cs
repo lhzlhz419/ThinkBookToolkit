@@ -17,6 +17,7 @@ public static class OverviewCardIds
 
 public static class OverviewHeroIds
 {
+    internal static bool RequiresDiscreteGpu(string id) => id is GpuMode or DiscreteGpuStatus or RestartStatus;
     public const string PerformanceMode = "performance-mode";
     public const string GpuMode = "gpu-mode";
     public const string FanControl = "fan-control";
@@ -54,7 +55,7 @@ internal static class OverviewLayoutDefaults
     private static readonly IReadOnlyDictionary<string, string[]> Definitions =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "performance-core-average-frequency", "efficiency-core-average-frequency", "maximum-frequency", "temperature", "power"],
+            [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "performance-core-average-frequency", "efficiency-core-average-frequency", "lpe-average-frequency", "maximum-frequency", "temperature", "power"],
             [OverviewCardIds.Gpu] = ["utilization", "vram-utilization", "core-frequency", "vram-frequency", "core-temperature", "hotspot-temperature", "vram-temperature", "power"],
             [OverviewCardIds.Battery] = ["status", "charge", "capacity", "health", "power"],
             [OverviewCardIds.MemoryStorage] = ["physical-memory", "virtual-memory", "slot1-temperature", "slot2-temperature", "disk-temperatures", "disk-health", "utilization", "average-temperature"],
@@ -167,7 +168,7 @@ internal static class OverviewLayoutDefaults
         DetailedCardDefinitions { get; } =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "performance-core-average-frequency", "efficiency-core-average-frequency", "maximum-frequency", "temperature", "power"],
+            [OverviewCardIds.Cpu] = ["utilization", "average-frequency", "performance-core-average-frequency", "efficiency-core-average-frequency", "lpe-average-frequency", "maximum-frequency", "temperature", "power"],
             [OverviewCardIds.Gpu] = ["utilization", "vram-utilization", "core-frequency", "vram-frequency", "core-temperature", "hotspot-temperature", "vram-temperature", "power"],
             [OverviewCardIds.Battery] = ["status", "charge", "capacity", "health", "power"],
             [OverviewCardIds.MemoryStorage] = ["physical-memory", "virtual-memory", "slot1-temperature", "slot2-temperature", "disk-temperatures", "disk-health"],

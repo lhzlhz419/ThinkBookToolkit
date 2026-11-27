@@ -473,6 +473,7 @@ internal sealed class ToolkitAutomationPage : ToolkitPageBase
 
     private IEnumerable<AutomationStepMetadata> AvailableCatalogItems() =>
         AutomationStepCatalog.Items.Where(item =>
+            (Runtime.Snapshot.ShowDiscreteGpuControls || item.Kind is not (AutomationStepKind.GpuMode or AutomationStepKind.GpuOverclockEnabled or AutomationStepKind.KillGpuApplications or AutomationStepKind.NvApiGpuPowerBeta)) &&
             AutomationStepCatalog.IsAvailableForCpu(item.Kind, CpuVendorDetector.Manufacturer()) &&
             (item.Kind != AutomationStepKind.PluginAction || Runtime.Plugins.Actions.Any()) &&
             (item.Kind != AutomationStepKind.RunMacro || Runtime.Settings.Macros.Count > 0));

@@ -27,6 +27,8 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
     private readonly Button _viewGpuApplications;
     private readonly Button _killGpuApplications;
     private readonly Button _restartDiscreteGpu;
+    private FrameworkElement? _gpuModeRow;
+    private readonly TextBlock _modeTitle = new();
     private bool _restartingDiscreteGpu;
     private readonly Button _gpuOverclockSettings;
     private readonly CheckBox _gpuOverclockEnabled = new();
@@ -329,7 +331,7 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         }
         if (Runtime.Report?.IsAvailable(FeatureIds.GpuMode) != false)
         {
-            choices.Children.Add(SettingRow(
+            choices.Children.Add(_gpuModeRow = SettingRow(
                 L("GPU 工作模式", "GPU working mode"),
                 L("需要重启的切换会显示为等待重启，不会自动重启。", "Changes that require a restart remain pending; Toolkit never restarts automatically."),
                 _gpuMode,
@@ -394,11 +396,14 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         content.Children.Add(_pendingRestartRow);
         content.Children.Add(_modeStatus);
         return Card(
-            L("性能与 GPU 模式", "Performance and GPU modes"),
+            ModeTitle(Runtime.Snapshot),
             content,
             null,
-            "\uE945");
+            "\uE945", titleBlock: _modeTitle);
     }
+
+    private string ModeTitle(ToolkitRuntimeSnapshot snapshot) => snapshot.ShowDiscreteGpuControls
+        ? L("性能与 GPU 模式", "Performance and GPU modes") : L("性能模式", "Performance mode");
 
     private UIElement BuildFanCard()
     {
@@ -2474,11 +2479,11 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
                 : "--";
         }
         foreach (var pair in _powerReadoutRows)
-            pair.Value.Visibility = state.IsAvailable(pair.Key)
+            pair.Value.Visibility = Runtime.Snapshot.ShowPowerSetting(pair.Key) && state.IsAvailable(pair.Key)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
         foreach (var pair in _powerEditorRows)
-            pair.Value.Visibility = state.IsAvailable(pair.Key)
+            pair.Value.Visibility = Runtime.Snapshot.ShowPowerSetting(pair.Key) && state.IsAvailable(pair.Key)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
         var atppAvailable = state.IsAvailable(PowerSetting.Atpp) && state.Atpp.HasValue;
@@ -2521,7 +2526,9 @@ internal sealed class ToolkitPerformancePage : ToolkitPageBase,
         {
             Select(_gpuMode, snapshot.GpuMode.Value);
         }
-        _pendingRestartRow.Visibility = string.IsNullOrWhiteSpace(snapshot.PendingGpuMode)
+        _modeTitle.Text = ModeTitle(snapshot);
+        if (_gpuModeRow is not null) _gpuModeRow.Visibility = snapshot.ShowDiscreteGpuControls ? Visibility.Visible : Visibility.Collapsed;
+        _pendingRestartRow.Visibility = !snapshot.ShowDiscreteGpuControls || string.IsNullOrWhiteSpace(snapshot.PendingGpuMode)
             ? Visibility.Collapsed
             : Visibility.Visible;
         _pendingRestartText.Text = PendingGpuModeText(snapshot);

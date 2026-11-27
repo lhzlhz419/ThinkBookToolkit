@@ -54,7 +54,7 @@ internal sealed class SensorRecordingViewerWindow : Window
             U("利用率", "Utilization", S("cpuUtilization", "%")),
             C("频率", "Frequency",
                 S("cpuAverageMhz", "平均"), S("cpuPerformanceCoreAverageMhz", "性能核"),
-                S("cpuEfficiencyCoreAverageMhz", "能效核"), S("cpuMaximumMhz", "最高")),
+                S("cpuEfficiencyCoreAverageMhz", "能效核"), S("cpuLpeAverageMhz", "LPE 核"), S("cpuMaximumMhz", "最高")),
             C("温度", "Temperature", S("cpuTemperatureC", "°C")),
             C("功耗", "Power", S("cpuPowerW", "W"))
         ]),

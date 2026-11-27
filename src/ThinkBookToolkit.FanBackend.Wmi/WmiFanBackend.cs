@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Management;
+using Microsoft.Win32;
 using ThinkBookToolkit.FanBackend;
 
 namespace ThinkBookToolkit.FanBackend.Wmi;
@@ -10,6 +11,8 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
     private const uint FullSpeedId = 0x04020000;
     private const uint Fan1Id = 0x04030001;
     private const uint Fan2Id = 0x04030002;
+    private const uint XiaoXinFan2Id = 0x04030004;
+    private readonly bool _qlcn = IsXiaoXinQlcn();
     private IReadOnlyDictionary<string, FanBackendRange>? _cachedLimits;
     private bool? _fan2Available;
 
@@ -17,6 +20,26 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
     {
         if (FanBackendRuntimeContext.DeclaredFanCount == 1)
             _fan2Available = false;
+    }
+
+    // Both the application and the recovery worker construct this backend.
+    private static bool IsXiaoXinQlcn()
+    {
+        using var bios = Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS");
+        var version = bios?.GetValue("BIOSVersion") as string;
+        var product = bios?.GetValue("SystemProductName") as string;
+        var family = bios?.GetValue("SystemFamily") as string;
+        return MatchesQlcn(version, product, family);
+    }
+
+    internal static bool MatchesQlcn(string? version, string? product, string? family)
+    {
+        static bool Model(string? value) =>
+            value?.Contains("XiaoXinPro 14 IAH10", StringComparison.OrdinalIgnoreCase) == true ||
+            value?.Contains("XiaoXinPro 14 IAX10", StringComparison.OrdinalIgnoreCase) == true;
+        return version?.StartsWith("QLCN", StringComparison.OrdinalIgnoreCase) == true &&
+            (product?.StartsWith("83JK", StringComparison.OrdinalIgnoreCase) == true ||
+             Model(family) || Model(product));
     }
 
     public Version ApiVersion => FanBackendContract.CurrentVersion;
@@ -33,10 +56,10 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
 
     public TimeSpan MinimumWriteInterval => TimeSpan.FromSeconds(6);
 
-    public FanBackendControlSemantics ControlSemantics { get; } = new(
+    public FanBackendControlSemantics ControlSemantics => new(
         FanTargetZeroBehavior.ReleaseFanToFirmwareControl,
-        FanAutomaticControlRestoreMechanism.WriteZeroToBothTargets,
-        "Lenovo WMI SetFeatureValue: write 0 to FAN1 and FAN2",
+        _qlcn ? FanAutomaticControlRestoreMechanism.DedicatedBackendOperation : FanAutomaticControlRestoreMechanism.WriteZeroToBothTargets,
+        _qlcn ? "QLCN: write 0 once to FAN1 to release both fans" : "Lenovo WMI SetFeatureValue: write 0 to FAN1 and FAN2",
         new(
             FanFullSpeedControlMechanism.FeatureToggle,
             "Lenovo WMI SetFeatureValue(0x04020000, 1)",
@@ -53,9 +76,9 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
         {
             try
             {
-                fan2 = ReadFeatureValue(other, Fan2Id);
+                fan2 = ReadFeatureValue(other, _qlcn ? XiaoXinFan2Id : Fan2Id);
             }
-            catch
+            catch when (!_qlcn)
             {
                 _fan2Available = false;
             }
@@ -66,6 +89,11 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
     public void Apply(int fan1Rpm, int fan2Rpm)
     {
         using var other = GetActiveOtherMethod();
+        if (_qlcn)
+        {
+            ApplyQlcnTargets(fan1Rpm, fan2Rpm, (id, value) => SetFeatureValue(other, id, value));
+            return;
+        }
         SetFeatureValue(other, Fan1Id, fan1Rpm);
         if (_fan2Available is null)
         {
@@ -93,6 +121,27 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
         }
     }
 
+    internal static void ApplyQlcnTargets(int fan1Rpm, int fan2Rpm, Action<uint, int> write)
+    {
+        // WMAE divides nonzero RPM by 100 into an 8-bit EC argument.
+        if (fan1Rpm is < 0 or > 25599 || fan2Rpm is < 0 or > 25599 ||
+            fan1Rpm is > 0 and < 100 || fan2Rpm is > 0 and < 100)
+            throw new ArgumentOutOfRangeException("RPM");
+        try
+        {
+            // Both zero IDs issue the same global release (0x84). Release
+            // first so a zero FAN2 cannot cancel a new manual FAN1 target.
+            if (fan1Rpm == 0 || fan2Rpm == 0) write(Fan1Id, 0);
+            if (fan1Rpm > 0) write(Fan1Id, fan1Rpm);
+            if (fan2Rpm > 0) write(XiaoXinFan2Id, fan2Rpm);
+        }
+        catch
+        {
+            write(Fan1Id, 0);
+            throw;
+        }
+    }
+
     public void RestoreAuto() => Apply(0, 0);
 
     public void SetFullSpeed(bool enabled)
@@ -107,7 +156,8 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
         {
             using var other = GetActiveOtherMethod();
             _ = ReadFeatureValue(other, FullSpeedId);
-            detail = "Lenovo WMI full-speed feature 0x04020000 is readable.";
+            detail = _qlcn ? "QLCN: 0x04020000 writes FFON; its getter always returns zero."
+                : "Lenovo WMI full-speed feature 0x04020000 is readable.";
             return true;
         }
         catch (Exception ex)
@@ -134,7 +184,7 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
             "No active LENOVO_OTHER_METHOD instance found.");
     }
 
-    private static IReadOnlyDictionary<string, FanBackendRange> ReadFanLimits()
+    private IReadOnlyDictionary<string, FanBackendRange> ReadFanLimits()
     {
         using var searcher = new ManagementObjectSearcher(
             NamespacePath,
@@ -149,6 +199,9 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
                 var ids = ToIntArray(item["FanId"]);
                 var mins = ToIntArray(item["FanMinSpeed"]);
                 var maxes = ToIntArray(item["FanMaxSpeed"]);
+                if (_qlcn && (ids.Length < 2 || ids[0] != 1 || ids[1] != 4 ||
+                    mins.Length < 2 || maxes.Length < 2))
+                    throw new InvalidOperationException("Unexpected QLCN fan range table (expected fan IDs 1 and 4).");
                 if (ids.Length < 1 || mins.Length < 1 || maxes.Length < 1)
                     break;
 
@@ -161,7 +214,7 @@ public sealed class WmiFanBackend : IFanBackend, IFanBackendCapabilityProbe
                 {
                     result["fan2"] = new(
                         "fan2",
-                        Fan2Id,
+                        _qlcn ? XiaoXinFan2Id : Fan2Id,
                         mins[1],
                         maxes[1]);
                 }

@@ -683,7 +683,7 @@ internal sealed class ToolkitMainWindow : Window
     private (string Title, string Subtitle, string Glyph) BuiltinPageDescriptor(string page) => page switch
     {
         "plugins" => (L("插件", "Plugins"), L("插件管理与权限", "Plugin management and permissions"), "\uEA86"),
-        "performance" => (L("性能", "Performance"), L("性能模式、GPU 和功耗", "Performance modes, GPU, and power limits"), "\uE945"),
+        "performance" => (L("性能", "Performance"), _runtime.Snapshot.ShowDiscreteGpuControls ? L("性能模式、GPU 和功耗", "Performance modes, GPU, and power limits") : L("性能模式和功耗", "Performance modes and power limits"), "\uE945"),
         "cooling" => (L("散热", "Cooling"), L("风扇策略、曲线和转速控制", "Fan strategies, curves, and RPM control"), "\uE9D9"),
         "battery" => (L("电池与电源", "Battery and power"), L("充电、供电与电池健康", "Charging, power delivery, and battery health"), "\uE850"),
         "display" => (L("显示", "Display"), L("护眼与色彩管理", "Eye care and color management"), "\uE7F4"),
@@ -1145,6 +1145,8 @@ internal sealed class ToolkitMainWindow : Window
             Dispatcher.BeginInvoke(new Action(() => OnSnapshotChanged(sender, args)));
             return;
         }
+        if (_selectedPage == "performance")
+            _pageSubtitle.Text = PageDescriptor(_selectedPage).Subtitle;
         if (!string.IsNullOrWhiteSpace(_runtime.Snapshot.Error))
             ShowToast(L("状态刷新失败：", "Status refresh failed: ") + _runtime.Snapshot.Error, isError: true);
     }

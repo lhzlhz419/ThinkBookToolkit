@@ -36,6 +36,7 @@ public sealed record TemperatureSnapshot(
     public double? CpuLoadPercent { get; init; }
     public double? CpuAverageClockMhz { get; init; }
     public double? CpuPerformanceCoreAverageClockMhz { get; init; }
+    public double? CpuLpeAverageClockMhz { get; init; }
     public double? CpuEfficiencyCoreAverageClockMhz { get; init; }
     public double? CpuMaximumClockMhz { get; init; }
     public string GpuName { get; init; } = string.Empty;
@@ -485,7 +486,8 @@ public enum OsdSensor
     BatteryOutputPower = 33,
     CpuPerformanceCoreAverageFrequency = 34,
     CpuEfficiencyCoreAverageFrequency = 35,
-    BatteryCapacity = 36
+    BatteryCapacity = 36,
+    CpuLpeAverageFrequency = 37
 }
 
 public enum OsdMultipleTemperatureMode

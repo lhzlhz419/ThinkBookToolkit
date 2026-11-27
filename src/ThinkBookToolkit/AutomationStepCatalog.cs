@@ -102,6 +102,7 @@ internal static class AutomationStepCatalog
         AutomationStepKind.Resolution => PanelOptions(scale: false),
         AutomationStepKind.DpiScale => PanelOptions(scale: true),
         AutomationStepKind.PowerValue or AutomationStepKind.PowerLock => Enum.GetValues<PowerSetting>()
+            .Where(runtime.Snapshot.ShowPowerSetting)
             .Where(s => kind == AutomationStepKind.PowerLock || s != PowerSetting.NvPcfDynamicBoost)
             .Select(s => new AutomationOption(s.ToString(), PowerLockAcceptancePolicy.Label(s, true, runtime.BetaCpuPowerKind),
                 PowerLockAcceptancePolicy.Label(s, false, runtime.BetaCpuPowerKind))).ToArray(),
